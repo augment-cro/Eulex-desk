@@ -20,7 +20,6 @@ review, and a Microsoft Word add-in. It is a substantially modified fork of
   and Croatian legal sources, with a dedicated source panel.
 - **Multi-provider LLM orchestration** — Anthropic, Google Gemini, OpenAI,
   OpenRouter, and self-hosted vLLM, with per-tier model selection.
-- **Multi-provider web search** — Tavily, Exa, Parallel, You.com.
 - **Workflow packs** — declarative YAML workflow/prompt definitions,
   JSON-schema validated.
 - **Croatian + English UI** — full i18n, Croatian default.
