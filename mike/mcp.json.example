@@ -1,0 +1,22 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/mike-builtin-mcp.json",
+  "_comment": "Built-in MCP servers for Eulex Desk. Servers listed here are loaded server-side on every chat request and their tools are merged into the LLM's tool list. They are NEVER exposed via /user/mcp-servers and therefore do NOT appear in the connectors UI. Use this file for org-wide integrations the operator wants always-on. Header/URL values may reference environment variables with ${VAR_NAME}; missing variables fall back to an empty string and a warning is logged. Each key under mcpServers becomes the slug used in tool routing (prefixed automatically with `sys-` to avoid clashing with user-defined connectors).",
+  "mcpServers": {
+    "eulex": {
+      "name": "Eulex AI Legal Research",
+      "url": "https://mcp.eulex.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer ${EULEX_MCP_JWT_SECRET}"
+      },
+      "enabled": true
+    },
+    "tavily": {
+      "name": "Tavily Search",
+      "url": "https://mcp.tavily.com/mcp",
+      "headers": {
+        "X-API-Key": "${TAVILY_API_KEY}"
+      },
+      "enabled": false
+    }
+  }
+}

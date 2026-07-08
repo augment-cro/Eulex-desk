@@ -11,9 +11,7 @@
  * owner-only (delete, rename, member management).
  */
 
-import type { createServerSupabase } from "./supabase";
-
-type Db = ReturnType<typeof createServerSupabase>;
+import { from } from "./dbShim";
 
 export type ProjectAccess =
     | {
@@ -31,10 +29,9 @@ export async function checkProjectAccess(
     projectId: string,
     userId: string,
     userEmail: string | null | undefined,
-    db: Db,
+    _db?: unknown, // Backward compat — callers may still pass db; we ignore it
 ): Promise<ProjectAccess> {
-    const { data: project } = await db
-        .from("projects")
+    const { data: project } = await from("projects")
         .select("id, user_id, shared_with")
         .eq("id", projectId)
         .single();
@@ -68,7 +65,7 @@ export async function ensureDocAccess(
     doc: { user_id: string; project_id: string | null },
     userId: string,
     userEmail: string | null | undefined,
-    db: Db,
+    _db?: unknown, // Backward compat — callers may still pass db; we ignore it
 ): Promise<{ ok: true; isOwner: boolean } | { ok: false }> {
     if (doc.user_id === userId) return { ok: true, isOwner: true };
     if (!doc.project_id) return { ok: false };
@@ -76,7 +73,6 @@ export async function ensureDocAccess(
         doc.project_id,
         userId,
         userEmail,
-        db,
     );
     if (access.ok) return { ok: true, isOwner: false };
     return { ok: false };
@@ -99,7 +95,7 @@ export async function ensureReviewAccess(
     },
     userId: string,
     userEmail: string | null | undefined,
-    db: Db,
+    _db?: unknown, // Backward compat — callers may still pass db; we ignore it
 ): Promise<{ ok: true; isOwner: boolean } | { ok: false }> {
     if (review.user_id === userId) return { ok: true, isOwner: true };
     const email = (userEmail ?? "").toLowerCase();
@@ -113,28 +109,29 @@ export async function ensureReviewAccess(
         review.project_id,
         userId,
         userEmail,
-        db,
     );
     if (access.ok) return { ok: true, isOwner: false };
     return { ok: false };
 }
 
 /**
- * Filter user-supplied document IDs down to documents the caller can read.
+ * Filter a list of document IDs down to those the caller is actually
+ * authorised to read — owners pass, plus any document whose `project_id`
+ * the caller has access to (own project or `shared_with` member).
  *
- * Tabular review routes accept document IDs from request bodies. Without this
- * check, a caller with access to any review could attach arbitrary document
- * UUIDs and later cause /generate or /regenerate-cell to extract those bytes.
+ * The tabular-review routes accept user-supplied `document_ids` from
+ * request bodies; without this filter an attacker who has any review of
+ * their own can plant arbitrary doc UUIDs and have the server fetch + run
+ * an LLM extraction over their bytes (CWE-639).
  */
 export async function filterAccessibleDocumentIds(
     documentIds: string[],
     userId: string,
     userEmail: string | null | undefined,
-    db: Db,
+    _db?: unknown,
 ): Promise<string[]> {
     if (documentIds.length === 0) return [];
-    const { data: docs } = await db
-        .from("documents")
+    const { data: docs } = await from("documents")
         .select("id, user_id, project_id")
         .in("id", documentIds);
     const rows = (docs ?? []) as {
@@ -143,22 +140,18 @@ export async function filterAccessibleDocumentIds(
         project_id: string | null;
     }[];
     if (rows.length === 0) return [];
-
     const accessibleProjectIds = new Set(
-        await listAccessibleProjectIds(userId, userEmail, db),
+        await listAccessibleProjectIds(userId, userEmail),
     );
-    const allowed: string[] = [];
-    for (const doc of rows) {
-        if (doc.user_id === userId) {
-            allowed.push(doc.id);
-        } else if (
-            doc.project_id &&
-            accessibleProjectIds.has(doc.project_id)
-        ) {
-            allowed.push(doc.id);
+    const out: string[] = [];
+    for (const d of rows) {
+        if (d.user_id === userId) {
+            out.push(d.id);
+        } else if (d.project_id && accessibleProjectIds.has(d.project_id)) {
+            out.push(d.id);
         }
     }
-    return allowed;
+    return out;
 }
 
 /**
@@ -169,17 +162,16 @@ export async function filterAccessibleDocumentIds(
 export async function listAccessibleProjectIds(
     userId: string,
     userEmail: string | null | undefined,
-    db: Db,
+    _db?: unknown, // Backward compat — callers may still pass db; we ignore it
 ): Promise<string[]> {
     const [{ data: own }, { data: shared }] = await Promise.all([
-        db.from("projects").select("id").eq("user_id", userId),
+        from("projects").select("id").eq("user_id", userId),
         userEmail
-            ? db
-                  .from("projects")
+            ? from("projects")
                   .select("id")
-                  .filter("shared_with", "cs", JSON.stringify([userEmail]))
+                  .contains("shared_with", [userEmail])
                   .neq("user_id", userId)
-            : Promise.resolve({ data: [] as { id: string }[] }),
+            : Promise.resolve({ data: [] as { id: string }[], error: null, count: null }),
     ]);
     const ids = new Set<string>();
     for (const p of (own ?? []) as { id: string }[]) ids.add(p.id);

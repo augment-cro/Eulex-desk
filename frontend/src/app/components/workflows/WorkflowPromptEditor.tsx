@@ -41,8 +41,8 @@ function ToolbarBtn({
             }}
             className={`p-1.5 rounded transition-colors ${
                 active
-                    ? "bg-gray-200 text-gray-900"
-                    : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                    ? "bg-secondary text-foreground"
+                    : "text-muted-foreground/70 hover:bg-accent hover:text-muted-foreground"
             }`}
         >
             {children}
@@ -99,15 +99,9 @@ export function WorkflowPromptEditor({
     }, [value, editor]);
 
     return (
-        <div
-            className={`flex h-full flex-col overflow-hidden bg-white ${
-                readOnly
-                    ? "rounded-md border border-gray-200"
-                    : "rounded-md border border-gray-200"
-            }`}
-        >
+        <div className="flex flex-col h-full border border-input rounded-md overflow-hidden bg-surface-elevated">
             {!readOnly && editor && (
-                <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-gray-100 bg-gray-50 shrink-0">
+                <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-muted shrink-0">
                     <ToolbarBtn
                         onClick={() =>
                             editor
@@ -147,7 +141,7 @@ export function WorkflowPromptEditor({
                     >
                         <Heading3 className="h-4 w-4" />
                     </ToolbarBtn>
-                    <div className="w-px h-4 bg-gray-200 mx-1 shrink-0" />
+                    <div className="w-px h-4 bg-border mx-1 shrink-0" />
                     <ToolbarBtn
                         onClick={() =>
                             editor.chain().focus().toggleBold().run()
@@ -166,7 +160,7 @@ export function WorkflowPromptEditor({
                     >
                         <Italic className="h-4 w-4" />
                     </ToolbarBtn>
-                    <div className="w-px h-4 bg-gray-200 mx-1 shrink-0" />
+                    <div className="w-px h-4 bg-border mx-1 shrink-0" />
                     <ToolbarBtn
                         onClick={() =>
                             editor.chain().focus().toggleBulletList().run()
@@ -187,18 +181,7 @@ export function WorkflowPromptEditor({
                     </ToolbarBtn>
                 </div>
             )}
-            {readOnly && (
-                <div className="flex h-9 shrink-0 items-center bg-gray-50 px-5">
-                    <span className="text-xs font-medium text-gray-500">
-                        Read-only
-                    </span>
-                </div>
-            )}
-            <div
-                className={`flex-1 overflow-y-auto ${
-                    readOnly ? "border-t border-gray-100" : ""
-                }`}
-            >
+            <div className="flex-1 overflow-y-auto">
                 <EditorContent editor={editor} />
             </div>
         </div>

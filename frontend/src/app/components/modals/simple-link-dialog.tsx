@@ -1,6 +1,7 @@
 import { X, Link2, Check } from "lucide-react";
 import { useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslations } from "next-intl";
 
 interface SimpleLinkDialogProps {
     isOpen: boolean;
@@ -14,6 +15,7 @@ export function SimpleLinkDialog({
     shareUrl,
 }: SimpleLinkDialogProps) {
     const [linkCopied, setLinkCopied] = useState(false);
+    const t = useTranslations("shareChat");
 
     if (!isOpen) return null;
 
@@ -30,36 +32,36 @@ export function SimpleLinkDialog({
         <>
             {/* Backdrop */}
             <div
-                className="fixed inset-0 bg-black/50 z-[199]"
+                className="fixed inset-0 bg-foreground/50 z-[199]"
                 onClick={onClose}
             />
 
             {/* Dialog */}
             <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[200] w-full max-w-md px-4">
-                <div className="relative bg-white rounded-2xl shadow-2xl p-6">
+                <div className="relative bg-background rounded-2xl border border-border p-6">
                     {/* Close Button */}
                     <button
                         onClick={onClose}
-                        className="absolute right-4 top-4 text-gray-400 hover:text-gray-600 transition-colors"
+                        className="absolute right-4 top-4 text-muted-foreground/70 hover:text-muted-foreground transition-colors"
                     >
                         <X className="h-5 w-5" />
                     </button>
 
                     {/* Header */}
                     <div className="flex items-center justify-between mb-6">
-                        <h2 className="text-3xl font-light font-eb-garamond text-gray-900">
-                            Share Chat
+                        <h2 className="text-3xl font-light font-eb-garamond text-foreground">
+                            {t("title")}
                         </h2>
                     </div>
 
                     {/* Content */}
                     <div className="space-y-4">
                         {/* Link display */}
-                        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                            <p className="text-sm text-gray-600 mb-2 font-medium">
-                                Share Link
+                        <div className="bg-muted rounded-lg p-3 border border-border">
+                            <p className="text-sm text-muted-foreground mb-2 font-medium">
+                                {t("shareLink")}
                             </p>
-                            <p className="text-sm text-gray-800 break-all font-mono">
+                            <p className="text-sm text-foreground break-all font-mono">
                                 {shareUrl}
                             </p>
                         </div>
@@ -67,17 +69,17 @@ export function SimpleLinkDialog({
                         {/* Copy button */}
                         <button
                             onClick={handleCopyLink}
-                            className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-2.5 px-4 rounded-lg transition-colors font-medium"
+                            className="w-full flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground py-2.5 px-4 rounded-lg transition-colors font-medium"
                         >
                             {linkCopied ? (
                                 <>
                                     <Check className="h-5 w-5" />
-                                    Copied!
+                                    {t("copied")}
                                 </>
                             ) : (
                                 <>
                                     <Link2 className="h-5 w-5" />
-                                    Copy Link
+                                    {t("copyLink")}
                                 </>
                             )}
                         </button>

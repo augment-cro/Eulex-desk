@@ -2,288 +2,263 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import Link from "next/link";
+import { useTranslations } from "next-intl";
+import { Mail, MailCheck } from "lucide-react";
 import { SiteLogo } from "@/components/site-logo";
-import { CheckCircle2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { updateUserProfile } from "@/app/lib/mikeApi";
-
-const authGlassCardClassName =
-    "rounded-2xl border border-white/70 bg-white/72 p-8 shadow-[0_4px_14px_rgba(15,23,42,0.045),inset_0_1px_0_rgba(255,255,255,0.86),inset_0_-8px_18px_rgba(255,255,255,0.12)] backdrop-blur-2xl";
-const authInputClassName =
-    "rounded-lg border border-transparent bg-gray-100 px-3 shadow-none focus-visible:border-gray-200 focus-visible:ring-2 focus-visible:ring-gray-300/45";
-const authToggleClassName =
-    "flex gap-1 rounded-full bg-gray-200 p-1 text-xs font-medium";
-const authToggleActiveClassName =
-    "inline-flex h-6 items-center rounded-full border border-white/80 bg-white/86 px-3 text-gray-900 shadow-[0_2px_7px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.9),inset_0_-3px_7px_rgba(229,231,235,0.32)] backdrop-blur-xl";
-const authToggleInactiveClassName =
-    "inline-flex h-6 items-center rounded-full border border-transparent px-3 text-gray-500 transition-colors hover:bg-white/38 hover:text-gray-900";
+import { track } from "@/app/lib/analytics";
+import {
+    getSupabase,
+    supabaseAuthEnabled,
+} from "@/lib/supabaseClient";
+import {
+    GoogleIcon,
+    LinkedInIcon,
+    MicrosoftIcon,
+} from "@/components/ui/social-icons";
+import Link from "next/link";
 
 export default function SignupPage() {
     const router = useRouter();
     const { isAuthenticated, authLoading } = useAuth();
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [confirmPassword, setConfirmPassword] = useState("");
+    const t = useTranslations("signup");
+    // Shared passwordless / OTP copy lives in the `login` namespace.
+    const tl = useTranslations("login");
     const [name, setName] = useState("");
-    const [organisation, setOrganisation] = useState("");
-    const [loading, setLoading] = useState(false);
+    const [email, setEmail] = useState("");
+    const [magicSending, setMagicSending] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [success, setSuccess] = useState(false);
+    const [confirmationSent, setConfirmationSent] = useState(false);
 
     useEffect(() => {
-        if (!authLoading && isAuthenticated && !success) {
+        if (!authLoading && isAuthenticated) {
             router.replace("/assistant");
         }
-    }, [authLoading, isAuthenticated, router, success]);
+    }, [authLoading, isAuthenticated, router]);
 
-    const handleSignup = async (e: React.FormEvent) => {
+    /**
+     * Passwordless registration via magic link. signInWithOtp with
+     * shouldCreateUser auto-creates the account on first use, so sign-up and
+     * sign-in share one flow; display_name is carried in user_metadata (only
+     * applied on creation). The link redirects to /auth/supabase-callback and
+     * is exchanged there exactly like the sign-in and social flows.
+     */
+    const handleMagicLink = async (e: React.FormEvent) => {
         e.preventDefault();
-        setLoading(true);
+        if (!supabaseAuthEnabled || magicSending) return;
+        const addr = email.trim();
+        if (!addr) {
+            setError(tl("magicLinkNoEmail"));
+            return;
+        }
+        setMagicSending(true);
         setError(null);
-
-        // Validate passwords match
-        if (password !== confirmPassword) {
-            setError("Passwords do not match");
-            setLoading(false);
-            return;
-        }
-
-        // Validate password length
-        if (password.length < 6) {
-            setError("Password must be at least 6 characters");
-            setLoading(false);
-            return;
-        }
-
         try {
-            const { data, error } = await supabase.auth.signUp({
-                email,
-                password,
+            const { error: sbError } = await getSupabase().auth.signInWithOtp({
+                email: addr,
+                options: {
+                    shouldCreateUser: true,
+                    emailRedirectTo: `${window.location.origin}/auth/supabase-callback`,
+                    ...(name.trim()
+                        ? { data: { display_name: name.trim() } }
+                        : {}),
+                },
             });
-
-            if (error) throw error;
-
-            if (data.session) {
-                const trimmedName = name.trim();
-                const trimmedOrg = organisation.trim();
-                if (trimmedName || trimmedOrg) {
-                    try {
-                        await updateUserProfile({
-                            ...(trimmedName && { displayName: trimmedName }),
-                            ...(trimmedOrg && { organisation: trimmedOrg }),
-                        });
-                    } catch (profileError) {
-                        console.error(
-                            "[signup] failed to persist profile fields",
-                            profileError,
-                        );
-                    }
-                }
+            if (sbError) {
+                setError(sbError.message || t("genericError"));
+                setMagicSending(false);
+                return;
             }
-            setSuccess(true);
-            setTimeout(() => {
-                router.push("/assistant");
-            }, 2000);
-        } catch (error: unknown) {
-            setError(
-                error instanceof Error
-                    ? error.message
-                    : "An error occurred during signup",
-            );
-        } finally {
-            setLoading(false);
+            setConfirmationSent(true);
+        } catch {
+            setError(t("genericError"));
+            setMagicSending(false);
         }
     };
 
-    // Success View
-    if (success) {
-        return (
-            <div className="min-h-dvh bg-gray-50/80 flex items-start justify-center px-6 pt-32 md:pt-40 pb-10 relative">
-                <div className="absolute top-4 md:top-8 left-1/2 -translate-x-1/2">
-                    <SiteLogo size="lg" asLink />
-                </div>
-                <div className="w-full max-w-md">
-                    <div
-                        className={`${authGlassCardClassName} p-10 text-center`}
-                    >
-                        <div className="mx-auto w-12 h-12 bg-green-50 rounded-full flex items-center justify-center mb-6">
-                            <CheckCircle2 className="h-6 w-6 text-green-600" />
-                        </div>
-                        <h2 className="text-2xl font-bold text-gray-950 mb-3">
-                            Account created!
-                        </h2>
-                        <p className="text-gray-600 leading-relaxed">
-                            Redirecting you to the home page...
-                        </p>
-                    </div>
-                </div>
-            </div>
-        );
-    }
+    /** Supabase social sign-up (same flow as sign-in). */
+    const handleSocial = async (
+        provider: "google" | "linkedin_oidc" | "azure",
+    ) => {
+        if (!supabaseAuthEnabled) return;
+        setError(null);
+        try {
+            await getSupabase().auth.signInWithOAuth({
+                provider,
+                options: {
+                    redirectTo: `${window.location.origin}/auth/supabase-callback`,
+                    // Azure (Microsoft Entra) needs the email scope to put
+                    // the address on the token for our account auto-link.
+                    ...(provider === "azure" ? { scopes: "email" } : {}),
+                },
+            });
+            // Browser navigates away to the provider.
+        } catch (err: any) {
+            setError(err?.message || t("genericError"));
+        }
+    };
 
-    // Default Signup Form View
+    const inputClass =
+        "w-full rounded-s border border-divider bg-card px-3 py-2.5 text-sm text-ink placeholder:text-ink-40 focus:outline-none focus:border-ink-60";
+
     return (
-        <div className="min-h-dvh bg-gray-50/80 flex items-start justify-center px-6 pt-32 md:pt-40 pb-10 relative">
+        <div className="min-h-dvh bg-paper flex items-start justify-center px-6 pt-32 md:pt-40 pb-10 relative">
             <div className="absolute top-4 md:top-8 left-1/2 -translate-x-1/2">
                 <SiteLogo size="lg" asLink />
             </div>
             <div className="w-full max-w-md">
-                <div className={`${authGlassCardClassName} mb-4`}>
+                <div className="bg-card border border-divider rounded-m p-8">
                     <div className="flex justify-between items-center mb-6">
-                        <h2 className="text-left text-2xl font-medium font-serif text-gray-950">
-                            Create Account
+                        <h2 className="text-left h-display-l text-ink">
+                            {t("title")}
                         </h2>
-                        <div className={authToggleClassName}>
+                        <div className="bg-surface p-1 rounded-s flex eu-label--s">
                             <Link
                                 href="/login"
-                                className={authToggleInactiveClassName}
+                                className="px-3 py-1.5 text-ink-60 hover:text-ink"
                             >
-                                Log in
+                                {t("logIn")}
                             </Link>
-                            <span className={authToggleActiveClassName}>
-                                Sign up
+                            <span className="px-3 py-1.5 bg-card rounded-xs text-ink">
+                                {t("signUp")}
                             </span>
                         </div>
                     </div>
 
-                    <form onSubmit={handleSignup} className="space-y-4">
-                        <div>
-                            <label
-                                htmlFor="name"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Name{" "}
-                                <span className="text-gray-400 font-normal">
-                                    (optional)
-                                </span>
-                            </label>
-                            <Input
-                                id="name"
-                                type="text"
-                                value={name}
-                                onChange={(e) => setName(e.target.value)}
-                                placeholder="Your name"
-                                className={`w-full ${authInputClassName}`}
-                            />
-                        </div>
-
-                        <div>
-                            <label
-                                htmlFor="organisation"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Organisation{" "}
-                                <span className="text-gray-400 font-normal">
-                                    (optional)
-                                </span>
-                            </label>
-                            <Input
-                                id="organisation"
-                                type="text"
-                                value={organisation}
-                                onChange={(e) =>
-                                    setOrganisation(e.target.value)
-                                }
-                                placeholder="Your organisation"
-                                className={`w-full ${authInputClassName}`}
-                            />
-                        </div>
-
-                        <div>
-                            <label
-                                htmlFor="email"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Email
-                            </label>
-                            <Input
-                                id="email"
-                                type="email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                placeholder="Enter your email"
-                                required
-                                className={`w-full ${authInputClassName}`}
-                            />
-                        </div>
-
-                        <div>
-                            <label
-                                htmlFor="password"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Password
-                            </label>
-                            <Input
-                                id="password"
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                placeholder="Create a password (min. 6 characters)"
-                                required
-                                className={`w-full ${authInputClassName}`}
-                            />
-                        </div>
-
-                        <div>
-                            <label
-                                htmlFor="confirmPassword"
-                                className="block text-sm font-medium text-gray-700 mb-2"
-                            >
-                                Confirm Password
-                            </label>
-                            <Input
-                                id="confirmPassword"
-                                type="password"
-                                value={confirmPassword}
-                                onChange={(e) =>
-                                    setConfirmPassword(e.target.value)
-                                }
-                                placeholder="Confirm your password"
-                                required
-                                className={`w-full ${authInputClassName}`}
-                            />
-                        </div>
-
-                        {error && (
-                            <div className="text-red-600 text-sm bg-red-50 p-3 rounded">
-                                {error}
+                    {confirmationSent ? (
+                        <div className="text-center py-6">
+                            <div className="mx-auto w-16 h-16 bg-surface rounded-full flex items-center justify-center mb-4">
+                                <MailCheck
+                                    className="h-8 w-8 text-ink-60"
+                                    aria-hidden="true"
+                                />
                             </div>
-                        )}
+                            <p className="text-ink mb-2 font-medium">
+                                {t("checkEmailTitle")}
+                            </p>
+                            <p className="text-ink-60 text-sm">
+                                {t("checkEmailBody", { email: email.trim() })}
+                            </p>
+                        </div>
+                    ) : supabaseAuthEnabled ? (
+                        <>
+                            <form
+                                onSubmit={handleMagicLink}
+                                className="space-y-3"
+                            >
+                                <input
+                                    type="text"
+                                    autoComplete="name"
+                                    value={name}
+                                    onChange={(e) => setName(e.target.value)}
+                                    placeholder={t("nameLabel")}
+                                    aria-label={t("nameLabel")}
+                                    className={inputClass}
+                                />
+                                <input
+                                    type="email"
+                                    autoComplete="email"
+                                    required
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    placeholder={t("emailLabel")}
+                                    aria-label={t("emailLabel")}
+                                    className={inputClass}
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={magicSending}
+                                    className="eu-btn eu-btn-brand w-full gap-2"
+                                >
+                                    {magicSending ? (
+                                        <span className="flex items-center gap-2">
+                                            <span className="animate-spin rounded-full h-4 w-4 border-2 border-ink border-t-transparent" />
+                                            {tl("magicLinkSending")}
+                                        </span>
+                                    ) : (
+                                        <>
+                                            <Mail className="w-4 h-4" />
+                                            {tl("magicLinkButton")}
+                                        </>
+                                    )}
+                                </button>
+                            </form>
 
-                        <Button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full bg-black hover:bg-gray-900 text-white"
-                        >
-                            {loading ? "Creating account..." : "Sign up"}
-                        </Button>
-                    </form>
+                            <div className="my-5 flex items-center gap-3">
+                                <span className="h-px flex-1 bg-divider" />
+                                <span className="text-xs text-ink-40">
+                                    {t("orContinueWith")}
+                                </span>
+                                <span className="h-px flex-1 bg-divider" />
+                            </div>
 
-                    {/* Terms and Privacy */}
-                    <div className="mt-4 text-center text-xs text-gray-500">
-                        By signing up, you agree to our{" "}
-                        <Link
-                            href="https://mikeoss.com/terms"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:underline"
-                        >
-                            Terms of Use
-                        </Link>{" "}
-                        and{" "}
-                        <Link
-                            href="https://mikeoss.com/privacy"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:underline"
-                        >
-                            Privacy Policy
-                        </Link>
+                            <div className="grid grid-cols-3 gap-3">
+                                <button
+                                    type="button"
+                                    onClick={() => handleSocial("google")}
+                                    className="eu-btn w-full gap-2"
+                                >
+                                    <GoogleIcon />
+                                    Google
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => handleSocial("linkedin_oidc")}
+                                    className="eu-btn w-full gap-2"
+                                >
+                                    <LinkedInIcon />
+                                    LinkedIn
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => handleSocial("azure")}
+                                    className="eu-btn w-full gap-2"
+                                >
+                                    <MicrosoftIcon />
+                                    Microsoft
+                                </button>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="text-center py-6">
+                            <p className="text-ink mb-2 font-medium">
+                                {t("managedByEulex")}
+                            </p>
+                            <p className="text-ink-60 text-sm mb-6">
+                                {t("createOnEulex")}
+                            </p>
+                            <a
+                                href="https://eulex.ai/signup"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="eu-btn eu-btn-brand w-full"
+                                onClick={() =>
+                                    track("signup_started", {
+                                        source: "signup",
+                                    })
+                                }
+                            >
+                                {t("createAccountOnEulex")}
+                            </a>
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="mt-4 text-red-700 text-sm bg-red-50 p-3 rounded-s border border-red-100">
+                            {error}
+                        </div>
+                    )}
+
+                    <div className="border-t border-divider pt-4 mt-6 text-center">
+                        <p className="text-xs text-ink-40">
+                            {t("alreadyHaveAccount")}{" "}
+                            <Link
+                                href="/login"
+                                className="text-ink underline decoration-ink-40 underline-offset-2 hover:decoration-ink"
+                            >
+                                {t("signIn")}
+                            </Link>
+                        </p>
                     </div>
                 </div>
             </div>

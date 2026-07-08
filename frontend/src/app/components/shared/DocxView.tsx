@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
-import { Loader2 } from "lucide-react";
+import { MikeIcon } from "@/components/chat/mike-icon";
 import { useFetchDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 import { supabase } from "@/lib/supabase";
 import {
@@ -50,8 +50,6 @@ interface Props {
      * pagination the renderer can match against.
      */
     quotes?: CitationQuote[];
-    /** Changes when the parent wants the current quote re-focused. */
-    quoteFocusKey?: string | number;
     /**
      * Warning banner copy rendered in the top-left of the viewer. Used
      * for non-blocking errors (e.g. "Accept failed — reverted").
@@ -72,8 +70,30 @@ interface Props {
      * current scrollTop against its tab state.
      */
     onScrollChange?: (scrollTop: number) => void;
+    /**
+     * Fires after SuperDoc saves a new version (manual "Spremi" or
+     * auto-save). The parent must repoint its tab's `versionId` to the
+     * new version so the reload shows the saved content, not the old
+     * pinned version (vidi SUPERDOC_SAVE_BUG, Bug 1). docx-preview
+     * fallback ne sprema, pa ovdje ostaje neiskorišten — postoji samo da
+     * `DocxViewer` (zajednički tip) može proslijediti prop na SuperDocView.
+     */
+    onSaved?: (args: {
+        versionId: string;
+        versionNumber: number | null;
+    }) => void;
     rounded?: boolean;
     bordered?: boolean;
+    /**
+     * Aktivira Draft Mode selekcijsko sučelje. Ignorira se u docx-preview
+     * fallback-u; koristi ga SuperDocView (proslijeđuje DocxViewer spredom).
+     */
+    draftModeEnabled?: boolean;
+    /**
+     * Poziva se nakon što Draft Mode edit uspješno primijeni novu verziju.
+     * Ignorira se u docx-preview fallback-u.
+     */
+    onDraftEditApplied?: (result: import("@/app/lib/mikeApi").DraftSelectionEditResult) => void;
 }
 
 function findEditElement(
@@ -151,7 +171,7 @@ async function tagWIdsOnRenderedDom(
         } = await supabase.auth.getSession();
         const token = session?.access_token;
         const apiBase =
-            process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+            process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
         const qs = versionId
             ? `?version_id=${encodeURIComponent(versionId)}`
             : "";
@@ -203,7 +223,6 @@ export function DocxView({
     highlightEdit,
     refetchKey,
     quotes,
-    quoteFocusKey,
     warning,
     onWarningDismiss,
     initialScrollTop,
@@ -350,6 +369,13 @@ export function DocxView({
         const scrollEl = scrollRef.current;
         const containerEl = containerRef.current;
 
+        console.log("[DocxView] render effect fired", {
+            documentId,
+            versionId,
+            refetchKey,
+            bytesLen: bytes.byteLength,
+        });
+
         // Remember scroll position across re-renders so Accept/Reject stays put.
         lastScrollTopRef.current = scrollEl.scrollTop;
         const thisRender = ++renderKeyRef.current;
@@ -443,7 +469,7 @@ export function DocxView({
             scrollRef.current,
             quotesRef.current,
         );
-    }, [quoteKey, quoteFocusKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [quoteKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fire onScrollChange (rAF-throttled) so parents can persist scroll
     // per-tab. We still maintain lastScrollTopRef locally for same-mount
@@ -467,15 +493,15 @@ export function DocxView({
 
     return (
         <div
-            className={`relative flex flex-col flex-1 overflow-hidden ${bordered ? "border border-gray-200" : ""} ${rounded ? "rounded-lg" : ""}`}
+            className={`relative flex flex-col flex-1 overflow-hidden ${bordered ? "border border-border" : ""} ${rounded ? "rounded-xl" : ""}`}
         >
             {warning && (
-                <div className="absolute top-2 left-2 z-10 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800 shadow-sm">
+                <div className="absolute top-2 left-2 z-10 flex items-center gap-2 rounded-md border border-warning/20 bg-warning/10 px-2 py-1 text-xs text-warning">
                     <span>{warning}</span>
                     <button
                         type="button"
                         onClick={() => onWarningDismiss?.()}
-                        className="text-amber-600 hover:text-amber-900"
+                        className="text-warning hover:text-foreground"
                         aria-label="Dismiss warning"
                     >
                         ×
@@ -484,18 +510,18 @@ export function DocxView({
             )}
             <div
                 ref={scrollRef}
-                className="flex-1 overflow-auto bg-gray-100 px-5 pt-5 pb-3 docx-view-scroll"
+                className="flex-1 overflow-auto bg-muted px-5 pt-5 pb-3 docx-view-scroll"
                 data-document-id={documentId}
                 data-version-id={versionId ?? ""}
             >
                 {loading && !bytes && (
                     <div className="flex h-full items-center justify-center">
-                        <Loader2 className="h-7 w-7 animate-spin text-gray-400" />
+                        <MikeIcon spin mike size={28} />
                     </div>
                 )}
                 {error && (
                     <div className="flex h-full items-center justify-center">
-                        <p className="text-sm text-red-500">{error}</p>
+                        <p className="text-sm text-destructive">{error}</p>
                     </div>
                 )}
                 <div ref={containerRef} className="docx-view-container" />

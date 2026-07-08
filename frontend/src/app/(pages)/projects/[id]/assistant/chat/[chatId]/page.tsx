@@ -15,7 +15,7 @@ import {
     ChevronRight,
     FileText,
     Loader2,
-    Pencil,
+    Plus,
     Trash2,
     Upload,
     X,
@@ -33,7 +33,9 @@ import {
     moveSubfolderToFolder,
 } from "@/app/lib/mikeApi";
 import { useAssistantChat } from "@/app/hooks/useAssistantChat";
+import { invalidateDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
+import { usePiiSessionForChat } from "@/app/hooks/usePiiSessionForChat";
 import { UserMessage } from "@/app/components/assistant/UserMessage";
 import { AssistantMessage } from "@/app/components/assistant/AssistantMessage";
 import { ChatInput } from "@/app/components/assistant/ChatInput";
@@ -41,22 +43,24 @@ import type { ChatInputHandle } from "@/app/components/assistant/ChatInput";
 import { ProjectExplorer } from "@/app/components/projects/ProjectExplorer";
 import { DocView } from "@/app/components/shared/DocView";
 import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
-import { DocxView } from "@/app/components/shared/DocxView";
+import { ShareChatModal } from "@/app/components/shared/ShareChatModal";
+import { useConfirmDialog } from "@/app/components/modals/confirm-dialog";
+import { useTranslations } from "next-intl";
+import { DocxViewer } from "@/app/components/shared/DocxViewer";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import { useSidebar } from "@/app/contexts/SidebarContext";
-import { PageHeader } from "@/app/components/shared/PageHeader";
-import { HeaderActionsMenu } from "@/app/components/shared/HeaderActionsMenu";
 import type {
     CitationQuote,
-    CitationAnnotation,
-    Document,
-    EditAnnotation,
-    Message,
-    Project,
+    MikeCitationAnnotation,
+    MikeDocument,
+    MikeEditAnnotation,
+    MikeMessage,
+    MikeProject,
 } from "@/app/components/shared/types";
 import { expandCitationToEntries } from "@/app/components/shared/types";
+import { track, fileTypeOf } from "@/app/lib/analytics";
 
 interface Props {
     params: Promise<{ id: string; chatId: string }>;
@@ -86,7 +90,7 @@ function isDocxTab(filename: string) {
     return ext === "docx" || ext === "doc";
 }
 
-const ICON_SIZE = 28;
+const ICON_SIZE = 38;
 const GAP = 14;
 const EXPLORER_MIN = 160;
 const EXPLORER_DEFAULT = 280;
@@ -94,18 +98,18 @@ const CHAT_MIN = 320;
 const CHAT_DEFAULT = 420;
 
 function AssistantGreeting({ username }: { username: string }) {
-    const { profile } = useUserProfile();
+    const t = useTranslations("assistant");
     const [loaded, setLoaded] = useState(false);
     const [iconOffset, setIconOffset] = useState(0);
     const [textOffset, setTextOffset] = useState(0);
     const textRef = useRef<HTMLHeadingElement>(null);
 
     useLayoutEffect(() => {
-        if (!profile || !textRef.current) return;
+        if (!textRef.current) return;
         const h1Width = textRef.current.offsetWidth;
         setIconOffset((h1Width + GAP) / 2);
         setTextOffset((ICON_SIZE + GAP) / 2);
-    }, [profile]);
+    }, [username]);
 
     useEffect(() => {
         if (!iconOffset) return;
@@ -115,7 +119,7 @@ function AssistantGreeting({ username }: { username: string }) {
 
     return (
         <div className="flex-1 flex items-center justify-center">
-            <div className="relative flex items-center justify-center h-[28px]">
+            <div className="relative flex items-center justify-center h-[30px]">
                 <div
                     className="absolute h-[30px]"
                     style={{
@@ -131,7 +135,7 @@ function AssistantGreeting({ username }: { username: string }) {
                 </div>
                 <h1
                     ref={textRef}
-                    className="absolute text-3xl font-serif font-light text-gray-900 whitespace-nowrap"
+                    className="absolute text-2xl font-serif font-light text-foreground whitespace-nowrap"
                     style={{
                         left: "50%",
                         transform: loaded
@@ -142,7 +146,7 @@ function AssistantGreeting({ username }: { username: string }) {
                             "transform 900ms cubic-bezier(0.25, 0.46, 0.45, 0.94), opacity 800ms ease-in-out 300ms",
                     }}
                 >
-                    Hi, {username}
+                    {t("greeting", { username })}
                 </h1>
             </div>
         </div>
@@ -191,7 +195,7 @@ function Divider({ onDrag }: { onDrag: (dx: number) => void }) {
                 className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize flex items-stretch justify-center"
             >
                 {isDragging && (
-                    <div className="w-1 bg-blue-500 transition-colors" />
+                    <div className="w-1 bg-primary transition-colors" />
                 )}
             </div>
         </div>
@@ -205,16 +209,22 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     const { setSidebarOpen } = useSidebar();
     const { user } = useAuth();
     const { profile } = useUserProfile();
+    const tDelete = useTranslations("confirmDelete");
+    const tProject = useTranslations("projectPage");
+    const tChat = useTranslations("chatItem");
+    const { confirm: confirmDialog, dialog: confirmDialogEl } =
+        useConfirmDialog();
     const username =
         profile?.displayName?.trim() || user?.email?.split("@")[0] || "there";
 
-    const [project, setProject] = useState<Project | null>(null);
+    const [project, setProject] = useState<MikeProject | null>(null);
     const [chatTitle, setChatTitle] = useState<string | null>(null);
     const [chatOwnerId, setChatOwnerId] = useState<string | null>(null);
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
     const [chatLoaded, setChatLoaded] = useState(false);
     const [creatingChat, setCreatingChat] = useState(false);
     const [deletingChat, setDeletingChat] = useState(false);
+    const [shareOpen, setShareOpen] = useState(false);
 
     // Panel widths
     const [explorerWidth, setExplorerWidth] = useState(EXPLORER_DEFAULT);
@@ -255,13 +265,26 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         setNewChatMessages,
         chats,
         saveChat,
-        renameChat: renameChatInHistory,
     } = useChatHistoryContext();
-    const [initialMessages] = useState<Message[]>(newChatMessages ?? []);
+    const [initialMessages] = useState<MikeMessage[]>(newChatMessages ?? []);
     const { messages, isResponseLoading, handleChat, setMessages, cancel } =
         useAssistantChat({ initialMessages, chatId, projectId });
 
-    const hasLoaded = useRef(false);
+    // PII Shield session for this chat — fed into every AssistantMessage so
+    // ⟦PII:…⟧ placeholders are de-anonymised on the client via
+    // /pii/sessions/:id/render. Bump on streaming-end picks up sessions
+    // that were created mid-turn (first /anonymize for the chat).
+    const [piiBump, setPiiBump] = useState(0);
+    const { sessionId: piiSessionId } = usePiiSessionForChat(chatId, piiBump);
+    const lastIsResponseLoadingRef = useRef<boolean>(isResponseLoading);
+    useEffect(() => {
+        if (lastIsResponseLoadingRef.current && !isResponseLoading) {
+            setPiiBump((n) => n + 1);
+        }
+        lastIsResponseLoadingRef.current = isResponseLoading;
+    }, [isResponseLoading]);
+
+    const loadedChatId = useRef<string | null>(null);
     const hasAutoSent = useRef(false);
     const hasInitialScrolled = useRef(false);
 
@@ -313,9 +336,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             `created=${created.sort().join(",")}`,
             `replicated=${replicated.sort().join(",")}`,
             `edited=${Object.entries(editedPerDoc)
-                .map(([k, v]) => `${k}=${v}`)
-                .sort()
-                .join(",")}`,
+            .map(([k, v]) => `${k}=${v}`)
+            .sort()
+            .join(",")}`,
         ].join("|");
     }, [messages]);
 
@@ -326,20 +349,72 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             .catch(() => {});
     }, [projectMutationSignature, projectId]);
 
+    // ─── Faza 2.2: streaming tracked changes u SuperDoc ──────────────
+    //
+    // Kad Mike završi `edit_document` tool poziv, backend (chatTools.ts)
+    // već INSERT-a redove u `document_edits` PRIJE no što emit-a
+    // `doc_edited` SSE event. To znači da u trenutku kad ovaj event
+    // stigne u frontend, sve potrebno za prikaz već je u DB-u.
+    //
+    // Stari flow: korisnik je morao kliknuti citation/EditCard kako bi
+    //             pokrenuo `openTab` koji tek tada otvori SuperDoc.
+    // Novi flow:  ako je dokument već otvoren u centralnom panelu, mi
+    //             samo bumpa-mo `refetchKey` na pripadajućem tab-u; to
+    //             okida SuperDocView re-mount preko `documentConfig.id`
+    //             promjene (vidi SuperDocView.tsx:265), što pak zovne
+    //             `useFetchDocxBytes` (svježi DOCX bytes s w:ins/w:del
+    //             markup-om) i `refreshDbEdits` (svježi pending edits
+    //             panel) u istoj `handleReady` putanji (linija 401).
+    //
+    // Dedupliraju se kroz `consumedEditEventsRef` — `messages` ostaje u
+    // state-u dok god je chat otvoren, pa bi bez ovog svaka novonarasla
+    // `messages` lista re-okinula bump (lista bi bila non-monotone i
+    // ulazila u beskonačnu petlju spinner ↔ ready).
+    //
+    // Errored doc_edited eventovi (npr. nepostojeći doc_id ili schema
+    // mismatch) preskaču se — backend u tim slučajevima ne INSERT-a
+    // ništa u `document_edits` (vidi chatTools.ts:2253-2270), pa bi
+    // refresh samo bezveze prikazao spinner.
+    const consumedEditEventsRef = useRef<Set<string>>(new Set());
+    useEffect(() => {
+        for (const msg of messages) {
+            for (const ev of msg.events ?? []) {
+                if (ev.type !== "doc_edited") continue;
+                if ("isStreaming" in ev && ev.isStreaming) continue;
+                if (ev.error) continue;
+                if (!ev.document_id || !ev.version_id) continue;
+                const key = `${ev.document_id}:${ev.version_id}`;
+                if (consumedEditEventsRef.current.has(key)) continue;
+                consumedEditEventsRef.current.add(key);
+                setTabs((prev) =>
+                    prev.map((t) =>
+                        t.documentId === ev.document_id
+                            ? {
+                                  ...t,
+                                  versionId: ev.version_id,
+                                  refetchKey: (t.refetchKey ?? 0) + 1,
+                              }
+                            : t,
+                    ),
+                );
+            }
+        }
+    }, [messages]);
+
     useEffect(() => {
         setCurrentChatId(chatId);
     }, [chatId, setCurrentChatId]);
 
     useEffect(() => {
-        if (hasLoaded.current) return;
-        hasLoaded.current = true;
+        if (loadedChatId.current === chatId) return;
+        loadedChatId.current = chatId;
         getChat(chatId)
             .then(({ chat, messages: loaded }) => {
                 setChatTitle(chat.title);
                 setChatOwnerId(chat.user_id ?? null);
                 if (loaded.length > 0) setMessages(loaded);
             })
-            .catch(() => router.replace(`/projects/${projectId}/assistant`))
+            .catch(() => router.replace(`/projects/${projectId}?tab=assistant`))
             .finally(() => setChatLoaded(true));
     }, [chatId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -473,7 +548,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
 
     // ── Handlers ──────────────────────────────────────────────────────────────
     const handleSubmit = useCallback(
-        (message: Message) => {
+        (message: MikeMessage) => {
             if (!activeTab) return handleChat(message);
             return handleChat(message, {
                 displayedDoc: {
@@ -485,12 +560,11 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         [activeTab, handleChat],
     );
 
-    const handleDocClick = (doc: Document) => {
+    const handleDocClick = (doc: MikeDocument) => {
         openTab(doc.id, doc.filename);
     };
 
-    const handleCitationClick = (citation: CitationAnnotation) => {
-        if (citation.kind === "case") return;
+    const handleCitationClick = (citation: MikeCitationAnnotation) => {
         openTab(
             citation.document_id,
             citation.filename,
@@ -507,7 +581,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         openTab(args.documentId, args.filename, undefined, args.versionId);
     };
 
-    const handleEditViewClick = (ann: EditAnnotation, filename: string) => {
+    const handleEditViewClick = (ann: MikeEditAnnotation, filename: string) => {
         openTab(ann.document_id, filename, undefined, ann.version_id ?? null);
         setEditScrollTarget({
             key: `${ann.edit_id}-${Date.now()}`,
@@ -519,18 +593,32 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         });
     };
 
-    const handleEditResolved = (_args: {
+    const handleEditResolved = (args: {
         editId: string;
         documentId: string;
         status: "accepted" | "rejected";
         versionId: string | null;
         downloadUrl: string | null;
     }) => {
-        // Re-render after accept/reject is disabled while we verify the
-        // client-side optimistic mutation works on its own. Re-enable by
-        // bumping versionId + refetchKey on the matching tab and marking
-        // it reloading like before.
-        void _args;
+        // Assistant-side accept/reject resolves the edit on the backend, but
+        // the open editor caches docx bytes keyed by
+        // documentId:versionId:refetchKey. Mirror handleDocSaved: evict the
+        // byte cache and repoint the matching tab so SuperDoc remounts with
+        // the freshly-resolved document. Bump refetchKey unconditionally so a
+        // reload is forced even when the backend rewrites bytes at the same
+        // versionId (in-place override at edits/<hash>.docx).
+        invalidateDocxBytes(args.documentId);
+        setTabs((prev) =>
+            prev.map((t) =>
+                t.documentId === args.documentId
+                    ? {
+                          ...t,
+                          versionId: args.versionId ?? t.versionId,
+                          refetchKey: (t.refetchKey ?? 0) + 1,
+                      }
+                    : t,
+            ),
+        );
     };
 
     const patchTab = (documentId: string, patch: Partial<DocTab>) => {
@@ -551,6 +639,29 @@ export default function ProjectAssistantChatPage({ params }: Props) {
 
     const handleTabScrollChange = (documentId: string, scrollTop: number) => {
         patchTab(documentId, { scrollTop });
+    };
+
+    // Bug 1 fix: nakon SuperDoc spremanja prebaci tab na novu verziju i
+    // bumpa refetchKey + evict byte cache, da reload prikaže spremljeni
+    // sadržaj umjesto stare prikvačene verzije. `docId` dolazi iz render
+    // closure-a (ne iz `activeTabId`) jer save može završiti nakon što
+    // korisnik prebaci tab.
+    const handleDocSaved = (
+        docId: string,
+        args: { versionId: string; versionNumber: number | null },
+    ) => {
+        invalidateDocxBytes(docId);
+        setTabs((prev) =>
+            prev.map((t) =>
+                t.documentId === docId
+                    ? {
+                          ...t,
+                          versionId: args.versionId,
+                          refetchKey: (t.refetchKey ?? 0) + 1,
+                      }
+                    : t,
+            ),
+        );
     };
 
     const handleDocxReady = (documentId: string) => {
@@ -586,28 +697,23 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             setOwnerOnlyAction("delete this chat");
             return;
         }
+        const trimmedTitle = chatTitle?.trim();
+        const ok = await confirmDialog({
+            title: tDelete("chatTitle"),
+            message: trimmedTitle
+                ? tDelete("chatBodyNamed", { title: trimmedTitle })
+                : tDelete("chatBody"),
+            confirmLabel: tDelete("deleteAction"),
+            destructive: true,
+        });
+        if (!ok) return;
         setDeletingChat(true);
         try {
             await deleteChat(chatId);
-            router.push(`/projects/${projectId}/assistant`);
+            router.push(`/projects/${projectId}?tab=assistant`);
         } finally {
             setDeletingChat(false);
         }
-    }
-
-    async function handleRenameChat() {
-        if (chatOwnerId && user?.id && chatOwnerId !== user.id) {
-            setOwnerOnlyAction("rename this chat");
-            return;
-        }
-        const nextTitle = window.prompt(
-            "Rename chat",
-            chatTitle ?? "Untitled New Chat",
-        );
-        const trimmed = nextTitle?.trim();
-        if (!trimmed || trimmed === chatTitle) return;
-        setChatTitle(trimmed);
-        await renameChatInHistory(chatId, trimmed);
     }
 
     // ── Upload ────────────────────────────────────────────────────────────────
@@ -616,7 +722,25 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         setUploading(true);
         try {
             const uploaded = await Promise.all(
-                files.map((f) => uploadProjectDocument(projectId, f)),
+                files.map(async (f) => {
+                    const fileType = fileTypeOf(f);
+                    try {
+                        const doc = await uploadProjectDocument(projectId, f);
+                        track("document_uploaded", {
+                            surface: "project",
+                            file_type: fileType,
+                            result: "success",
+                        });
+                        return doc;
+                    } catch (err) {
+                        track("document_uploaded", {
+                            surface: "project",
+                            file_type: fileType,
+                            result: "error",
+                        });
+                        throw err;
+                    }
+                }),
             );
             setProject((prev) => {
                 if (!prev) return prev;
@@ -772,79 +896,88 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     return (
         <div className="flex flex-col h-full">
             {/* Page header */}
-            <PageHeader
-                shrink
-                breadcrumbs={[
-                    {
-                        label: "Projects",
-                        onClick: () => router.push("/projects"),
-                    },
-                    project
-                        ? {
-                              label: project.name,
-                              onClick: () =>
-                                  router.push(`/projects/${projectId}/assistant`),
-                              title: "Back to project",
-                          }
-                        : {
-                              loading: true,
-                              skeletonClassName: "w-32",
-                              onClick: () =>
-                                  router.push(`/projects/${projectId}/assistant`),
-                              title: "Back to project",
-                          },
-                    chatLoaded
-                        ? {
-                              label: chatTitle ?? "Untitled New Chat",
-                          }
-                        : {
-                              loading: true,
-                              skeletonClassName: "w-40",
-                          },
-                ]}
-                actions={[
-                    {
-                        type: "new",
-                        onClick: handleNewChat,
-                        loading: creatingChat,
-                        title: "New chat",
-                    },
-                    {
-                        type: "custom",
-                        render: (
-                            <HeaderActionsMenu
-                                items={[
-                                    {
-                                        label: "Rename",
-                                        icon: Pencil,
-                                        onSelect: () =>
-                                            void handleRenameChat(),
-                                    },
-                                    {
-                                        label: deletingChat
-                                            ? "Deleting..."
-                                            : "Delete",
-                                        icon: Trash2,
-                                        onSelect: () =>
-                                            void handleDeleteChat(),
-                                        disabled: deletingChat,
-                                        variant: "danger",
-                                    },
-                                ]}
-                            />
-                        ),
-                    },
-                ]}
-            />
+            <div className="flex items-center justify-between px-8 py-4 shrink-0">
+                <div className="flex items-center gap-1.5 text-2xl font-medium font-serif">
+                    <button
+                        onClick={() => router.push("/projects")}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                        {tProject("projects")}
+                    </button>
+                    <span className="text-muted-foreground/70">›</span>
+                    {project ? (
+                        <button
+                            onClick={() =>
+                                router.push(`/projects/${projectId}`)
+                            }
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                            {project.name}
+                            {project.cm_number && (
+                                <span className="ml-1 text-muted-foreground/70">
+                                    (#{project.cm_number})
+                                </span>
+                            )}
+                        </button>
+                    ) : (
+                        <div className="h-6 w-32 rounded bg-muted animate-pulse" />
+                    )}
+                    <span className="text-muted-foreground/70">›</span>
+                    <button
+                        onClick={() =>
+                            router.push(`/projects/${projectId}?tab=assistant`)
+                        }
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                        {tProject("assistant")}
+                    </button>
+                    <span className="text-muted-foreground/70">›</span>
+                    {chatLoaded ? (
+                        <span className="text-foreground truncate max-w-xs">
+                            {chatTitle && chatTitle !== "New Chat"
+                                ? chatTitle
+                                : tChat("untitledChat")}
+                        </span>
+                    ) : (
+                        <div className="h-6 w-40 rounded bg-muted animate-pulse" />
+                    )}
+                </div>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleNewChat}
+                        disabled={creatingChat}
+                        title="New chat"
+                        className="flex items-center justify-center p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+                    >
+                        {creatingChat ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                            <Plus className="h-4 w-4" />
+                        )}
+                    </button>
+                    <button
+                        onClick={handleDeleteChat}
+                        disabled={deletingChat}
+                        title="Delete chat"
+                        className="flex items-center justify-center p-1.5 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
+                    >
+                        {deletingChat ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                            <Trash2 className="h-4 w-4" />
+                        )}
+                    </button>
+                </div>
+            </div>
 
             {/* Three-panel body */}
-            <div className="flex flex-1 min-h-0 border-t border-gray-200 overflow-hidden">
+            <div className="flex flex-1 min-h-0 border-t border-border overflow-hidden">
                 {/* LEFT: Project Explorer */}
                 {!explorerCollapsed && (
                     <>
                         <div
                             style={{ width: explorerWidth }}
-                            className="shrink-0 flex flex-col border-r border-gray-200"
+                            className="shrink-0 flex flex-col border-r border-border"
                             onDragOver={(e) => {
                                 e.preventDefault();
                                 // Only show the upload overlay for external file drags, not internal moves
@@ -868,8 +1001,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                             onDrop={handleExplorerFileDrop}
                         >
                             {/* Explorer header */}
-                            <div className="h-10 flex items-center justify-between px-3 border-b border-gray-200 shrink-0">
-                                <span className="text-xs text-gray-700">
+                            <div className="h-10 flex items-center justify-between px-3 border-b border-border shrink-0">
+                                <span className="text-xs text-foreground">
                                     Explorer
                                 </span>
                                 <div className="flex items-center gap-1">
@@ -893,7 +1026,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                         }
                                         disabled={uploading}
                                         title="Upload documents"
-                                        className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors disabled:opacity-40"
+                                        className="p-1 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
                                     >
                                         {uploading ? (
                                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -906,7 +1039,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             setExplorerCollapsed(true)
                                         }
                                         title="Collapse explorer"
-                                        className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                                        className="p-1 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors"
                                     >
                                         <ChevronLeft className="h-3.5 w-3.5" />
                                     </button>
@@ -915,7 +1048,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
 
                             {/* Drop overlay */}
                             <div
-                                className={`flex-1 overflow-y-auto relative h-full ${explorerDragOver ? "bg-blue-50" : ""}`}
+                                className={`flex-1 overflow-y-auto relative h-full ${explorerDragOver ? "bg-accent" : ""}`}
                                 onDragOver={(e) => {
                                     e.preventDefault();
                                 }}
@@ -939,7 +1072,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                             >
                                 {explorerDragOver && (
                                     <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
-                                        <p className="text-xs text-blue-500 font-medium">
+                                        <p className="text-xs text-foreground font-medium">
                                             Drop to upload
                                         </p>
                                     </div>
@@ -965,12 +1098,12 @@ export default function ProjectAssistantChatPage({ params }: Props) {
 
                 {/* Collapsed explorer toggle */}
                 {explorerCollapsed && (
-                    <div className="shrink-0 flex flex-col border-r border-gray-200">
-                        <div className="h-10 flex items-center justify-center border-b border-gray-200 shrink-0 px-1">
+                    <div className="shrink-0 flex flex-col border-r border-border">
+                        <div className="h-10 flex items-center justify-center border-b border-border shrink-0 px-1">
                             <button
                                 onClick={() => setExplorerCollapsed(false)}
                                 title="Expand explorer"
-                                className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                                className="p-1 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors"
                             >
                                 <ChevronRight className="h-3.5 w-3.5" />
                             </button>
@@ -979,15 +1112,15 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 )}
 
                 {/* CENTER: Document Panel */}
-                <div className="flex-1 flex flex-col min-w-0 border-r border-gray-200">
+                <div className="flex-1 flex flex-col min-w-0 border-r border-border">
                     {/* Tab bar */}
                     <div
                         ref={tabBarRef}
-                        className="h-10 flex items-end border-b border-gray-200 shrink-0 overflow-x-auto min-w-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                        className="h-10 flex items-end border-b border-border shrink-0 overflow-x-auto min-w-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
                     >
                         {tabs.length === 0 ? (
-                            <span className="px-4 self-center text-xs text-gray-700">
-                                Document Viewer
+                            <span className="px-4 self-center text-xs text-foreground">
+                                Pregled dokumenta
                             </span>
                         ) : (
                             tabs.map((tab) => {
@@ -998,10 +1131,10 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                     ?.toLowerCase();
                                 const iconColor =
                                     ext === "pdf"
-                                        ? "text-red-500"
+                                        ? "text-destructive"
                                         : ext === "doc" || ext === "docx"
-                                          ? "text-blue-500"
-                                          : "text-gray-400";
+                                          ? "text-foreground"
+                                          : "text-muted-foreground/70";
                                 // Pull the doc's latest_version_number out
                                 // of the project state so the tab shows V#
                                 // whenever the doc has been edited.
@@ -1020,24 +1153,23 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                     <div
                                         key={tab.documentId}
                                         ref={(el) => {
-                                            tabItemRefs.current[
-                                                tab.documentId
-                                            ] = el;
+                                            tabItemRefs.current[tab.documentId] =
+                                                el;
                                         }}
                                         onClick={() =>
                                             switchTab(tab.documentId)
                                         }
-                                        className={`group flex items-center gap-1.5 px-3 h-full border-r border-gray-200 cursor-pointer shrink-0 max-w-[260px] transition-colors ${
+                                        className={`group flex items-center gap-1.5 px-3 h-full border-r border-border cursor-pointer shrink-0 max-w-[260px] transition-colors ${
                                             isActive
-                                                ? "bg-gray-100"
-                                                : "bg-white hover:bg-gray-50"
+                                                ? "bg-secondary"
+                                                : "bg-background hover:bg-accent"
                                         }`}
                                     >
                                         <FileText
                                             className={`h-3.5 w-3.5 shrink-0 ${iconColor}`}
                                         />
                                         <span
-                                            className={`text-xs truncate ${isActive ? "text-gray-900 font-medium" : "text-gray-500"}`}
+                                            className={`text-xs truncate ${isActive ? "text-foreground font-medium" : "text-muted-foreground"}`}
                                         >
                                             {tab.filename}
                                         </span>
@@ -1045,8 +1177,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             <span
                                                 className={`shrink-0 inline-flex items-center rounded border px-1 py-px text-[9px] font-medium ${
                                                     isActive
-                                                        ? "border-gray-200 bg-white text-gray-600"
-                                                        : "border-gray-200 bg-gray-50 text-gray-500"
+                                                        ? "border-border bg-surface-elevated text-muted-foreground"
+                                                        : "border-border bg-muted text-muted-foreground"
                                                 }`}
                                             >
                                                 V{versionNumber}
@@ -1057,7 +1189,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                                 e.stopPropagation();
                                                 closeTab(tab.documentId);
                                             }}
-                                            className={`shrink-0 transition-colors ${isActive ? "text-gray-500 hover:text-gray-700" : "text-gray-300 hover:text-gray-600"}`}
+                                            className={`shrink-0 transition-colors ${isActive ? "text-muted-foreground hover:text-foreground" : "text-muted-foreground/70 hover:text-muted-foreground"}`}
                                         >
                                             <X className="h-3 w-3" />
                                         </button>
@@ -1069,7 +1201,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                         {activeTab ? (
                             isDocxTab(activeTab.filename) ? (
-                                <DocxView
+                                <DocxViewer
                                     key={activeTab.documentId}
                                     documentId={activeTab.documentId}
                                     versionId={activeTab.versionId}
@@ -1098,6 +1230,12 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             top,
                                         )
                                     }
+                                    onSaved={(args) =>
+                                        handleDocSaved(
+                                            activeTab.documentId,
+                                            args,
+                                        )
+                                    }
                                     rounded={false}
                                     bordered={false}
                                 />
@@ -1111,15 +1249,15 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                 />
                             )
                         ) : (
-                            <div className="flex items-center justify-center h-full px-8 bg-gray-100">
+                            <div className="flex items-center justify-center h-full px-8 bg-muted">
                                 <div className="text-center space-y-3">
-                                    <p className="font-serif text-gray-700 text-xl">
-                                        Click on a document to display here.
+                                    <p className="font-serif text-foreground text-xl">
+                                        Kliknite na dokument za prikaz.
                                     </p>
-                                    <p className="font-serif text-base text-gray-500">
-                                        Pro tip: Drag a document from the
-                                        Project Explorer to the Assistant to
-                                        direct it to read or edit.
+                                    <p className="font-serif text-base text-muted-foreground">
+                                        Savjet: povucite dokument iz Projektnog
+                                        explorera u Asistenta da ga uputite na
+                                        čitanje ili uređivanje.
                                     </p>
                                 </div>
                             </div>
@@ -1136,9 +1274,10 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={handleChatDrop}
                 >
-                    <div className="h-10 flex items-center px-4 border-b border-gray-200 shrink-0">
-                        <span className="text-xs text-gray-700">
-                            Project Assistant
+                    <div className="h-10 flex items-center gap-2 px-4 border-b border-border shrink-0">
+                        <MikeIcon size={16} />
+                        <span className="text-xs text-foreground">
+                            {tProject("projectAssistantHeading")}
                         </span>
                     </div>
 
@@ -1146,15 +1285,15 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     {!chatLoaded ? (
                         <div className="flex-1 px-4 py-4 space-y-4">
                             <div className="flex justify-end">
-                                <div className="bg-gray-100 rounded-2xl p-4 w-3/4">
-                                    <div className="h-3 bg-gradient-to-r from-gray-200 via-gray-300 to-gray-200 bg-[length:200%_100%] animate-[shimmer_2s_ease-in-out_infinite] rounded w-full" />
+                                <div className="bg-muted rounded-xl p-4 w-3/4">
+                                    <div className="h-3 bg-gradient-to-r from-muted via-border to-muted bg-[length:200%_100%] animate-[shimmer_2s_ease-in-out_infinite] rounded w-full" />
                                 </div>
                             </div>
                             <div className="space-y-2">
                                 {[1, 2, 3].map((i) => (
                                     <div
                                         key={i}
-                                        className={`h-3 bg-gradient-to-r from-gray-200 via-gray-300 to-gray-200 bg-[length:200%_100%] animate-[shimmer_2s_ease-in-out_infinite] rounded ${i === 3 ? "w-4/6" : "w-full"}`}
+                                        className={`h-3 bg-gradient-to-r from-muted via-border to-muted bg-[length:200%_100%] animate-[shimmer_2s_ease-in-out_infinite] rounded ${i === 3 ? "w-4/6" : "w-full"}`}
                                     />
                                 ))}
                             </div>
@@ -1201,10 +1340,10 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                                 isResponseLoading
                                             }
                                             isError={!!(msg as any).error}
-                                            annotations={msg.annotations}
-                                            citationStatus={
-                                                msg.citationStatus
+                                            rateLimited={
+                                                !!(msg as any).rateLimited
                                             }
+                                            annotations={msg.annotations}
                                             onCitationClick={
                                                 handleCitationClick
                                             }
@@ -1222,6 +1361,28 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             isDocReloading={(docId) =>
                                                 reloadingDocIds.has(docId)
                                             }
+                                            isLast={i === lastAssistantIdx}
+                                            onShareClick={() =>
+                                                setShareOpen(true)
+                                            }
+                                            messageId={msg.id}
+                                            flagged={!!msg.flagged}
+                                            onFlagChange={(
+                                                mid,
+                                                flagged,
+                                            ) =>
+                                                setMessages((prev) =>
+                                                    prev.map((m) =>
+                                                        m.id === mid
+                                                            ? {
+                                                                  ...m,
+                                                                  flagged,
+                                                              }
+                                                            : m,
+                                                    ),
+                                                )
+                                            }
+                                            piiSessionId={piiSessionId}
                                         />
                                     ),
                                 );
@@ -1249,6 +1410,14 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 action={ownerOnlyAction ?? undefined}
                 onClose={() => setOwnerOnlyAction(null)}
             />
+            {shareOpen && (
+                <ShareChatModal
+                    chatId={chatId}
+                    chatTitle={chatTitle}
+                    onClose={() => setShareOpen(false)}
+                />
+            )}
+            {confirmDialogEl}
         </div>
     );
 }

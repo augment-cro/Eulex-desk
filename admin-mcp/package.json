@@ -1,0 +1,25 @@
+{
+  "name": "mike-admin-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "FastMCP server exposing AdminMax stats + management tools over MCP. Thin wrapper over the existing /adminmax REST API — no DB access of its own.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "fastmcp": "^4.3.2",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

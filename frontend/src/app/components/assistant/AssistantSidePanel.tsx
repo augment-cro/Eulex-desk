@@ -1,23 +1,15 @@
 "use client";
 
-import {
-    useCallback,
-    useEffect,
-    useRef,
-    useState,
-    type CSSProperties,
-} from "react";
+import { useCallback, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { DocPanel, type DocPanelMode } from "../shared/DocPanel";
+import { LegalSourcePanel } from "../shared/LegalSourcePanel";
 import type {
-    CitationAnnotation,
-    EditAnnotation,
+    CitationPinpoint,
+    LegalSource,
+    MikeCitationAnnotation,
+    MikeEditAnnotation,
 } from "../shared/types";
-import {
-    CaseLawPanel,
-    type CaseTab,
-} from "./CaseLawPanel";
-import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Tab data
@@ -45,19 +37,44 @@ export type DocumentTab = CommonTab & { kind: "document" };
 
 export type CitationTab = CommonTab & {
     kind: "citation";
-    citation: CitationAnnotation;
+    citation: MikeCitationAnnotation;
 };
 
 export type EditTab = CommonTab & {
     kind: "edit";
-    edit: EditAnnotation;
+    edit: MikeEditAnnotation;
+};
+
+/** A legal source (EU/HR/FR) — renders `LegalSourcePanel`, not `DocPanel`. */
+export type LegalSourceTab = CommonTab & {
+    kind: "legal-source";
+    source: LegalSource;
+    /** Exact cited passage to highlight (empty when opened from a chip). */
+    quote: string;
+    /**
+     * Article numbers cited for this regulation across the whole message. The
+     * panel fetches the FULL law and marks only these articles. Empty/undefined
+     * → only the clicked source's own article is marked.
+     */
+    citedArticleNumbers?: string[];
+    /**
+     * Stavak/točka pinpoint parsed from the clicked reference ("članak 38.
+     * stavak 2. točka a)"). The panel highlights it in magenta inside the
+     * (green) cited article. Null/undefined → article-level highlight only.
+     */
+    pinpoint?: CitationPinpoint | null;
+    /**
+     * Bumped on every citation click so re-clicking the same article in an
+     * already-open tab re-scrolls to it (instead of keeping the old scroll).
+     */
+    focusNonce?: number;
 };
 
 export type AssistantSidePanelTab =
     | DocumentTab
     | CitationTab
     | EditTab
-    | CaseTab;
+    | LegalSourceTab;
 
 interface Props {
     tabs: AssistantSidePanelTab[];
@@ -97,26 +114,29 @@ interface Props {
     }) => void;
     onWarningDismiss?: (tabId: string) => void;
     onScrollChange?: (tabId: string, scrollTop: number) => void;
+    /**
+     * Fires after the SuperDoc editor in a tab saves a new version. The
+     * parent repoints that tab's `versionId`/`versionNumber` so the reload
+     * shows the saved content (Bug 1 fix).
+     */
+    onSaved?: (args: {
+        documentId: string;
+        versionId: string;
+        versionNumber: number | null;
+    }) => void;
+    /**
+     * Poziva se nakon što Draft Mode edit primijeni novu verziju.
+     * Parent treba ažurirati tab versionId i bumparse refetchKey.
+     */
+    onDraftEditApplied?: (args: {
+        documentId: string;
+        versionId: string;
+        versionNumber: number | null;
+    }) => void;
 }
 
 const MIN_WIDTH = 300;
 const MAX_WIDTH_OFFSET = 56; // sidebar width
-const MIN_CHAT_WIDTH = 400;
-
-function maxPanelWidth() {
-    if (typeof window === "undefined") return 600;
-    return Math.max(
-        MIN_WIDTH,
-        window.innerWidth - MAX_WIDTH_OFFSET - MIN_CHAT_WIDTH,
-    );
-}
-
-function tabTitle(tab: AssistantSidePanelTab): string {
-    if (tab.kind === "case") {
-        return tab.caseName || tab.citation || "Case";
-    }
-    return tab.filename;
-}
 
 export function AssistantSidePanel({
     tabs,
@@ -131,14 +151,13 @@ export function AssistantSidePanel({
     onEditError,
     onWarningDismiss,
     onScrollChange,
+    onSaved,
+    onDraftEditApplied,
 }: Props) {
     const panelRef = useRef<HTMLDivElement>(null);
     const [panelWidth, setPanelWidth] = useState(() =>
         typeof window !== "undefined"
-            ? Math.min(
-                  maxPanelWidth(),
-                  Math.round((window.innerWidth - MAX_WIDTH_OFFSET) / 2),
-              )
+            ? Math.round((window.innerWidth - MAX_WIDTH_OFFSET) / 2)
             : 600,
     );
 
@@ -154,9 +173,10 @@ export function AssistantSidePanel({
 
             const onMouseMove = (ev: MouseEvent) => {
                 const delta = dragStartX.current - ev.clientX;
+                const maxWidth = window.innerWidth - MAX_WIDTH_OFFSET - 200;
                 setPanelWidth(
                     Math.min(
-                        maxPanelWidth(),
+                        maxWidth,
                         Math.max(MIN_WIDTH, dragStartWidth.current + delta),
                     ),
                 );
@@ -176,80 +196,53 @@ export function AssistantSidePanel({
         [panelWidth],
     );
 
-    useEffect(() => {
-        const onResize = () => {
-            setPanelWidth((width) =>
-                Math.min(maxPanelWidth(), Math.max(MIN_WIDTH, width)),
-            );
-        };
-        window.addEventListener("resize", onResize);
-        onResize();
-        return () => window.removeEventListener("resize", onResize);
-    }, []);
-
     const active = tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null;
     if (!active) return null;
 
     return (
         <div
             ref={panelRef}
-            className={cn(
-                "relative flex h-full w-full shrink-0 flex-col md:my-3 md:mr-3 md:h-[calc(100%-1.5rem)] md:w-[var(--assistant-panel-width)]",
-                "rounded-2xl border border-white/70 bg-white shadow-[0_6px_18px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.9),inset_0_-10px_24px_rgba(255,255,255,0.18),inset_1px_0_0_rgba(255,255,255,0.5)] backdrop-blur-2xl overflow-hidden",
-            )}
-            style={{
-                "--assistant-panel-width": `${panelWidth}px`,
-            } as CSSProperties}
+            className="flex h-full shrink-0 flex-col bg-background relative border-l border-border"
+            style={{ width: panelWidth }}
         >
             {/* Drag handle */}
             <div
                 onMouseDown={onMouseDown}
-                className={cn(
-                    "absolute left-0 top-0 z-10 hidden h-full w-1 cursor-col-resize transition-colors md:block",
-                    "hover:bg-blue-400/70",
-                )}
+                className="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-ring transition-colors z-10"
                 style={{ marginLeft: -2 }}
             />
 
             {/* Tab strip (Chrome-style) */}
-            <div
-                className={cn(
-                    "flex items-end gap-1 px-1 pt-2",
-                    "bg-gray-200/80",
-                )}
-            >
-                <div className="flex-1 flex items-end gap-1 overflow-hidden px-2">
+            <div className="flex items-end gap-1 pr-2 pt-2 bg-muted">
+                <div className="flex-1 flex items-end gap-1 overflow-x-auto pl-2 pr-2">
                     {tabs.map((tab) => {
                         const isActive = tab.id === active.id;
                         const showVersionBadge =
-                            tab.kind !== "case" &&
                             typeof tab.versionNumber === "number" &&
                             Number.isFinite(tab.versionNumber) &&
                             tab.versionNumber > 1;
-                        const title = tabTitle(tab);
                         return (
                             <div
                                 key={tab.id}
                                 onClick={() => onActivateTab(tab.id)}
-                                className={cn(
-                                    "group relative flex items-center gap-1.5 pl-3 pr-1.5 h-8 min-w-0 max-w-[220px] rounded-t-lg cursor-pointer select-none transition-colors",
+                                className={`group relative flex items-center gap-1.5 pl-3 pr-1.5 h-8 min-w-0 max-w-[220px] rounded-t-lg cursor-pointer select-none transition-colors ${
                                     isActive
-                                        ? "z-20 bg-white text-gray-800 before:content-[''] before:absolute before:bottom-0 before:-left-2 before:z-20 before:h-2 before:w-2 before:rounded-br-lg before:shadow-[4px_4px_0_4px_white] before:transition-shadow after:content-[''] after:absolute after:bottom-0 after:-right-2 after:z-20 after:h-2 after:w-2 after:rounded-bl-lg after:shadow-[-4px_4px_0_4px_white] after:transition-shadow"
-                                        : "z-10 bg-gray-100 text-gray-600 hover:bg-gray-100 before:content-[''] before:absolute before:bottom-0 before:-left-2 before:h-2 before:w-2 before:rounded-br-lg before:shadow-[4px_4px_0_4px_#f3f4f6] before:transition-shadow after:content-[''] after:absolute after:bottom-0 after:-right-2 after:h-2 after:w-2 after:rounded-bl-lg after:shadow-[-4px_4px_0_4px_#f3f4f6] after:transition-shadow",
-                                )}
+                                        ? "bg-background text-foreground before:content-[''] before:absolute before:bottom-0 before:-left-2 before:w-2 before:h-2 before:bg-[radial-gradient(circle_at_top_left,transparent_8px,var(--background)_9px)] after:content-[''] after:absolute after:bottom-0 after:-right-2 after:w-2 after:h-2 after:bg-[radial-gradient(circle_at_top_right,transparent_8px,var(--background)_9px)]"
+                                        : "bg-secondary/70 text-muted-foreground hover:bg-secondary"
+                                }`}
                             >
                                 <span
                                     className={`min-w-0 flex-1 truncate text-xs ${isActive ? "font-medium" : "font-normal"}`}
-                                    title={title}
+                                    title={tab.filename}
                                 >
-                                    {title}
+                                    {tab.filename}
                                 </span>
                                 {showVersionBadge && (
                                     <span
                                         className={`shrink-0 inline-flex items-center rounded border px-1 py-px text-[9px] font-medium ${
                                             isActive
-                                                ? "border-gray-200 bg-white text-gray-600"
-                                                : "border-gray-300 bg-white/70 text-gray-500"
+                                                ? "border-border bg-surface-elevated text-muted-foreground"
+                                                : "border-border bg-surface-elevated/70 text-muted-foreground"
                                         }`}
                                     >
                                         V{tab.versionNumber}
@@ -260,7 +253,7 @@ export function AssistantSidePanel({
                                         e.stopPropagation();
                                         onCloseTab(tab.id);
                                     }}
-                                    className="shrink-0 rounded-full p-0.5 text-gray-400 hover:text-gray-700"
+                                    className="shrink-0 rounded-full p-0.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
                                 >
                                     <X className="h-3 w-3" />
                                 </button>
@@ -270,7 +263,7 @@ export function AssistantSidePanel({
                 </div>
                 <button
                     onClick={onCloseAll}
-                    className="shrink-0 mb-1 ml-1 rounded-lg p-1.5 text-gray-400 hover:text-gray-700"
+                    className="shrink-0 mb-1 ml-1 rounded-lg p-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
                     title="Close panel"
                 >
                     <X className="h-4 w-4" />
@@ -283,16 +276,19 @@ export function AssistantSidePanel({
             <div className="flex-1 min-h-0 relative">
                 {tabs.map((tab) => {
                     const isActive = tab.id === active.id;
-                    if (tab.kind === "case") {
+                    if (tab.kind === "legal-source") {
                         return (
                             <div
                                 key={tab.id}
                                 className={`absolute inset-0 flex flex-col ${isActive ? "" : "invisible pointer-events-none"}`}
                                 aria-hidden={!isActive}
                             >
-                                <CaseLawPanel
-                                    tab={tab}
-                                    compactActions={panelWidth < 600}
+                                <LegalSourcePanel
+                                    source={tab.source}
+                                    quote={tab.quote}
+                                    citedArticleNumbers={tab.citedArticleNumbers}
+                                    pinpoint={tab.pinpoint}
+                                    focusNonce={tab.focusNonce}
                                 />
                             </div>
                         );
@@ -337,6 +333,16 @@ export function AssistantSidePanel({
                                 initialScrollTop={tab.initialScrollTop ?? null}
                                 onScrollChange={(scrollTop) =>
                                     onScrollChange?.(tab.id, scrollTop)
+                                }
+                                onSaved={(args) =>
+                                    onSaved?.({
+                                        documentId: tab.documentId,
+                                        versionId: args.versionId,
+                                        versionNumber: args.versionNumber,
+                                    })
+                                }
+                                onDraftEditApplied={(args) =>
+                                    onDraftEditApplied?.(args)
                                 }
                             />
                         </div>

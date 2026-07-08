@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/willchen96/mike/schemas/context-pack.schema.json",
+  "title": "Eulex Desk Custom Context Pack",
+  "description": "Portable, versioned context-pack (YAML) for a Eulex Desk Custom Context. Carries source references and instructions — never fetched legal text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "sources"],
+  "properties": {
+    "schema_version": {
+      "description": "Pack schema version. Importers reject an unknown version.",
+      "type": "integer",
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": ["string", "null"]
+    },
+    "instructions_md": {
+      "description": "Markdown instructions (the context's house view).",
+      "type": ["string", "null"]
+    },
+    "sources": {
+      "description": "Source references only — kind/ref identify the source; content is fetched on import/use, never embedded in the pack.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref", "mode"],
+        "properties": {
+          "kind": {
+            "enum": ["legal_instrument", "legal_article", "caselaw", "web"]
+          },
+          "ref": {
+            "description": "Stable reference: CELEX id (optionally with #article fragment), caselaw identifier, or web URL.",
+            "type": "string",
+            "minLength": 1
+          },
+          "mode": {
+            "description": "pinned = always in context (article-level sources only); retrieved = fetched on demand.",
+            "enum": ["pinned", "retrieved"]
+          },
+          "retrieval_note": {
+            "type": ["string", "null"]
+          },
+          "label": {
+            "type": ["string", "null"]
+          },
+          "citation": {
+            "type": ["string", "null"]
+          }
+        }
+      }
+    }
+  }
+}

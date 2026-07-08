@@ -5,9 +5,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Expand } from "lucide-react";
 import type { ColumnConfig, TabularCell as TCell } from "../shared/types";
-import { preprocessCitations, type ParsedCitation } from "./citation-utils";
+import { prepareTabularMarkdown, parseInlineCodeToken, type ParsedCitation } from "./citation-utils";
 import { getPillClass } from "./pillUtils";
-import { SkeletonLine } from "../shared/TablePrimitive";
+import { useTranslations } from "next-intl";
 
 interface Props {
     cell: TCell;
@@ -17,19 +17,11 @@ interface Props {
 }
 
 const FLAG_STYLES = {
-    green: "bg-green-500",
-    grey: "bg-gray-400",
-    yellow: "bg-amber-400",
-    red: "bg-red-500",
+    green: "bg-success",
+    grey: "bg-muted-foreground/70",
+    yellow: "bg-warning",
+    red: "bg-destructive",
 } as const;
-
-function TabularCellSkeleton() {
-    return (
-        <div className="flex h-10 items-center px-2">
-            <SkeletonLine className="h-3.5 w-full" />
-        </div>
-    );
-}
 
 // Replace citations and pills with inline-code tokens so ReactMarkdown passes
 // them through its `code` component, where we render the final UI.
@@ -38,15 +30,7 @@ function preprocessCellMarkdown(text: string): {
     citations: ParsedCitation[];
     pills: string[];
 } {
-    const { processed: withCits, citations } = preprocessCitations(text);
-    const pills: string[] = [];
-    let out = withCits.replace(/\[\[([^\]]+)\]\]/g, (_, content) => {
-        const idx = pills.length;
-        pills.push(content);
-        return `\`§p${idx}§\`\u200B`;
-    });
-    out = out.replace(/§(\d+)§/g, (_, idx) => `\`§c${idx}§\`\u200B`);
-    return { processed: out, citations, pills };
+    return prepareTabularMarkdown(text);
 }
 
 function CellMarkdown({
@@ -92,14 +76,14 @@ function CellMarkdown({
                         href={href}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-blue-600 hover:text-blue-700 underline"
+                        className="text-foreground underline underline-offset-3"
                         {...props}
                     >
                         {children}
                     </a>
                 ),
                 code: ({ node, children, ...props }) => {
-                    const t = String(children);
+                    const t = parseInlineCodeToken(children);
                     const citMatch = t.match(/^§c(\d+)§$/);
                     if (citMatch) {
                         const idx = parseInt(citMatch[1]);
@@ -119,7 +103,7 @@ function CellMarkdown({
                                             onExpand();
                                         }
                                     }}
-                                    className="mx-0.5 inline-flex items-center justify-center rounded-full bg-gray-200 w-3.5 h-3.5 text-[9px] font-medium text-gray-700 align-super cursor-pointer hover:bg-gray-300 transition-colors"
+                                    className="mx-0.5 inline-flex items-center justify-center rounded-full bg-secondary w-3.5 h-3.5 text-[9px] font-medium text-foreground align-super cursor-pointer hover:bg-accent transition-colors"
                                 >
                                     {idx + 1}
                                 </span>
@@ -141,7 +125,7 @@ function CellMarkdown({
                     }
                     return (
                         <code
-                            className="bg-gray-100 px-1 py-0.5 rounded text-[11px] font-mono"
+                            className="bg-muted px-1 py-0.5 rounded text-[11px] font-mono"
                             {...props}
                         >
                             {children}
@@ -161,6 +145,7 @@ export function TabularCell({
     onExpand,
     onCitationClick,
 }: Props) {
+    const t = useTranslations("tabularReview");
     const [inlineExpanded, setInlineExpanded] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -180,13 +165,17 @@ export function TabularCell({
     }, [inlineExpanded]);
 
     if (cell.status === "generating") {
-        return <TabularCellSkeleton />;
+        return (
+            <div className="h-10 px-2 flex items-center">
+                <div className="h-4 w-full rounded bg-muted animate-pulse" />
+            </div>
+        );
     }
 
     if (cell.status === "error") {
         return (
-            <div className="h-10 flex items-center justify-center text-gray-300">
-                <AlertCircle className="h-4 w-4 text-red-300" />
+            <div className="h-10 flex items-center justify-center text-muted-foreground/70">
+                <AlertCircle className="h-4 w-4 text-destructive/70" />
             </div>
         );
     }
@@ -216,7 +205,7 @@ export function TabularCell({
         <div ref={containerRef} className="relative">
             {/* Normal cell row — always visible, preserves table layout */}
             <div
-                className="group relative h-10 px-2 flex items-center text-xs text-gray-800 leading-relaxed cursor-pointer hover:bg-gray-50 transition-colors"
+                className="group relative h-10 px-2 flex items-center text-xs text-foreground leading-relaxed cursor-pointer hover:bg-accent transition-colors"
                 onClick={() => setInlineExpanded((v) => !v)}
             >
                 {cell.content.flag && (
@@ -240,8 +229,8 @@ export function TabularCell({
 
             {/* Inline expanded overlay — absolutely positioned so it overlays without disrupting table layout */}
             {inlineExpanded && (
-                <div className="absolute left-0 top-0 z-50 w-full bg-white border border-gray-200 shadow-lg rounded-sm">
-                    <div className="relative p-2 pr-4 text-xs text-gray-800 leading-relaxed">
+                <div className="absolute left-0 top-0 z-50 flex max-h-[60vh] w-full flex-col rounded-sm border border-border bg-surface-elevated shadow-lg">
+                    <div className="relative min-h-0 flex-1 overflow-y-auto p-2 pr-4 text-xs text-foreground leading-relaxed">
                         {cell.content.flag && (
                             <span
                                 className={`absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full ${FLAG_STYLES[cell.content.flag]}`}
@@ -257,13 +246,13 @@ export function TabularCell({
                             onExpand={handleSeeDetails}
                         />
                     </div>
-                    <div className="px-2 py-1.5 flex items-center justify-end">
+                    <div className="shrink-0 border-t border-border px-2 py-1.5 flex items-center justify-end">
                         <button
                             onClick={handleSeeDetails}
-                            className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 transition-colors"
+                            className="flex items-center gap-1 text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
                         >
                             <Expand className="h-3 w-3" />
-                            See details
+                            {t("seeDetails")}
                         </button>
                     </div>
                 </div>

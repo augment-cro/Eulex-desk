@@ -1,0 +1,4550 @@
+{
+    "description": "Eksterni izvori za web search - agent bira relevantne izvore prema pitanju",
+    "note": "NE koristiti za: EUR-Lex case law, legal acts, treaties, consolidated (to imamo u bazi)",
+    "sources": {
+        "hr_official": {
+            "name": "Hrvatski službeni izvori (svi)",
+            "description": "STARTER lista — Vlada, Sabor, Narodne novine, Porezna uprava, ministarstva, zavodi, registri i sudovi. Dopuni/uredi domene po potrebi.",
+            "domains": [
+                "gov.hr",
+                "vlada.gov.hr",
+                "sabor.hr",
+                "narodne-novine.nn.hr",
+                "porezna-uprava.gov.hr",
+                "mfin.gov.hr",
+                "carina.gov.hr",
+                "hzmo.hr",
+                "hzzo.hr",
+                "mirovinsko.hr",
+                "mrosp.gov.hr",
+                "sudreg.pravosudje.hr",
+                "fina.hr",
+                "dzs.gov.hr",
+                "hnb.hr",
+                "usud.hr",
+                "vsrh.hr",
+                "pravosudje.gov.hr",
+                "mingor.gov.hr",
+                "hgk.hr"
+            ],
+            "use_when": [
+                "službeni podaci",
+                "državna tijela",
+                "propisi i procedure",
+                "obrasci",
+                "porezne stope i rokovi"
+            ],
+            "topics": [
+                "hr",
+                "official"
+            ]
+        },
+        "hr_tax": {
+            "name": "Porezi / financije / carina",
+            "description": "Porezna uprava, Ministarstvo financija, Carinska uprava.",
+            "domains": [
+                "porezna-uprava.gov.hr",
+                "mfin.gov.hr",
+                "carina.gov.hr"
+            ],
+            "use_when": [
+                "porezi",
+                "PDV",
+                "porez na dohodak",
+                "carina",
+                "porezne stope",
+                "porezni rokovi"
+            ],
+            "topics": [
+                "hr",
+                "tax"
+            ]
+        },
+        "hr_labor": {
+            "name": "Rad / mirovinsko / zdravstveno",
+            "description": "HZMO, HZZO, mirovinsko, Ministarstvo rada, mirovinskoga sustava, obitelji i socijalne politike.",
+            "domains": [
+                "hzmo.hr",
+                "hzzo.hr",
+                "mirovinsko.hr",
+                "mrosp.gov.hr"
+            ],
+            "use_when": [
+                "radni odnosi",
+                "mirovine",
+                "mirovinsko osiguranje",
+                "zdravstveno osiguranje",
+                "doprinosi",
+                "socijalna prava"
+            ],
+            "topics": [
+                "hr",
+                "labor"
+            ]
+        },
+        "hr_company": {
+            "name": "Trgovačka društva / registri / statistika",
+            "description": "Sudski registar, FINA, Državni zavod za statistiku, Hrvatska gospodarska komora.",
+            "domains": [
+                "sudreg.pravosudje.hr",
+                "fina.hr",
+                "dzs.gov.hr",
+                "hgk.hr"
+            ],
+            "use_when": [
+                "trgovačka društva",
+                "sudski registar",
+                "osnivanje tvrtke",
+                "financijska izvješća",
+                "statistički podaci"
+            ],
+            "topics": [
+                "hr",
+                "company"
+            ]
+        },
+        "hr_courts": {
+            "name": "Sudovi / pravosuđe",
+            "description": "Ustavni sud, Vrhovni sud, Ministarstvo pravosuđa i uprave.",
+            "domains": [
+                "usud.hr",
+                "vsrh.hr",
+                "pravosudje.gov.hr",
+                "sudovi.hr"
+            ],
+            "use_when": [
+                "sudska praksa",
+                "presude",
+                "ustavni sud",
+                "vrhovni sud",
+                "pravosuđe"
+            ],
+            "topics": [
+                "hr",
+                "courts"
+            ]
+        },
+        "think_tank": {
+            "domain": "europarl.europa.eu/thinktank",
+            "name": "EU Parliament Think Tank",
+            "description": "Studije, briefings, at-a-glance dokumenti o EU politikama. Analize zakonodavnih prijedloga, impact assessments.",
+            "use_when": [
+                "policy analysis",
+                "legislative background",
+                "impact assessment",
+                "briefings",
+                "studies"
+            ],
+            "topics": [
+                "general"
+            ]
+        },
+        "legislative_observatory": {
+            "domain": "oeil.secure.europarl.europa.eu",
+            "name": "Legislative Observatory (OEIL)",
+            "description": "Praćenje zakonodavnog procesa - status prijedloga, glasanja, amendments. Timeline zakonodavnih inicijativa.",
+            "use_when": [
+                "legislative procedure",
+                "voting records",
+                "amendments",
+                "proposal status",
+                "legislative timeline"
+            ],
+            "topics": [
+                "general"
+            ]
+        },
+        "eu_summaries": {
+            "domain": "eur-lex.europa.eu/browse/summaries.html",
+            "name": "EUR-Lex Summaries",
+            "description": "Sažeci EU zakonodavstva - jednostavna objašnjenja propisa.",
+            "use_when": [
+                "explain legislation",
+                "summary needed",
+                "simple explanation",
+                "overview"
+            ],
+            "topics": [
+                "general"
+            ]
+        },
+        "digital_strategy": {
+            "domain": "digital-strategy.ec.europa.eu",
+            "name": "EU Digital Strategy",
+            "description": "Digital strategy dokumenti, akcijski planovi, policy papers. AI strategy, data strategy, cybersecurity.",
+            "use_when": [
+                "digital policy",
+                "AI strategy",
+                "data strategy",
+                "cybersecurity policy",
+                "digital transformation"
+            ],
+            "topics": [
+                "AI",
+                "cybersecurity",
+                "digital"
+            ]
+        },
+        "data_act": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/data-act",
+            "name": "EU Data Act",
+            "description": "Regulation 2023/2854 – data sharing, IoT data access, B2B/B2G obligations, cloud switching.",
+            "use_when": [
+                "data sharing",
+                "IoT data",
+                "B2B data access",
+                "cloud switching",
+                "Data Act"
+            ],
+            "topics": [
+                "digital",
+                "data"
+            ]
+        },
+        "data_governance_act": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/data-governance-act",
+            "name": "Data Governance Act",
+            "description": "Regulation 2022/868 – data intermediaries, data altruism, data sharing services.",
+            "use_when": [
+                "data intermediaries",
+                "data altruism",
+                "data governance",
+                "DGA"
+            ],
+            "topics": [
+                "digital",
+                "data"
+            ]
+        },
+        "dora": {
+            "domain": "finance.ec.europa.eu/financial-services-policy-and-regulation/digital-operational-resilience-act_en",
+            "name": "DORA Regulation",
+            "description": "Regulation 2022/2554 – ICT risk management, incident reporting, third-party ICT risk.",
+            "use_when": [
+                "DORA",
+                "ICT risk",
+                "outsourcing ICT",
+                "cloud providers financial sector",
+                "digital operational resilience"
+            ],
+            "topics": [
+                "finance",
+                "cybersecurity"
+            ]
+        },
+        "cloud_policy": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/cloud-and-edge",
+            "name": "EU Cloud & Edge Policy",
+            "description": "EU cloud strategy, switching, interoperability, edge computing initiatives.",
+            "use_when": [
+                "cloud switching",
+                "vendor lock-in",
+                "cloud compliance",
+                "edge computing"
+            ],
+            "topics": [
+                "digital",
+                "cloud"
+            ]
+        },
+        "gpsr": {
+            "domain": "commission.europa.eu/business-economy-euro/product-safety-and-liability/product-safety_en",
+            "name": "General Product Safety Regulation",
+            "description": "Regulation 2023/988 – consumer product safety, recall obligations, market surveillance.",
+            "use_when": [
+                "product safety",
+                "consumer products",
+                "recall obligations",
+                "GPSR"
+            ],
+            "topics": [
+                "product",
+                "consumer"
+            ]
+        },
+        "product_liability": {
+            "domain": "commission.europa.eu/business-economy-euro/product-safety-and-liability/product-liability_en",
+            "name": "EU Product Liability",
+            "description": "Product liability regime reform including AI systems liability.",
+            "use_when": [
+                "product liability",
+                "AI liability",
+                "defective products",
+                "manufacturer liability"
+            ],
+            "topics": [
+                "AI",
+                "product",
+                "liability"
+            ]
+        },
+        "trade_defence": {
+            "domain": "policy.trade.ec.europa.eu/trade-defence_en",
+            "name": "EU Trade Defence Instruments",
+            "description": "Anti-dumping, anti-subsidy, safeguard measures, import duties.",
+            "use_when": [
+                "anti-dumping",
+                "trade defence",
+                "import duties",
+                "safeguard measures"
+            ],
+            "topics": [
+                "trade",
+                "competition"
+            ]
+        },
+        "cjeu_press": {
+            "domain": "curia.europa.eu/jcms/jcms/Jo2_7032",
+            "name": "CJEU Press Releases",
+            "description": "Sažeci presuda Suda EU - summaries only, not full judgments.",
+            "use_when": [
+                "recent CJEU case",
+                "court summary",
+                "judgment overview",
+                "CJEU press"
+            ],
+            "topics": [
+                "case_law",
+                "general"
+            ]
+        },
+        "ec_press": {
+            "domain": "ec.europa.eu/commission/presscorner",
+            "name": "European Commission Press Corner",
+            "description": "Press releases, statements, speeches. Najnovije vijesti o EU odlukama i inicijativama.",
+            "use_when": [
+                "recent news",
+                "press release",
+                "commission statement",
+                "announcement",
+                "latest developments"
+            ],
+            "topics": [
+                "general"
+            ]
+        },
+        "competition_general": {
+            "domain": "competition-policy.ec.europa.eu",
+            "name": "DG Competition",
+            "description": "Competition policy, antitrust decisions, merger control, state aid.",
+            "use_when": [
+                "antitrust",
+                "competition law",
+                "merger",
+                "state aid",
+                "cartel",
+                "market dominance"
+            ],
+            "topics": [
+                "competition"
+            ]
+        },
+        "competition_antitrust": {
+            "domain": "competition-policy.ec.europa.eu/antitrust-and-cartels/publications_en",
+            "name": "Antitrust Publications",
+            "description": "Antitrust i cartel publikacije, odluke, priopćenja.",
+            "use_when": [
+                "antitrust publications",
+                "cartel decisions",
+                "anticompetitive practices"
+            ],
+            "topics": [
+                "competition"
+            ]
+        },
+        "competition_mergers": {
+            "domain": "competition-policy.ec.europa.eu/mergers/publications_en",
+            "name": "Merger Publications",
+            "description": "Merger control publikacije i odluke.",
+            "use_when": [
+                "merger control",
+                "concentration decisions",
+                "M&A"
+            ],
+            "topics": [
+                "competition"
+            ]
+        },
+        "competition_state_aid": {
+            "domain": "competition-policy.ec.europa.eu/state-aid/publications_en",
+            "name": "State Aid Publications",
+            "description": "State aid publikacije, guidelines, odluke.",
+            "use_when": [
+                "state aid",
+                "subsidies",
+                "government support"
+            ],
+            "topics": [
+                "competition"
+            ]
+        },
+        "competition_cases": {
+            "domain": "competition-cases.ec.europa.eu",
+            "name": "Competition Cases Database",
+            "description": "Pretraga competition slučajeva - antitrust, mergers, state aid.",
+            "use_when": [
+                "competition case search",
+                "specific case lookup"
+            ],
+            "topics": [
+                "competition"
+            ]
+        },
+        "dma_cases": {
+            "domain": "digital-markets-act-cases.ec.europa.eu",
+            "name": "DMA Cases",
+            "description": "Digital Markets Act slučajevi - gatekeeper decisions, investigations.",
+            "use_when": [
+                "DMA enforcement",
+                "gatekeeper",
+                "Big Tech regulation",
+                "digital markets"
+            ],
+            "topics": [
+                "competition",
+                "digital"
+            ]
+        },
+        "edpb_guidelines": {
+            "domain": "edpb.europa.eu/our-work-tools/general-guidance/guidelines-recommendations-best-practices_en",
+            "name": "EDPB Guidelines",
+            "description": "GDPR guidelines, recommendations, best practices od European Data Protection Board.",
+            "use_when": [
+                "GDPR interpretation",
+                "data protection guidelines",
+                "DPA guidance",
+                "privacy best practices"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "edpb_decisions": {
+            "domain": "edpb.europa.eu/our-work-tools/consistency-findings/register-for-decisions_en",
+            "name": "EDPB Decisions Register",
+            "description": "Registar EDPB odluka - Art. 65 decisions, disputes between DPAs.",
+            "use_when": [
+                "EDPB decisions",
+                "DPA disputes",
+                "binding decisions",
+                "consistency mechanism"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "edps_factsheets": {
+            "domain": "edps.europa.eu/press-publications/publications/factsheets_en",
+            "name": "EDPS Factsheets",
+            "description": "EDPS factsheets - kratka objašnjenja data protection tema.",
+            "use_when": [
+                "data protection factsheet",
+                "EDPS explanation",
+                "privacy overview"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "edps_opinions": {
+            "domain": "edps.europa.eu/data-protection/our-work/our-work-by-type/opinions_en",
+            "name": "EDPS Opinions",
+            "description": "EDPS opinions na predloženo zakonodavstvo.",
+            "use_when": [
+                "EDPS opinion",
+                "data protection legislative opinion"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "your_europe_gdpr": {
+            "domain": "europa.eu/youreurope/business/dealing-with-customers/data-protection/data-protection-gdpr",
+            "name": "Your Europe - Data Protection (GDPR)",
+            "description": "Practical GDPR guidance for businesses - compliance, rights, obligations. Simple explanations for SMEs.",
+            "use_when": [
+                "GDPR compliance",
+                "business obligations",
+                "practical GDPR guide",
+                "SME data protection",
+                "GDPR simplified"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "edps_faq": {
+            "domain": "edps.europa.eu/frequently-asked-questions_en",
+            "name": "EDPS FAQ",
+            "description": "Često postavljana pitanja o zaštiti podataka od EDPS-a.",
+            "use_when": [
+                "GDPR FAQ",
+                "data protection questions",
+                "privacy FAQ"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "edps_formal_comments": {
+            "domain": "edps.europa.eu/data-protection/our-work/our-work-by-type/formal-comments_en",
+            "name": "EDPS Formal Comments",
+            "description": "Formalni komentari EDPS-a na zakonodavne prijedloge.",
+            "use_when": [
+                "EDPS comments",
+                "legislative feedback",
+                "privacy regulation comments"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "edps_joint_opinions": {
+            "domain": "edps.europa.eu/data-protection/our-work/our-work-by-type/edps-edpb-joint-opinions_en",
+            "name": "EDPS-EDPB Joint Opinions",
+            "description": "Zajednička mišljenja EDPS-a i EDPB-a.",
+            "use_when": [
+                "joint opinions",
+                "EDPS EDPB",
+                "coordinated guidance"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "edps_ai": {
+            "domain": "edps.europa.eu/data-protection/our-work/subjects/artificial-intelligence_en",
+            "name": "EDPS AI & Data Protection",
+            "description": "EDPS materijali o AI i zaštiti podataka.",
+            "use_when": [
+                "AI data protection",
+                "AI privacy",
+                "AI GDPR"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "AI"
+            ]
+        },
+        "edpb_binding_decisions": {
+            "domain": "edpb.europa.eu/our-work-tools/consistency-findings/binding-decisions_en",
+            "name": "EDPB Binding Decisions",
+            "description": "Obvezujuće odluke EDPB-a u prekograničnim slučajevima.",
+            "use_when": [
+                "binding decisions",
+                "cross-border cases",
+                "DPA disputes",
+                "Art. 65 GDPR"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "edpb_documents": {
+            "domain": "edpb.europa.eu/our-work-tools/documents/our-documents_en",
+            "name": "EDPB Documents",
+            "description": "Svi EDPB dokumenti - smjernice, mišljenja, izvješća.",
+            "use_when": [
+                "EDPB documents",
+                "all guidelines",
+                "EDPB publications"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "enforcement_tracker": {
+            "domain": "enforcementtracker.com",
+            "name": "GDPR Enforcement Tracker",
+            "description": "Pregled GDPR kazni i enforcement akcija po zemljama. Statistike i trendovi.",
+            "use_when": [
+                "GDPR fines",
+                "enforcement statistics",
+                "penalty amounts",
+                "DPA enforcement",
+                "GDPR sanctions"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "dpa_austria": {
+            "domain": "ris.bka.gv.at",
+            "name": "Austrian Data Protection Decisions (RIS)",
+            "description": "Austrijski RIS - pravna baza s odlukama o zaštiti podataka.",
+            "use_when": [
+                "Austrian DPA",
+                "DSB Austria",
+                "Austria GDPR"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "national"
+            ]
+        },
+        "dpa_belgium": {
+            "domain": "autoriteprotectiondonnees.be/citoyen/publications",
+            "name": "Belgian DPA Publications",
+            "description": "Belgijski DPA - sve publikacije i odluke.",
+            "use_when": [
+                "Belgian DPA",
+                "APD decisions",
+                "Belgium GDPR"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "national"
+            ]
+        },
+        "dpa_croatia": {
+            "domain": "azop.hr/rjesenja",
+            "name": "Croatian DPA Decisions (AZOP)",
+            "description": "Hrvatske AZOP odluke i rješenja.",
+            "use_when": [
+                "Croatian DPA",
+                "AZOP decisions",
+                "Croatia GDPR",
+                "Hrvatska zaštita podataka"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "national"
+            ]
+        },
+        "dpa_croatia_opinions": {
+            "domain": "azop.hr/misljenja",
+            "name": "Croatian DPA Opinions (AZOP)",
+            "description": "AZOP mišljenja o zaštiti podataka.",
+            "use_when": [
+                "AZOP opinions",
+                "Croatian guidance",
+                "AZOP mišljenja"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "national"
+            ]
+        },
+        "dpa_denmark": {
+            "domain": "datatilsynet.dk/afgoerelser",
+            "name": "Danish DPA Decisions",
+            "description": "Danski Datatilsynet odluke.",
+            "use_when": [
+                "Danish DPA",
+                "Datatilsynet",
+                "Denmark GDPR"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "national"
+            ]
+        },
+        "dpa_greece": {
+            "domain": "dpa.gr/el/enimerwtiko/praksisArxis",
+            "name": "Greek DPA Decisions",
+            "description": "Grčki DPA (HDPA) odluke.",
+            "use_when": [
+                "Greek DPA",
+                "HDPA decisions",
+                "Greece GDPR"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "national"
+            ]
+        },
+        "dpa_hungary": {
+            "domain": "naih.hu/hatarozatok-vegzesek",
+            "name": "Hungarian DPA Decisions (NAIH)",
+            "description": "Mađarski NAIH odluke.",
+            "use_when": [
+                "Hungarian DPA",
+                "NAIH decisions",
+                "Hungary GDPR"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "national"
+            ]
+        },
+        "dpa_spain": {
+            "domain": "aepd.es/informes-y-resoluciones/resoluciones",
+            "name": "Spanish DPA Resolutions (AEPD)",
+            "description": "Španjolski AEPD rezolucije.",
+            "use_when": [
+                "Spanish DPA",
+                "AEPD resolutions",
+                "Spain GDPR"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "national"
+            ]
+        },
+        "dpa_poland": {
+            "domain": "orzeczenia.uodo.gov.pl/search",
+            "name": "Polish DPA Decisions (UODO)",
+            "description": "Poljski UODO odluke.",
+            "use_when": [
+                "Polish DPA",
+                "UODO decisions",
+                "Poland GDPR"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy",
+                "national"
+            ]
+        },
+        "eba_publications": {
+            "domain": "eba.europa.eu/publications-and-media/publications",
+            "name": "EBA Publications",
+            "description": "EBA publikacije - guidelines, reports, opinions o bankarskoj regulativi.",
+            "use_when": [
+                "EBA guidelines",
+                "banking regulation",
+                "CRD",
+                "CRR",
+                "bank supervision",
+                "prudential"
+            ],
+            "topics": [
+                "banking",
+                "finance"
+            ]
+        },
+        "eba_single_rulebook": {
+            "domain": "eba.europa.eu/regulation-and-policy/single-rulebook/interactive-single-rulebook",
+            "name": "EBA Single Rulebook",
+            "description": "Interaktivni Single Rulebook - CRD/CRR članci s Q&A i smjernicama.",
+            "use_when": [
+                "single rulebook",
+                "CRD article",
+                "CRR article",
+                "bank capital",
+                "liquidity requirements"
+            ],
+            "topics": [
+                "banking",
+                "finance"
+            ]
+        },
+        "eba_guidelines": {
+            "domain": "eba.europa.eu/sites/default/files/documents",
+            "name": "EBA Guidelines Documents",
+            "description": "EBA smjernice i dokumenti - PDF verzije.",
+            "use_when": [
+                "EBA guidelines PDF",
+                "outsourcing guidelines",
+                "ICT guidelines"
+            ],
+            "topics": [
+                "banking",
+                "finance"
+            ]
+        },
+        "eba_mifid": {
+            "domain": "eba.europa.eu/regulation-and-policy/single-rulebook/search",
+            "name": "EBA MiFID II Search",
+            "description": "Pretraga MiFID II pitanja i odgovora.",
+            "use_when": [
+                "MiFID II",
+                "investment services",
+                "financial instruments"
+            ],
+            "topics": [
+                "banking",
+                "finance",
+                "investment"
+            ]
+        },
+        "eba_psd2": {
+            "domain": "eba.europa.eu",
+            "name": "EBA PSD2 Resources",
+            "description": "EBA resursi za Payment Services Directive (PSD2).",
+            "use_when": [
+                "PSD2",
+                "payment services",
+                "open banking",
+                "strong authentication"
+            ],
+            "topics": [
+                "banking",
+                "finance",
+                "payments"
+            ]
+        },
+        "enisa_publications": {
+            "domain": "enisa.europa.eu/publications",
+            "name": "ENISA Publications",
+            "description": "ENISA publikacije - cybersecurity smjernice, izvješća, strategic documents.",
+            "use_when": [
+                "ENISA",
+                "cybersecurity guidelines",
+                "NIS2 guidance",
+                "threat landscape",
+                "risk assessment"
+            ],
+            "topics": [
+                "cybersecurity",
+                "NIS2"
+            ]
+        },
+        "enisa_main": {
+            "domain": "enisa.europa.eu",
+            "name": "ENISA - EU Cybersecurity Agency",
+            "description": "Glavna EU agencija za cybersecurity - certifikacija, smjernice i suradnja.",
+            "use_when": [
+                "EU cybersecurity",
+                "ENISA certification",
+                "cybersecurity standards"
+            ],
+            "topics": [
+                "cybersecurity",
+                "NIS2"
+            ]
+        },
+        "cert_eu": {
+            "domain": "cert.europa.eu",
+            "name": "CERT-EU",
+            "description": "Tim za brzo reagiranje na cyber incidente za EU institucije.",
+            "use_when": [
+                "CERT-EU",
+                "cyber incidents",
+                "security advisories",
+                "threat intelligence"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "cert_eu_publications": {
+            "domain": "cert.europa.eu/publications/security-guidance",
+            "name": "CERT-EU Security Guidance",
+            "description": "CERT-EU sigurnosne smjernice i preporuke.",
+            "use_when": [
+                "security guidance",
+                "CERT recommendations",
+                "incident response"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "nis_cooperation": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/nis-cooperation-group",
+            "name": "NIS Cooperation Group",
+            "description": "NIS Cooperation Group dokumenti i smjernice za države članice.",
+            "use_when": [
+                "NIS cooperation",
+                "NIS2 implementation",
+                "member state coordination"
+            ],
+            "topics": [
+                "cybersecurity",
+                "NIS2"
+            ]
+        },
+        "cyber_resilience": {
+            "domain": "digital-strategy.ec.europa.eu/en/faqs/directive-measures-high-common-level-cybersecurity-across-union-nis2-directive",
+            "name": "NIS2 Directive FAQ",
+            "description": "Često postavljana pitanja o NIS2 direktivi.",
+            "use_when": [
+                "NIS2 FAQ",
+                "NIS2 questions",
+                "cybersecurity directive"
+            ],
+            "topics": [
+                "cybersecurity",
+                "NIS2"
+            ]
+        },
+        "jrc_cybersecurity": {
+            "domain": "joint-research-centre.ec.europa.eu",
+            "name": "JRC Cybersecurity Research",
+            "description": "Istraživačka jedinica Europske komisije za cybersecurity i digitalne tehnologije.",
+            "use_when": [
+                "JRC cybersecurity",
+                "cybersecurity research",
+                "digital technologies research"
+            ],
+            "topics": [
+                "cybersecurity",
+                "research"
+            ]
+        },
+        "ecso": {
+            "domain": "ecs-org.eu",
+            "name": "European Cyber Security Organisation (ECSO)",
+            "description": "Javno-privatno partnerstvo za razvoj europskog cybersecurity ekosustava.",
+            "use_when": [
+                "ECSO",
+                "cyber partnership",
+                "industry cybersecurity"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "iicb": {
+            "domain": "eur-lex.europa.eu",
+            "name": "Interinstitutional Cybersecurity Board (IICB)",
+            "description": "Koordinira cybersecurity politike i mjere za sve EU institucije.",
+            "use_when": [
+                "IICB",
+                "EU institution cybersecurity",
+                "interinstitutional security"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "cppp_cyber": {
+            "domain": "ccdcoe.org",
+            "name": "NATO CCDCOE / EU cPPP Cybersecurity",
+            "description": "Partnerstvo za povećanje otpornosti EU na cyber prijetnje.",
+            "use_when": [
+                "cPPP",
+                "cyber partnership",
+                "cyber defence"
+            ],
+            "topics": [
+                "cybersecurity",
+                "defence"
+            ]
+        },
+        "digit_cert_eu": {
+            "domain": "digit.cert-eu",
+            "name": "DIGIT.CERT-EU",
+            "description": "Unutarnji cybersecurity servis za EU institucije.",
+            "use_when": [
+                "DIGIT CERT",
+                "EU internal security",
+                "institution cybersecurity"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "competition_antitrust_pub": {
+            "domain": "competition-policy.ec.europa.eu/antitrust-and-cartels/publications_en",
+            "name": "DG Competition - Antitrust Publications",
+            "description": "Publikacije o antitrust enforcement - Regulation 1/2003.",
+            "use_when": [
+                "antitrust enforcement",
+                "cartel decisions",
+                "Regulation 1/2003",
+                "Article 101",
+                "Article 102"
+            ],
+            "topics": [
+                "competition"
+            ]
+        },
+        "competition_mergers_pub": {
+            "domain": "competition-policy.ec.europa.eu/mergers/publications_en",
+            "name": "DG Competition - Merger Publications",
+            "description": "Publikacije o koncentracijama - Regulation 139/2004.",
+            "use_when": [
+                "merger control",
+                "concentrations",
+                "Regulation 139/2004",
+                "merger notifications"
+            ],
+            "topics": [
+                "competition"
+            ]
+        },
+        "competition_state_aid_pub": {
+            "domain": "competition-policy.ec.europa.eu/state-aid/publications_en",
+            "name": "DG Competition - State Aid Publications",
+            "description": "Publikacije o državnim potporama - Regulation 2015/1589.",
+            "use_when": [
+                "state aid procedures",
+                "Regulation 2015/1589",
+                "aid notification"
+            ],
+            "topics": [
+                "competition",
+                "state_aid"
+            ]
+        },
+        "dma_cases_search": {
+            "domain": "digital-markets-act-cases.ec.europa.eu/search",
+            "name": "DMA Cases Search",
+            "description": "Pretraga Digital Markets Act slučajeva - gatekeepers.",
+            "use_when": [
+                "DMA cases",
+                "gatekeeper search",
+                "Big Tech enforcement"
+            ],
+            "topics": [
+                "competition",
+                "digital"
+            ]
+        },
+        "competition_ecn": {
+            "domain": "competition-policy.ec.europa.eu/index_en",
+            "name": "European Competition Network (ECN+)",
+            "description": "ECN+ Directive 2019/1 - ovlasti nacionalnih tijela za tržišno natjecanje.",
+            "use_when": [
+                "ECN+",
+                "NCA powers",
+                "Directive 2019/1",
+                "national competition authorities"
+            ],
+            "topics": [
+                "competition"
+            ]
+        },
+        "competition_damages": {
+            "domain": "competition-policy.ec.europa.eu",
+            "name": "Competition - Damages Actions",
+            "description": "Directive 2014/104/EU - privatne tužbe za naknadu štete.",
+            "use_when": [
+                "damages directive",
+                "private enforcement",
+                "Directive 2014/104",
+                "antitrust damages"
+            ],
+            "topics": [
+                "competition"
+            ]
+        },
+        "competition_foreign_subsidies": {
+            "domain": "competition-policy.ec.europa.eu",
+            "name": "Foreign Subsidies Regulation",
+            "description": "Regulation 2022/2560 - strane subvencije koje narušavaju tržište.",
+            "use_when": [
+                "foreign subsidies",
+                "Regulation 2022/2560",
+                "third country subsidies"
+            ],
+            "topics": [
+                "competition",
+                "trade"
+            ]
+        },
+        "amla": {
+            "domain": "amla.europa.eu/sites_en",
+            "name": "AMLA - Anti-Money Laundering Authority",
+            "description": "Nova EU agencija za sprječavanje pranja novca (AML Regulation 2024/1624).",
+            "use_when": [
+                "AMLA",
+                "AML authority",
+                "anti-money laundering EU",
+                "Regulation 2024/1624"
+            ],
+            "topics": [
+                "AML",
+                "finance"
+            ]
+        },
+        "eba_aml": {
+            "domain": "eba.europa.eu/publications-and-media/publications",
+            "name": "EBA AML/CFT Publications",
+            "description": "EBA smjernice za AML/CFT - AMLD direktivu.",
+            "use_when": [
+                "EBA AML",
+                "AML guidelines",
+                "CFT",
+                "AMLD"
+            ],
+            "topics": [
+                "AML",
+                "banking"
+            ]
+        },
+        "fatf": {
+            "domain": "fatf-gafi.org",
+            "name": "FATF - Financial Action Task Force",
+            "description": "FATF preporuke, metodologija, mutual evaluations - globalni AML standardi.",
+            "use_when": [
+                "FATF",
+                "FATF recommendations",
+                "money laundering standards",
+                "CFT standards"
+            ],
+            "topics": [
+                "AML",
+                "international"
+            ]
+        },
+        "fatf_countries": {
+            "domain": "fatf-gafi.org/en/countries",
+            "name": "FATF Country Assessments",
+            "description": "FATF evaluacije zemalja - grey list, black list.",
+            "use_when": [
+                "FATF grey list",
+                "high-risk countries",
+                "country risk",
+                "FATF black list"
+            ],
+            "topics": [
+                "AML",
+                "international"
+            ]
+        },
+        "finance_aml": {
+            "domain": "finance.ec.europa.eu/financial-crime/anti-money-laundering-and-countering-financing-terrorism_en",
+            "name": "EC Finance - AML/CFT Overview",
+            "description": "European Commission pregled AML/CFT legislative.",
+            "use_when": [
+                "EU AML overview",
+                "AML legislation",
+                "CFT legislation"
+            ],
+            "topics": [
+                "AML",
+                "finance"
+            ]
+        },
+        "anti_fraud": {
+            "domain": "anti-fraud.ec.europa.eu/policy_en",
+            "name": "OLAF - Anti-Fraud Office",
+            "description": "Europski ured za borbu protiv prijevara (Regulation 2023/1113).",
+            "use_when": [
+                "OLAF",
+                "EU fraud",
+                "anti-fraud",
+                "Regulation 2023/1113"
+            ],
+            "topics": [
+                "AML",
+                "fraud"
+            ]
+        },
+        "eppo": {
+            "domain": "eppo.europa.eu/en/documents/documents",
+            "name": "EPPO - European Public Prosecutor's Office",
+            "description": "Europsko javno tužiteljstvo - dokumenti o financijskim kaznenim djelima.",
+            "use_when": [
+                "EPPO",
+                "EU prosecutor",
+                "financial crimes prosecution"
+            ],
+            "topics": [
+                "AML",
+                "criminal"
+            ]
+        },
+        "eu_budget_protection": {
+            "domain": "commission.europa.eu/strategy-and-policy/eu-budget/protection-eu-budget/conflict-interest_en",
+            "name": "EU Budget Protection - Conflict of Interest",
+            "description": "Zaštita EU proračuna - sukob interesa (Directive 2014/24/EU).",
+            "use_when": [
+                "conflict of interest",
+                "EU budget protection",
+                "Directive 2014/24"
+            ],
+            "topics": [
+                "AML",
+                "procurement"
+            ]
+        },
+        "ethics_standards": {
+            "domain": "commission.europa.eu/about/service-standards-and-principles/ethics-and-good-administration/staff-and-ethics_en",
+            "name": "EC Ethics and Good Administration",
+            "description": "Etički standardi i dobra uprava u EU institucijama.",
+            "use_when": [
+                "ethics standards",
+                "good administration",
+                "staff ethics"
+            ],
+            "topics": [
+                "ethics",
+                "governance"
+            ]
+        },
+        "transport_mobility": {
+            "domain": "transport.ec.europa.eu",
+            "name": "DG MOVE - Transport & Mobility",
+            "description": "EU transport policy - tachographs, aviation, road transport, maritime, rail. Regulatory updates and implementation timelines.",
+            "use_when": [
+                "tachograph",
+                "tachographs",
+                "road transport",
+                "aviation",
+                "mobility",
+                "driving time",
+                "rest periods",
+                "transport regulations",
+                "SAF",
+                "sustainable aviation fuel"
+            ],
+            "topics": [
+                "transport",
+                "mobility",
+                "aviation"
+            ]
+        },
+        "transparency_register": {
+            "domain": "commission.europa.eu/about/service-standards-and-principles/transparency/register-expert-groups/rules-experts-evaluating-tenders_en",
+            "name": "Transparency Register - Expert Groups",
+            "description": "Pravila za eksperte koji procjenjuju ponude.",
+            "use_when": [
+                "expert groups",
+                "tender evaluation",
+                "transparency register"
+            ],
+            "topics": [
+                "procurement",
+                "transparency"
+            ]
+        },
+        "health_conflict": {
+            "domain": "health.ec.europa.eu/publications/implementing-regulation-eu-20242745-conflict-interest-rules-under-eu-health-technology-assessment_en",
+            "name": "Health Technology Assessment - Conflict Rules",
+            "description": "Pravila o sukobu interesa za HTA (Regulation 2024/2745).",
+            "use_when": [
+                "HTA conflict",
+                "health technology assessment",
+                "Regulation 2024/2745"
+            ],
+            "topics": [
+                "health",
+                "ethics"
+            ]
+        },
+        "taxonomy_regulation": {
+            "domain": "finance.ec.europa.eu/sustainable-finance/tools-and-standards/eu-taxonomy-sustainable-activities_en",
+            "name": "EU Taxonomy - Sustainable Activities",
+            "description": "EU Taxonomy Regulation 2020/852 - klasifikacija održivih djelatnosti.",
+            "use_when": [
+                "EU taxonomy",
+                "sustainable activities",
+                "Regulation 2020/852",
+                "green taxonomy"
+            ],
+            "topics": [
+                "ESG",
+                "sustainable_finance"
+            ]
+        },
+        "csrd": {
+            "domain": "finance.ec.europa.eu/capital-markets-union-and-financial-markets/company-reporting-and-auditing/company-reporting/corporate-sustainability-reporting_en",
+            "name": "CSRD - Corporate Sustainability Reporting",
+            "description": "Directive 2022/2464 - izvještavanje o održivosti poduzeća.",
+            "use_when": [
+                "CSRD",
+                "sustainability reporting",
+                "Directive 2022/2464",
+                "ESG reporting"
+            ],
+            "topics": [
+                "ESG",
+                "reporting"
+            ]
+        },
+        "sfdr": {
+            "domain": "finance.ec.europa.eu/sustainable-finance/disclosures/sustainability-related-disclosure-financial-services-sector_en",
+            "name": "SFDR - Sustainable Finance Disclosure",
+            "description": "Regulation 2019/2088 - objave o održivosti u financijskom sektoru.",
+            "use_when": [
+                "SFDR",
+                "sustainable finance disclosure",
+                "Regulation 2019/2088",
+                "ESG disclosure"
+            ],
+            "topics": [
+                "ESG",
+                "finance"
+            ]
+        },
+        "sustainable_finance_overview": {
+            "domain": "finance.ec.europa.eu/sustainable-finance/overview-sustainable-finance/platform-sustainable-finance_en",
+            "name": "Platform on Sustainable Finance",
+            "description": "EU platforma za održive financije - savjetodavno tijelo.",
+            "use_when": [
+                "sustainable finance platform",
+                "ESG advisory",
+                "green finance"
+            ],
+            "topics": [
+                "ESG",
+                "sustainable_finance"
+            ]
+        },
+        "sustainable_finance_main": {
+            "domain": "finance.ec.europa.eu/sustainable-finance_en",
+            "name": "EC Sustainable Finance Overview",
+            "description": "Pregled EU politike održivih financija.",
+            "use_when": [
+                "EU sustainable finance",
+                "green deal finance",
+                "ESG policy"
+            ],
+            "topics": [
+                "ESG",
+                "sustainable_finance"
+            ]
+        },
+        "taxonomy_delegated": {
+            "domain": "finance.ec.europa.eu/regulation-and-supervision/financial-services-legislation/implementing-and-delegated-acts/taxonomy-regulation_en",
+            "name": "Taxonomy - Delegated Acts",
+            "description": "Delegirani akti za EU Taxonomy - tehnički kriteriji.",
+            "use_when": [
+                "taxonomy delegated acts",
+                "technical screening criteria",
+                "taxonomy criteria"
+            ],
+            "topics": [
+                "ESG",
+                "sustainable_finance"
+            ]
+        },
+        "sfdr_delegated": {
+            "domain": "finance.ec.europa.eu/regulation-and-supervision/financial-services-legislation/implementing-and-delegated-acts/sustainable-finance-disclosures-regulation_en",
+            "name": "SFDR - Delegated Acts",
+            "description": "Delegirani akti za SFDR - RTS za objave.",
+            "use_when": [
+                "SFDR RTS",
+                "SFDR delegated",
+                "PAI indicators"
+            ],
+            "topics": [
+                "ESG",
+                "finance"
+            ]
+        },
+        "ai_act_main": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai",
+            "name": "AI Act - Regulatory Framework",
+            "description": "Regulation 2024/1689 - EU AI Act glavna stranica.",
+            "use_when": [
+                "AI Act",
+                "Regulation 2024/1689",
+                "artificial intelligence regulation",
+                "AI regulation"
+            ],
+            "topics": [
+                "AI",
+                "digital"
+            ]
+        },
+        "ai_act_compliance": {
+            "domain": "ec.europa.eu/futurium/en/european-ai-alliance.html",
+            "name": "European AI Alliance",
+            "description": "AI Alliance - stakeholder forum za AI Act implementaciju.",
+            "use_when": [
+                "AI alliance",
+                "AI stakeholders",
+                "AI implementation"
+            ],
+            "topics": [
+                "AI"
+            ]
+        },
+        "ai_office": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/ai-office",
+            "name": "AI Office",
+            "description": "EU AI Office - tijelo za provedbu AI Acta.",
+            "use_when": [
+                "AI office",
+                "AI enforcement",
+                "AI supervision"
+            ],
+            "topics": [
+                "AI"
+            ]
+        },
+        "dsa_main": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/digital-services-act-package",
+            "name": "Digital Services Act (DSA)",
+            "description": "Regulation 2022/2065 - pravila za digitalne usluge.",
+            "use_when": [
+                "DSA",
+                "Digital Services Act",
+                "Regulation 2022/2065",
+                "online platforms"
+            ],
+            "topics": [
+                "digital",
+                "platforms"
+            ]
+        },
+        "dsa_transparency": {
+            "domain": "transparency.dsa.ec.europa.eu",
+            "name": "DSA Transparency Database",
+            "description": "Baza podataka o moderiranju sadržaja pod DSA.",
+            "use_when": [
+                "DSA transparency",
+                "content moderation",
+                "platform transparency"
+            ],
+            "topics": [
+                "digital",
+                "platforms"
+            ]
+        },
+        "dma_main": {
+            "domain": "digital-markets-act.ec.europa.eu/index_en",
+            "name": "Digital Markets Act (DMA)",
+            "description": "Regulation 2022/1925 - pravila za gatekeepere.",
+            "use_when": [
+                "DMA",
+                "Digital Markets Act",
+                "Regulation 2022/1925",
+                "gatekeepers"
+            ],
+            "topics": [
+                "digital",
+                "competition"
+            ]
+        },
+        "dma_gatekeepers": {
+            "domain": "digital-markets-act.ec.europa.eu/gatekeepers_en",
+            "name": "DMA Gatekeepers List",
+            "description": "Popis designiranih gatekeepera pod DMA.",
+            "use_when": [
+                "gatekeeper list",
+                "designated gatekeepers",
+                "Big Tech DMA"
+            ],
+            "topics": [
+                "digital",
+                "competition"
+            ]
+        },
+        "dma_compliance": {
+            "domain": "digital-markets-act-cases.ec.europa.eu/reports/compliance-reports",
+            "name": "DMA Compliance Reports",
+            "description": "Izvješća o usklađenosti gatekeepera.",
+            "use_when": [
+                "DMA compliance",
+                "gatekeeper compliance",
+                "DMA reports"
+            ],
+            "topics": [
+                "digital",
+                "competition"
+            ]
+        },
+        "ec_ai_pact": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/ai-pact",
+            "name": "AI Pact",
+            "description": "Dobrovoljni AI Pact za rano usvajanje AI Act obveza.",
+            "use_when": [
+                "AI pact",
+                "voluntary AI",
+                "early adoption AI Act"
+            ],
+            "topics": [
+                "AI"
+            ]
+        },
+        "nist_ai": {
+            "domain": "nist.gov/artificial-intelligence",
+            "name": "NIST AI Risk Management",
+            "description": "NIST AI Risk Management Framework - međunarodni standardi.",
+            "use_when": [
+                "NIST AI",
+                "AI risk management",
+                "AI standards US"
+            ],
+            "topics": [
+                "AI",
+                "international"
+            ]
+        },
+        "eu_institutions_europa": {
+            "domain": "european-union.europa.eu/institutions-law-budget/institutions-and-bodies_en",
+            "name": "EU Institutions Overview",
+            "description": "Pregled svih EU institucija i tijela.",
+            "use_when": [
+                "EU institutions",
+                "EU bodies",
+                "institutional structure"
+            ],
+            "topics": [
+                "general",
+                "institutional"
+            ]
+        },
+        "council_eu": {
+            "domain": "consilium.europa.eu",
+            "name": "Council of the EU",
+            "description": "Vijeće EU - zakonodavna tijela, sastanci, dokumenti.",
+            "use_when": [
+                "Council EU",
+                "Council decisions",
+                "member state positions"
+            ],
+            "topics": [
+                "general",
+                "institutional"
+            ]
+        },
+        "european_council": {
+            "domain": "consilium.europa.eu/en/european-council",
+            "name": "European Council",
+            "description": "Europsko vijeće - strateške smjernice, summiti.",
+            "use_when": [
+                "European Council",
+                "EU summit",
+                "strategic agenda"
+            ],
+            "topics": [
+                "general",
+                "institutional"
+            ]
+        },
+        "ep_main": {
+            "domain": "europarl.europa.eu",
+            "name": "European Parliament",
+            "description": "Europski parlament - plenarne sjednice, odbori, rezolucije.",
+            "use_when": [
+                "European Parliament",
+                "EP resolutions",
+                "MEP"
+            ],
+            "topics": [
+                "general",
+                "institutional"
+            ]
+        },
+        "ecb_main": {
+            "domain": "ecb.europa.eu",
+            "name": "European Central Bank",
+            "description": "ECB - monetarna politika, bankovni nadzor, publikacije.",
+            "use_when": [
+                "ECB",
+                "monetary policy",
+                "banking supervision ECB",
+                "interest rates"
+            ],
+            "topics": [
+                "banking",
+                "finance"
+            ]
+        },
+        "ecb_legal": {
+            "domain": "ecb.europa.eu/ecb/legal",
+            "name": "ECB Legal Framework",
+            "description": "ECB pravni okvir - odluke, smjernice, preporuke.",
+            "use_when": [
+                "ECB legal",
+                "ECB decisions",
+                "ECB guidelines"
+            ],
+            "topics": [
+                "banking",
+                "finance"
+            ]
+        },
+        "esm": {
+            "domain": "esm.europa.eu",
+            "name": "European Stability Mechanism",
+            "description": "ESM - financijska stabilnost eurozone.",
+            "use_when": [
+                "ESM",
+                "stability mechanism",
+                "eurozone crisis",
+                "financial assistance"
+            ],
+            "topics": [
+                "finance"
+            ]
+        },
+        "esma": {
+            "domain": "esma.europa.eu",
+            "name": "ESMA - Securities Markets",
+            "description": "Europsko nadzorno tijelo za vrijednosne papire i tržišta.",
+            "use_when": [
+                "ESMA",
+                "securities",
+                "MiFID supervision",
+                "market abuse"
+            ],
+            "topics": [
+                "finance",
+                "securities"
+            ]
+        },
+        "eiopa": {
+            "domain": "eiopa.europa.eu",
+            "name": "EIOPA - Insurance & Pensions",
+            "description": "Europsko nadzorno tijelo za osiguranje i mirovine.",
+            "use_when": [
+                "EIOPA",
+                "insurance regulation",
+                "Solvency II",
+                "pensions"
+            ],
+            "topics": [
+                "finance",
+                "insurance"
+            ]
+        },
+        "fra": {
+            "domain": "fra.europa.eu",
+            "name": "FRA - Fundamental Rights Agency",
+            "description": "Agencija EU za temeljna prava - izvješća, istraživanja.",
+            "use_when": [
+                "FRA",
+                "fundamental rights",
+                "human rights EU",
+                "discrimination"
+            ],
+            "topics": [
+                "rights",
+                "general"
+            ]
+        },
+        "ombudsman": {
+            "domain": "ombudsman.europa.eu",
+            "name": "European Ombudsman",
+            "description": "Europski ombudsman - pritužbe na EU institucije.",
+            "use_when": [
+                "ombudsman",
+                "EU complaints",
+                "maladministration"
+            ],
+            "topics": [
+                "governance",
+                "rights"
+            ]
+        },
+        "coe": {
+            "domain": "coe.int",
+            "name": "Council of Europe",
+            "description": "Vijeće Europe - ECHR, ljudska prava, standardi.",
+            "use_when": [
+                "Council of Europe",
+                "ECHR",
+                "European Convention",
+                "Strasbourg"
+            ],
+            "topics": [
+                "rights",
+                "international"
+            ]
+        },
+        "echr_hudoc": {
+            "domain": "hudoc.echr.coe.int",
+            "name": "HUDOC - ECHR Case Law",
+            "description": "ECHR sudska praksa - presude Strasbourg.",
+            "use_when": [
+                "ECHR case law",
+                "HUDOC",
+                "human rights cases",
+                "Strasbourg court"
+            ],
+            "topics": [
+                "rights",
+                "case_law"
+            ]
+        },
+        "eea": {
+            "domain": "eea.europa.eu",
+            "name": "European Environment Agency",
+            "description": "EEA - okolišni podaci, izvješća, indikatori.",
+            "use_when": [
+                "EEA",
+                "environment data",
+                "climate indicators",
+                "pollution"
+            ],
+            "topics": [
+                "environment"
+            ]
+        },
+        "eu_agencies": {
+            "domain": "euagencies.eu",
+            "name": "EU Agencies Network",
+            "description": "Mreža decentraliziranih agencija EU.",
+            "use_when": [
+                "EU agencies",
+                "decentralised agencies",
+                "agency network"
+            ],
+            "topics": [
+                "general",
+                "institutional"
+            ]
+        },
+        "eurofound": {
+            "domain": "eurofound.europa.eu",
+            "name": "Eurofound",
+            "description": "Europska zaklada za poboljšanje životnih i radnih uvjeta.",
+            "use_when": [
+                "Eurofound",
+                "working conditions",
+                "quality of life",
+                "employment research"
+            ],
+            "topics": [
+                "employment",
+                "social"
+            ]
+        },
+        "eu_osha": {
+            "domain": "osha.europa.eu",
+            "name": "EU-OSHA",
+            "description": "Europska agencija za sigurnost i zdravlje na radu.",
+            "use_when": [
+                "EU-OSHA",
+                "occupational safety",
+                "workplace health",
+                "OSH"
+            ],
+            "topics": [
+                "employment",
+                "health"
+            ]
+        },
+        "efsa": {
+            "domain": "efsa.europa.eu",
+            "name": "EFSA - Food Safety",
+            "description": "Europska agencija za sigurnost hrane.",
+            "use_when": [
+                "EFSA",
+                "food safety",
+                "food risk assessment"
+            ],
+            "topics": [
+                "food",
+                "health"
+            ]
+        },
+        "ema": {
+            "domain": "ema.europa.eu",
+            "name": "EMA - Medicines Agency",
+            "description": "Europska agencija za lijekove.",
+            "use_when": [
+                "EMA",
+                "medicines",
+                "pharmaceutical regulation",
+                "drug approval"
+            ],
+            "topics": [
+                "health",
+                "pharma"
+            ]
+        },
+        "frontex": {
+            "domain": "frontex.europa.eu",
+            "name": "Frontex",
+            "description": "Europska agencija za graničnu i obalnu stražu.",
+            "use_when": [
+                "Frontex",
+                "border control",
+                "migration",
+                "coast guard"
+            ],
+            "topics": [
+                "migration",
+                "security"
+            ]
+        },
+        "europol": {
+            "domain": "europol.europa.eu",
+            "name": "Europol",
+            "description": "Agencija EU za suradnju u provedbi zakona.",
+            "use_when": [
+                "Europol",
+                "police cooperation",
+                "organized crime",
+                "terrorism"
+            ],
+            "topics": [
+                "security",
+                "criminal"
+            ]
+        },
+        "eurojust": {
+            "domain": "eurojust.europa.eu",
+            "name": "Eurojust",
+            "description": "Agencija EU za suradnju u kaznenim stvarima.",
+            "use_when": [
+                "Eurojust",
+                "judicial cooperation",
+                "cross-border crime"
+            ],
+            "topics": [
+                "criminal",
+                "justice"
+            ]
+        },
+        "your_europe_ip": {
+            "domain": "europa.eu/youreurope/business/running-business/intellectual-property",
+            "name": "Your Europe - Intellectual Property",
+            "description": "IP rights, trademarks, patents, copyright. Practical guide for businesses.",
+            "use_when": [
+                "intellectual property",
+                "trademark",
+                "patent",
+                "copyright",
+                "IP protection"
+            ],
+            "topics": [
+                "IP",
+                "business"
+            ]
+        },
+        "your_europe_consumer": {
+            "domain": "europa.eu/youreurope/business/dealing-with-customers/consumer-contracts-guarantees",
+            "name": "Your Europe - Consumer Contracts",
+            "description": "Consumer rights, contracts, guarantees, warranties. Business obligations.",
+            "use_when": [
+                "consumer rights",
+                "contracts",
+                "guarantees",
+                "warranties",
+                "consumer protection"
+            ],
+            "topics": [
+                "consumer",
+                "business"
+            ]
+        },
+        "your_europe_vat": {
+            "domain": "europa.eu/youreurope/business/taxation/vat",
+            "name": "Your Europe - VAT",
+            "description": "VAT rules, registration, invoicing, OSS. Practical VAT guide for businesses.",
+            "use_when": [
+                "VAT",
+                "tax",
+                "invoicing",
+                "OSS",
+                "cross-border VAT"
+            ],
+            "topics": [
+                "tax",
+                "business"
+            ]
+        },
+        "your_europe_product_compliance": {
+            "domain": "europa.eu/youreurope/business/product-requirements/compliance",
+            "name": "Your Europe - Product Compliance",
+            "description": "CE marking, product safety, standards, conformity assessment.",
+            "use_when": [
+                "CE marking",
+                "product safety",
+                "compliance",
+                "standards",
+                "conformity"
+            ],
+            "topics": [
+                "product",
+                "business"
+            ]
+        },
+        "your_europe_public_contracts": {
+            "domain": "europa.eu/youreurope/business/selling-in-eu/public-contracts",
+            "name": "Your Europe - Public Contracts",
+            "description": "Public procurement, tenders, bidding. Guide for businesses.",
+            "use_when": [
+                "public procurement",
+                "tenders",
+                "bidding",
+                "public contracts"
+            ],
+            "topics": [
+                "procurement",
+                "business"
+            ]
+        },
+        "your_europe_competition": {
+            "domain": "europa.eu/youreurope/business/selling-in-eu/competition-between-businesses",
+            "name": "Your Europe - Competition",
+            "description": "Competition rules, unfair practices, business cooperation.",
+            "use_when": [
+                "competition rules",
+                "unfair competition",
+                "business cooperation",
+                "antitrust basics"
+            ],
+            "topics": [
+                "competition",
+                "business"
+            ]
+        },
+        "enforcement_tracker": {
+            "domain": "enforcementtracker.com",
+            "name": "GDPR Enforcement Tracker",
+            "description": "Baza GDPR kazni - iznosi, DPA, razlozi. Treća strana ali opsežna.",
+            "use_when": [
+                "GDPR fines",
+                "DPA enforcement",
+                "penalty amounts",
+                "enforcement statistics"
+            ],
+            "topics": [
+                "GDPR",
+                "privacy"
+            ]
+        },
+        "antifraud": {
+            "domain": "antifraud-knowledge-centre.ec.europa.eu/guidance-legislation/official-guidelines-and-material_en",
+            "name": "Anti-Fraud Knowledge Centre",
+            "description": "OLAF guidelines, anti-fraud materijali, conflict of interest guidance.",
+            "use_when": [
+                "anti-fraud",
+                "conflict of interest",
+                "OLAF",
+                "EU funds protection"
+            ],
+            "topics": [
+                "fraud",
+                "compliance"
+            ]
+        },
+        "conflict_of_interest": {
+            "domain": "eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX%3A52021XC0409%2801%29",
+            "name": "Conflict of Interest Guidelines",
+            "description": "EU guidelines on conflict of interest.",
+            "use_when": [
+                "conflict of interest",
+                "COI guidelines"
+            ],
+            "topics": [
+                "fraud",
+                "compliance"
+            ]
+        },
+        "eba_publications": {
+            "domain": "eba.europa.eu/publications-and-media/publications",
+            "name": "EBA Publications",
+            "description": "European Banking Authority publikacije - guidelines, reports, opinions.",
+            "use_when": [
+                "banking regulation",
+                "EBA guidelines",
+                "prudential requirements",
+                "AML banking"
+            ],
+            "topics": [
+                "banking",
+                "AML"
+            ]
+        },
+        "amla": {
+            "domain": "amla.europa.eu",
+            "name": "AMLA",
+            "description": "Anti-Money Laundering Authority - nova EU agencija, FAQs, guidance.",
+            "use_when": [
+                "AMLA",
+                "anti-money laundering authority",
+                "AML EU agency"
+            ],
+            "topics": [
+                "AML"
+            ]
+        },
+        "fatf_lists": {
+            "domain": "fatf-gafi.org/en/countries/black-and-grey-lists.html",
+            "name": "FATF High-Risk Jurisdictions",
+            "description": "FATF black and grey lists - high-risk jurisdictions.",
+            "use_when": [
+                "FATF list",
+                "high-risk countries",
+                "AML country risk",
+                "grey list"
+            ],
+            "topics": [
+                "AML"
+            ]
+        },
+        "enisa_publications": {
+            "domain": "enisa.europa.eu/publications",
+            "name": "ENISA Publications",
+            "description": "ENISA cybersecurity publications - threat landscapes, guidelines, reports.",
+            "use_when": [
+                "cybersecurity report",
+                "ENISA guidance",
+                "threat landscape",
+                "cyber risk"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "nis_cooperation": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/nis-cooperation-group",
+            "name": "NIS Cooperation Group",
+            "description": "NIS Directive cooperation group - guidelines, reports.",
+            "use_when": [
+                "NIS Directive",
+                "NIS2",
+                "network security",
+                "critical infrastructure"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "nis2_faq": {
+            "domain": "digital-strategy.ec.europa.eu/en/faqs/directive-measures-high-common-level-cybersecurity-across-union-nis2-directive-faqs",
+            "name": "NIS2 Directive FAQ",
+            "description": "NIS2 Directive official FAQ.",
+            "use_when": [
+                "NIS2 FAQ",
+                "NIS2 explained",
+                "cybersecurity directive questions"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "cert_eu_advisories": {
+            "domain": "cert.europa.eu/publications/security-advisories",
+            "name": "CERT-EU Security Advisories",
+            "description": "CERT-EU security advisories - vulnerabilities, threats.",
+            "use_when": [
+                "security advisory",
+                "vulnerability",
+                "CERT-EU alert"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "cert_eu_guidance": {
+            "domain": "cert.europa.eu/publications/security-guidance",
+            "name": "CERT-EU Security Guidance",
+            "description": "CERT-EU security guidance documents.",
+            "use_when": [
+                "security guidance",
+                "cybersecurity best practices",
+                "CERT-EU recommendations"
+            ],
+            "topics": [
+                "cybersecurity"
+            ]
+        },
+        "ai_office": {
+            "domain": "digital-strategy.ec.europa.eu/en/policies/ai-office",
+            "name": "EU AI Office",
+            "description": "EU AI Office - AI Act implementation, guidelines, coordination.",
+            "use_when": [
+                "AI Office",
+                "AI Act implementation",
+                "AI governance",
+                "AI coordination"
+            ],
+            "topics": [
+                "AI"
+            ]
+        },
+        "legal_blogs": {
+            "domains": [
+                "lexology.com",
+                "europalaw.org",
+                "eulawlive.com"
+            ],
+            "name": "Legal Analysis Blogs",
+            "description": "Pravne analize i komentari stručnjaka. Interpretacije sudskih odluka i novih propisa.",
+            "use_when": [
+                "expert analysis",
+                "legal commentary",
+                "case interpretation",
+                "practical implications"
+            ],
+            "topics": [
+                "general"
+            ]
+        }
+    },
+    "topic_mapping": {
+        "GDPR": [
+            "your_europe_gdpr",
+            "edpb_guidelines",
+            "edpb_decisions",
+            "edps_factsheets",
+            "edps_opinions",
+            "enforcement_tracker"
+        ],
+        "privacy": [
+            "your_europe_gdpr",
+            "edpb_guidelines",
+            "edpb_decisions",
+            "edps_factsheets",
+            "edps_opinions"
+        ],
+        "competition": [
+            "competition_general",
+            "competition_antitrust",
+            "competition_mergers",
+            "competition_state_aid",
+            "competition_cases",
+            "dma_cases"
+        ],
+        "antitrust": [
+            "competition_antitrust",
+            "competition_cases"
+        ],
+        "merger": [
+            "competition_mergers",
+            "competition_cases"
+        ],
+        "state_aid": [
+            "competition_state_aid",
+            "competition_cases"
+        ],
+        "DMA": [
+            "dma_cases",
+            "digital_strategy"
+        ],
+        "banking": [
+            "eba_publications"
+        ],
+        "AML": [
+            "amla",
+            "fatf_lists",
+            "eba_publications"
+        ],
+        "cybersecurity": [
+            "enisa_publications",
+            "nis_cooperation",
+            "nis2_faq",
+            "cert_eu_advisories",
+            "cert_eu_guidance",
+            "digital_strategy"
+        ],
+        "NIS2": [
+            "nis_cooperation",
+            "nis2_faq"
+        ],
+        "AI": [
+            "ai_office",
+            "digital_strategy",
+            "think_tank"
+        ],
+        "fraud": [
+            "antifraud",
+            "conflict_of_interest"
+        ],
+        "digital": [
+            "digital_strategy",
+            "dma_cases",
+            "ai_office"
+        ],
+        "IP": [
+            "your_europe_ip"
+        ],
+        "consumer": [
+            "your_europe_consumer"
+        ],
+        "tax": [
+            "your_europe_vat"
+        ],
+        "VAT": [
+            "your_europe_vat"
+        ],
+        "product": [
+            "your_europe_product_compliance"
+        ],
+        "procurement": [
+            "your_europe_public_contracts"
+        ]
+    },
+    "legislation_area_mapping": {
+        "description": "Mapiranje frontend legislation_areas ID-jeva na web search domene, CELEX anchore i agent instrukcije",
+        "gdpr": {
+            "display_name": "GDPR",
+            "primary_sources": [
+                "edpb_guidelines",
+                "edps_factsheets",
+                "enforcement_tracker",
+                "your_europe_gdpr"
+            ],
+            "web_search_domains": [
+                "edpb.europa.eu",
+                "edps.europa.eu"
+            ],
+            "celex_anchors": [
+                "32016R0679",
+                "32016L0680",
+                "32002L0058",
+                "32009L0136",
+                "32018R1725"
+            ],
+            "celex_titles": {
+                "32016R0679": "General Data Protection Regulation (GDPR)",
+                "32016L0680": "Law Enforcement Directive (LED)",
+                "32002L0058": "Directive on Privacy and Electronic Communications (ePrivacy)",
+                "32009L0136": "Citizens' Rights Directive (ePrivacy cookies amendment)",
+                "32018R1725": "EU Institutions Data Protection Regulation"
+            },
+            "key_articles": {
+                "32016R0679": [
+                    "5",
+                    "6",
+                    "7",
+                    "9",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "82",
+                    "83",
+                    "84"
+                ],
+                "32016L0680": [
+                    "4",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "35",
+                    "36",
+                    "37",
+                    "54",
+                    "55",
+                    "56",
+                    "57"
+                ],
+                "32002L0058": [
+                    "5",
+                    "6",
+                    "9",
+                    "13"
+                ],
+                "32009L0136": [
+                    "2"
+                ],
+                "32018R1725": [
+                    "4",
+                    "5",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50"
+                ]
+            },
+            "fetch_strategy": "articles_first",
+            "agent_instructions": "Focus on GDPR interpretation. Prioritize EDPB Guidelines and Recommendations. Include enforcement examples from DPA decisions when relevant. Cite specific GDPR articles precisely (e.g., 'Article 6(1)(f)')."
+        },
+        "cybersecurity": {
+            "display_name": "Cybersecurity",
+            "primary_sources": [
+                "enisa_publications",
+                "enisa_main",
+                "cert_eu",
+                "nis_cooperation"
+            ],
+            "web_search_domains": [
+                "enisa.europa.eu",
+                "digital-strategy.ec.europa.eu"
+            ],
+            "celex_anchors": [
+                "32022L2555",
+                "32022R2554",
+                "32024R2847",
+                "32019R0881",
+                "32013L0040",
+                "32024R2690"
+            ],
+            "celex_titles": {
+                "32022L2555": "NIS 2 Directive",
+                "32022R2554": "Digital Operational Resilience Act (DORA)",
+                "32024R2847": "Cyber Resilience Act (CRA)",
+                "32019R0881": "Cybersecurity Act (ENISA)",
+                "32013L0040": "Directive on Attacks Against Information Systems",
+                "32024R2690": "NIS2 Implementing Regulation"
+            },
+            "key_articles": {
+                "32022L2555": [
+                    "3",
+                    "4",
+                    "7",
+                    "14",
+                    "20",
+                    "21",
+                    "23",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36"
+                ],
+                "32022R2554": [
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56"
+                ],
+                "32024R2847": [
+                    "6",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "64",
+                    "65"
+                ],
+                "32019R0881": [
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65"
+                ],
+                "32013L0040": [
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "9",
+                    "10"
+                ],
+                "32024R2690": [
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22"
+                ]
+            },
+            "fetch_strategy": "articles_first",
+            "agent_instructions": "Focus on NIS2 Directive, DORA, and Cyber Resilience Act. Reference ENISA guidelines. Note NIS2 requires national transposition while DORA/CRA are directly applicable."
+        },
+        "dsa": {
+            "display_name": "DSA",
+            "primary_sources": [
+                "digital_strategy"
+            ],
+            "web_search_domains": [
+                "transparency.dsa.ec.europa.eu",
+                "digital-strategy.ec.europa.eu"
+            ],
+            "celex_anchors": [
+                "32022R2065",
+                "32000L0031"
+            ],
+            "celex_titles": {
+                "32022R2065": "Digital Services Act (DSA)",
+                "32000L0031": "Directive on Electronic Commerce"
+            },
+            "key_articles": {
+                "32022R2065": [
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65",
+                    "66",
+                    "67",
+                    "68",
+                    "69",
+                    "70",
+                    "71",
+                    "72",
+                    "74"
+                ],
+                "32000L0031": [
+                    "12",
+                    "13",
+                    "14",
+                    "15"
+                ]
+            },
+            "fetch_strategy": "articles_first",
+            "agent_instructions": "Focus on Digital Services Act platform obligations. Reference VLOP/VLOSE designations and content moderation requirements. Include e-Commerce Directive as background."
+        },
+        "banking": {
+            "display_name": "Banking",
+            "primary_sources": [
+                "eba_publications",
+                "eba_single_rulebook",
+                "eba_guidelines"
+            ],
+            "web_search_domains": [
+                "eba.europa.eu",
+                "esma.europa.eu",
+                "eiopa.europa.eu"
+            ],
+            "celex_anchors": [
+                "32013L0036",
+                "32013R0575",
+                "32014L0065",
+                "32015L2366",
+                "32024L1619",
+                "32024R1623",
+                "32014L0059",
+                "32018R0389",
+                "32014R0596",
+                "32014R0600",
+                "32023R1114",
+                "32013R1024",
+                "32014R0468",
+                "32014L0049",
+                "32014R0806",
+                "32022R2554"
+            ],
+            "celex_titles": {
+                "32013L0036": "CRD IV (Capital Requirements Directive)",
+                "32013R0575": "CRR (Capital Requirements Regulation)",
+                "32014L0065": "MiFID II",
+                "32015L2366": "PSD2 (Payment Services Directive)",
+                "32024L1619": "CRD VI",
+                "32024R1623": "CRR III",
+                "32014L0059": "BRRD (Bank Recovery and Resolution Directive)",
+                "32018R0389": "SCA RTS (Strong Customer Authentication)",
+                "32014R0596": "MAR (Market Abuse Regulation)",
+                "32014R0600": "MiFIR",
+                "32023R1114": "MiCA (Markets in Crypto-Assets)",
+                "32013R1024": "SSM Regulation (Single Supervisory Mechanism)",
+                "32014R0468": "ECB Framework Regulation (SSM Framework)",
+                "32014L0049": "DGSD (Deposit Guarantee Schemes Directive)",
+                "32014R0806": "SRM (Single Resolution Mechanism Regulation)",
+                "32022R2554": "DORA (Digital Operational Resilience Act)"
+            },
+            "key_articles": {
+                "32013L0036": [
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "74",
+                    "75",
+                    "76",
+                    "77",
+                    "78",
+                    "79",
+                    "80",
+                    "81",
+                    "82",
+                    "83",
+                    "84",
+                    "85",
+                    "86",
+                    "87",
+                    "88",
+                    "89",
+                    "90",
+                    "91",
+                    "92",
+                    "93",
+                    "94",
+                    "95",
+                    "96",
+                    "97",
+                    "98",
+                    "99",
+                    "100",
+                    "101",
+                    "102",
+                    "103",
+                    "104",
+                    "128",
+                    "129",
+                    "130",
+                    "131",
+                    "132",
+                    "133",
+                    "134",
+                    "135",
+                    "136",
+                    "137",
+                    "138",
+                    "139",
+                    "140",
+                    "141",
+                    "142",
+                    "143",
+                    "144",
+                    "145",
+                    "146",
+                    "147",
+                    "148",
+                    "149"
+                ],
+                "32013R0575": [
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65",
+                    "66",
+                    "67",
+                    "68",
+                    "69",
+                    "70",
+                    "71",
+                    "72",
+                    "73",
+                    "74",
+                    "75",
+                    "76",
+                    "77",
+                    "78",
+                    "79",
+                    "80",
+                    "81",
+                    "82",
+                    "83",
+                    "84",
+                    "85",
+                    "86",
+                    "87",
+                    "88",
+                    "89",
+                    "90",
+                    "91",
+                    "92",
+                    "111",
+                    "112",
+                    "113",
+                    "114",
+                    "115",
+                    "116",
+                    "117",
+                    "118",
+                    "119",
+                    "120",
+                    "121",
+                    "122",
+                    "123",
+                    "124",
+                    "125",
+                    "126",
+                    "127",
+                    "128",
+                    "129",
+                    "130",
+                    "131",
+                    "132",
+                    "133",
+                    "134",
+                    "142",
+                    "143",
+                    "144",
+                    "145",
+                    "146",
+                    "147",
+                    "148",
+                    "149",
+                    "150",
+                    "151",
+                    "152",
+                    "153",
+                    "154",
+                    "155",
+                    "156",
+                    "157",
+                    "158",
+                    "159",
+                    "160",
+                    "161",
+                    "162",
+                    "163",
+                    "164",
+                    "165",
+                    "166",
+                    "167",
+                    "168",
+                    "169",
+                    "170",
+                    "171",
+                    "172",
+                    "173",
+                    "174",
+                    "175",
+                    "176",
+                    "177",
+                    "178",
+                    "179",
+                    "180",
+                    "181",
+                    "182",
+                    "183",
+                    "184",
+                    "185",
+                    "186",
+                    "187",
+                    "188",
+                    "189",
+                    "190",
+                    "191",
+                    "325",
+                    "326",
+                    "327",
+                    "328",
+                    "329",
+                    "330",
+                    "331",
+                    "332",
+                    "333",
+                    "334",
+                    "335",
+                    "336",
+                    "337",
+                    "338",
+                    "339",
+                    "340",
+                    "341",
+                    "342",
+                    "343",
+                    "344",
+                    "345",
+                    "346",
+                    "347",
+                    "348",
+                    "349",
+                    "350",
+                    "351",
+                    "352",
+                    "353",
+                    "354",
+                    "355",
+                    "356",
+                    "357",
+                    "358",
+                    "359",
+                    "360",
+                    "361",
+                    "362",
+                    "363",
+                    "364",
+                    "365",
+                    "366",
+                    "367",
+                    "368",
+                    "369",
+                    "370",
+                    "371",
+                    "372",
+                    "373",
+                    "374",
+                    "375",
+                    "376",
+                    "377",
+                    "378",
+                    "379",
+                    "380",
+                    "381",
+                    "382",
+                    "383",
+                    "384",
+                    "385",
+                    "386",
+                    "387",
+                    "388",
+                    "389",
+                    "390",
+                    "391",
+                    "392",
+                    "393",
+                    "394",
+                    "395",
+                    "396",
+                    "397",
+                    "398",
+                    "399",
+                    "400",
+                    "401",
+                    "402",
+                    "403",
+                    "404",
+                    "405",
+                    "406",
+                    "407",
+                    "408",
+                    "409",
+                    "410",
+                    "429"
+                ],
+                "32014L0065": [
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "16",
+                    "17",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "69",
+                    "70",
+                    "71"
+                ],
+                "32015L2366": [
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65",
+                    "66",
+                    "67",
+                    "68",
+                    "69",
+                    "70",
+                    "71",
+                    "72",
+                    "73",
+                    "74",
+                    "75",
+                    "76",
+                    "77",
+                    "78",
+                    "79",
+                    "80",
+                    "81",
+                    "82",
+                    "83",
+                    "97",
+                    "98",
+                    "103"
+                ],
+                "32024L1619": [
+                    "21c",
+                    "48",
+                    "48a",
+                    "48b",
+                    "48c",
+                    "48d",
+                    "48e",
+                    "48f",
+                    "48g",
+                    "48h",
+                    "48i",
+                    "48j",
+                    "48k",
+                    "76",
+                    "77",
+                    "78",
+                    "79",
+                    "80",
+                    "81",
+                    "82",
+                    "83",
+                    "84",
+                    "85",
+                    "86",
+                    "87",
+                    "104a",
+                    "123",
+                    "124",
+                    "125",
+                    "126",
+                    "127",
+                    "128",
+                    "129",
+                    "130",
+                    "131",
+                    "132",
+                    "133"
+                ],
+                "32024R1623": [
+                    "92a",
+                    "92b",
+                    "122",
+                    "123",
+                    "325a",
+                    "465"
+                ],
+                "32014L0059": [
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "100",
+                    "101",
+                    "102",
+                    "103",
+                    "104",
+                    "105",
+                    "106",
+                    "107",
+                    "108",
+                    "109"
+                ],
+                "32018R0389": [
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36"
+                ],
+                "32014R0596": [
+                    "7",
+                    "8",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "30",
+                    "31"
+                ],
+                "32014R0600": [
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "23",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "40",
+                    "41",
+                    "42"
+                ],
+                "32023R1114": [
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65",
+                    "66",
+                    "67",
+                    "68",
+                    "69",
+                    "70",
+                    "71",
+                    "72",
+                    "73",
+                    "74",
+                    "75",
+                    "76",
+                    "77",
+                    "78",
+                    "79",
+                    "80",
+                    "81",
+                    "82",
+                    "83",
+                    "84",
+                    "85",
+                    "86",
+                    "87",
+                    "88",
+                    "89",
+                    "90",
+                    "91",
+                    "92",
+                    "93",
+                    "94",
+                    "95",
+                    "96",
+                    "97",
+                    "98",
+                    "99",
+                    "100",
+                    "101",
+                    "102",
+                    "103",
+                    "104",
+                    "105",
+                    "106",
+                    "107",
+                    "108",
+                    "109",
+                    "110",
+                    "111",
+                    "112",
+                    "113",
+                    "114",
+                    "115",
+                    "116",
+                    "117",
+                    "118",
+                    "119",
+                    "120",
+                    "121",
+                    "122",
+                    "123",
+                    "124",
+                    "125",
+                    "126",
+                    "127",
+                    "128",
+                    "129",
+                    "130",
+                    "131",
+                    "132",
+                    "133",
+                    "134",
+                    "135",
+                    "136",
+                    "137",
+                    "138",
+                    "139"
+                ],
+                "32014L0049": [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20"
+                ],
+                "32014R0806": [
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "67",
+                    "68",
+                    "69",
+                    "70",
+                    "71",
+                    "72",
+                    "73",
+                    "74",
+                    "75",
+                    "76"
+                ],
+                "32022R2554": [
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44"
+                ]
+            },
+            "fetch_strategy": "articles_first",
+            "agent_instructions": "Focus on CRD/CRR framework, MiFID II/MiFIR, PSD2, and MiCA. Prioritize EBA/ESMA Guidelines. CRD requires national transposition; CRR/MiCA directly applicable. Reference DORA for ICT requirements."
+        },
+        "aml_cft": {
+            "display_name": "AML/CFT",
+            "primary_sources": [
+                "eba_publications"
+            ],
+            "web_search_domains": [
+                "eba.europa.eu",
+                "fatf-gafi.org"
+            ],
+            "celex_anchors": [
+                "32024R1624",
+                "32024L1640",
+                "32024R1620",
+                "32023R1113",
+                "32018L0843"
+            ],
+            "celex_titles": {
+                "32024R1624": "AML Regulation (AMLR)",
+                "32024L1640": "6th AML Directive (6AMLD)",
+                "32024R1620": "AMLA Regulation (Authority establishment)",
+                "32023R1113": "Transfer of Funds Regulation (TFR recast)",
+                "32018L0843": "5th AML Directive (5AMLD)"
+            },
+            "key_articles": {
+                "32024R1624": [
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65",
+                    "66",
+                    "67",
+                    "68",
+                    "69",
+                    "70",
+                    "71",
+                    "72",
+                    "73",
+                    "74",
+                    "75",
+                    "76",
+                    "77",
+                    "78",
+                    "79",
+                    "80",
+                    "81",
+                    "82",
+                    "83",
+                    "84",
+                    "85",
+                    "86",
+                    "87",
+                    "88",
+                    "89",
+                    "90",
+                    "91",
+                    "92",
+                    "93",
+                    "94",
+                    "95",
+                    "96",
+                    "97",
+                    "98",
+                    "99",
+                    "100"
+                ],
+                "32024L1640": [
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58"
+                ],
+                "32024R1620": [
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65",
+                    "66",
+                    "67",
+                    "68",
+                    "69",
+                    "70",
+                    "71",
+                    "72",
+                    "73",
+                    "74",
+                    "75",
+                    "76",
+                    "77",
+                    "78",
+                    "79",
+                    "80",
+                    "81",
+                    "82",
+                    "83",
+                    "84",
+                    "85",
+                    "86",
+                    "87",
+                    "88",
+                    "89",
+                    "90",
+                    "91",
+                    "92",
+                    "93",
+                    "94"
+                ],
+                "32023R1113": [
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25"
+                ],
+                "32015R0847": [
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "22",
+                    "23",
+                    "24",
+                    "25"
+                ]
+            },
+            "fetch_strategy": "articles_first",
+            "agent_instructions": "Focus on EU AML Regulation, 6AMLD, and AMLA. Reference FATF standards. Note AMLA's role in direct supervision of high-risk entities from 2028."
+        },
+        "abc": {
+            "display_name": "ABC",
+            "primary_sources": [],
+            "web_search_domains": [
+                "ec.europa.eu/olaf",
+                "eppo.europa.eu"
+            ],
+            "celex_anchors": [
+                "32017L1371",
+                "32017R1939",
+                "32013R0883",
+                "32014L0024",
+                "32003F0568",
+                "32019L1937"
+            ],
+            "celex_titles": {
+                "32017L1371": "PIF Directive (EU financial interests)",
+                "32017R1939": "EPPO Regulation",
+                "32013R0883": "OLAF Regulation",
+                "32014L0024": "Public Procurement Directive",
+                "32003F0568": "Framework Decision on Private Sector Corruption",
+                "32019L1937": "Whistleblower Directive"
+            },
+            "key_articles": {
+                "32017L1371": [
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12"
+                ],
+                "32017R1939": [
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65",
+                    "100",
+                    "101",
+                    "102",
+                    "103",
+                    "104",
+                    "105",
+                    "106",
+                    "107",
+                    "108",
+                    "109",
+                    "110",
+                    "111"
+                ],
+                "32013R0883": [
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "12a",
+                    "12b",
+                    "12c",
+                    "12d",
+                    "12e",
+                    "12f",
+                    "12g",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19"
+                ],
+                "32014L0024": [
+                    "4",
+                    "5",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65",
+                    "66",
+                    "67",
+                    "68",
+                    "69",
+                    "70",
+                    "71",
+                    "72",
+                    "73"
+                ],
+                "32003F0568": [
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7"
+                ],
+                "32019L1937": [
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27"
+                ]
+            },
+            "fetch_strategy": "articles_first",
+            "agent_instructions": "Focus on anti-bribery and corruption: PIF Directive, EPPO/OLAF frameworks, public procurement integrity. Reference Whistleblower Directive protections."
+        },
+        "competition_law": {
+            "display_name": "Competition Law",
+            "primary_sources": [
+                "competition_general",
+                "competition_cases",
+                "competition_antitrust"
+            ],
+            "web_search_domains": [
+                "ec.europa.eu/competition"
+            ],
+            "celex_anchors": [
+                "32003R0001",
+                "32004R0139",
+                "32019L0001",
+                "32022R0720"
+            ],
+            "celex_titles": {
+                "32003R0001": "Regulation 1/2003 (Competition enforcement)",
+                "32004R0139": "EC Merger Regulation",
+                "32019L0001": "ECN+ Directive",
+                "32022R0720": "VBER (Vertical Block Exemption Regulation)"
+            },
+            "key_articles": {
+                "32003R0001": [
+                    "3",
+                    "5",
+                    "7",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "14",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "27",
+                    "28",
+                    "29"
+                ],
+                "32004R0139": [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23"
+                ],
+                "32019L0001": [
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34"
+                ],
+                "32022R0720": [
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10"
+                ]
+            },
+            "fetch_strategy": "articles_first",
+            "agent_instructions": "Focus on TFEU Articles 101-102 (antitrust), Regulation 1/2003 (enforcement), Merger Regulation, and VBER. Reference ECN+ Directive for NCA powers."
+        },
+        "dma": {
+            "display_name": "DMA",
+            "primary_sources": [
+                "dma_cases",
+                "dma_cases_search"
+            ],
+            "web_search_domains": [
+                "digital-markets-act.ec.europa.eu",
+                "digital-strategy.ec.europa.eu"
+            ],
+            "celex_anchors": [
+                "32022R1925",
+                "32023R0814"
+            ],
+            "celex_titles": {
+                "32022R1925": "Digital Markets Act (DMA)",
+                "32023R0814": "DMA Implementing Regulation"
+            },
+            "key_articles": {
+                "32022R1925": [
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52"
+                ]
+            },
+            "fetch_strategy": "full_document",
+            "agent_instructions": "Focus on DMA gatekeeper obligations. Reference designated gatekeepers (Alphabet, Amazon, Apple, ByteDance, Meta, Microsoft) and compliance reports."
+        },
+        "ai_governance": {
+            "display_name": "AI Governance",
+            "primary_sources": [
+                "digital_strategy",
+                "edps_ai",
+                "ai_office"
+            ],
+            "web_search_domains": [
+                "digital-strategy.ec.europa.eu",
+                "ai-watch.ec.europa.eu"
+            ],
+            "celex_anchors": [
+                "32024R1689",
+                "32024R2847",
+                "32023R2854",
+                "32019R1150"
+            ],
+            "celex_titles": {
+                "32024R1689": "Artificial Intelligence Act (AI Act)",
+                "32024R2847": "Cyber Resilience Act (CRA)",
+                "32023R2854": "Data Act",
+                "32019R1150": "P2B Regulation (Platform-to-Business)"
+            },
+            "key_articles": {
+                "32024R1689": [
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "55",
+                    "56",
+                    "57",
+                    "58",
+                    "59",
+                    "60",
+                    "61",
+                    "62",
+                    "63",
+                    "64",
+                    "65",
+                    "66",
+                    "67",
+                    "68",
+                    "69",
+                    "70",
+                    "71",
+                    "72",
+                    "73",
+                    "74",
+                    "75",
+                    "76",
+                    "77",
+                    "78",
+                    "79",
+                    "80",
+                    "81",
+                    "82",
+                    "83",
+                    "84",
+                    "85",
+                    "86",
+                    "87",
+                    "88",
+                    "89",
+                    "90",
+                    "91",
+                    "92",
+                    "93",
+                    "94",
+                    "95",
+                    "96",
+                    "97",
+                    "98",
+                    "99",
+                    "100",
+                    "101",
+                    "102",
+                    "103",
+                    "104",
+                    "105",
+                    "106",
+                    "107",
+                    "108",
+                    "109",
+                    "110",
+                    "111"
+                ],
+                "32023R2854": [
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50"
+                ]
+            },
+            "fetch_strategy": "articles_first",
+            "agent_instructions": "Focus on AI Act risk classification (unacceptable, high, limited, minimal). Reference Annexes I/III, GPAI requirements. Note phased implementation 2024-2027."
+        },
+        "esg": {
+            "display_name": "ESG",
+            "primary_sources": [],
+            "web_search_domains": [
+                "finance.ec.europa.eu",
+                "efrag.org"
+            ],
+            "celex_anchors": [
+                "32020R0852",
+                "32022L2464",
+                "32019R2088",
+                "32023R2772",
+                "32024L1760",
+                "32023R2486",
+                "32021R2178",
+                "32023R2631"
+            ],
+            "celex_titles": {
+                "32020R0852": "Taxonomy Regulation",
+                "32022L2464": "CSRD (Corporate Sustainability Reporting Directive)",
+                "32019R2088": "SFDR (Sustainable Finance Disclosure Regulation)",
+                "32023R2772": "ESRS Delegated Regulation",
+                "32024L1760": "CSDDD (Corporate Sustainability Due Diligence Directive)",
+                "32023R2486": "Taxonomy Environmental Delegated Act",
+                "32021R2178": "Taxonomy Article 8 Delegated Act (Disclosures)",
+                "32023R2631": "European Green Bond Standard"
+            },
+            "key_articles": {
+                "32020R0852": [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27"
+                ],
+                "32022L2464": [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "14",
+                    "16",
+                    "17",
+                    "18",
+                    "19a",
+                    "19b",
+                    "19c",
+                    "19d",
+                    "29a",
+                    "29b",
+                    "29c",
+                    "29d",
+                    "30a",
+                    "33a",
+                    "33b",
+                    "40a",
+                    "40b",
+                    "40c",
+                    "40d",
+                    "48i"
+                ],
+                "32019R2088": [
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20"
+                ],
+                "32024L1760": [
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "20",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "31",
+                    "32",
+                    "33"
+                ]
+            },
+            "fetch_strategy": "articles_first",
+            "agent_instructions": "Focus on EU Taxonomy, CSRD, SFDR, and CSDDD. Reference ESRS standards (EFRAG). Note phased CSRD application by company size."
+        },
+        "full_eurlex": {
+            "display_name": "Full EUR-Lex",
+            "primary_sources": [
+                "think_tank",
+                "legislative_observatory",
+                "eu_summaries"
+            ],
+            "web_search_domains": [],
+            "celex_anchors": [],
+            "fetch_strategy": "topic_aware_semantic",
+            "agent_instructions": "Topic-aware mode: Analyze query to detect relevant topics, then match against ALL external sources based on their 'topics' field. Use Pinecone semantic search without CELEX filtering. Dynamically select web search domains based on detected topics."
+        }
+    },
+    "excluded_domains": {
+        "note": "NE pretražuj ove domene - sadržaj već imamo u bazi",
+        "domains": [
+            "eur-lex.europa.eu/legal-content",
+            "curia.europa.eu/juris"
+        ]
+    }
+}

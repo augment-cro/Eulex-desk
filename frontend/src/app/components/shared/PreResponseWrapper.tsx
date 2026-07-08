@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 export function PreResponseWrapper({
     children,
@@ -17,6 +18,7 @@ export function PreResponseWrapper({
     /** Tighter typography + child gap for narrow side panels (e.g. TR chat). */
     compact?: boolean;
 }) {
+    const t = useTranslations("streaming");
     const [userToggled, setUserToggled] = useState(false);
     const [isOpen, setIsOpen] = useState(!shouldMinimize);
     // Once content has streamed in (shouldMinimize=true even once), stay
@@ -31,37 +33,38 @@ export function PreResponseWrapper({
         setIsOpen(!shouldMinimize && !hasMinimizedRef.current);
     }, [shouldMinimize, userToggled]);
 
-    const stepWord = `step${stepCount === 1 ? "" : "s"}`;
     const label = isStreaming
-        ? "Working"
-        : `Completed in ${stepCount} ${stepWord}`;
+        ? t("working")
+        : t("completedInSteps", { count: stepCount });
 
-    const buttonTextClass = compact ? "text-xs" : "text-sm";
+    const toggleClass = compact
+        ? "reasoning-toggle reasoning-toggle--compact"
+        : "reasoning-toggle";
     const childrenGapClass = compact ? "gap-2.5" : "gap-4";
 
     return (
-        <div className="rounded-xl border border-white/70 bg-white/55 px-3 py-2 shadow-[0_3px_9px_rgba(15,23,42,0.03),inset_0_1px_0_rgba(255,255,255,0.9),inset_0_-4px_9px_rgba(255,255,255,0.05)] backdrop-blur-2xl">
+        <div className="border border-border rounded-lg px-3 py-2">
             <button
                 type="button"
                 onClick={() => {
                     setUserToggled(true);
                     setIsOpen((v) => !v);
                 }}
-                className={`w-full flex items-center justify-between font-serif text-gray-500 hover:text-gray-700 transition-colors ${buttonTextClass}`}
+                className={`w-full flex items-center justify-between text-muted-foreground hover:text-foreground transition-colors ${toggleClass}`}
             >
                 <span className="flex items-baseline min-w-0">
                     <span className="truncate">{label}</span>
                     {isStreaming && (
                         <span className="inline-flex ml-1 shrink-0 items-baseline">
-                            <span className="w-0.5 h-0.5 rounded-full bg-gray-400 mr-0.5 animate-[bounce_1.4s_infinite_0s]" />
-                            <span className="w-0.5 h-0.5 rounded-full bg-gray-400 mr-0.5 animate-[bounce_1.4s_infinite_0.2s]" />
-                            <span className="w-0.5 h-0.5 rounded-full bg-gray-400 animate-[bounce_1.4s_infinite_0.4s]" />
+                            <span className="w-0.5 h-0.5 rounded-full bg-muted-foreground/70 mr-0.5 animate-[bounce_1.4s_infinite_0s]" />
+                            <span className="w-0.5 h-0.5 rounded-full bg-muted-foreground/70 mr-0.5 animate-[bounce_1.4s_infinite_0.2s]" />
+                            <span className="w-0.5 h-0.5 rounded-full bg-muted-foreground/70 animate-[bounce_1.4s_infinite_0.4s]" />
                         </span>
                     )}
                 </span>
                 <ChevronDown
                     size={12}
-                    className={`relative top-px shrink-0 ml-2 transition-transform duration-200 ${isOpen ? "" : "-rotate-90"}`}
+                    className={`shrink-0 ml-2 transition-transform duration-200 ${isOpen ? "" : "-rotate-90"}`}
                 />
             </button>
             {isOpen && (

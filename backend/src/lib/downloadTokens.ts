@@ -1,20 +1,25 @@
 import crypto from "crypto";
 
 /**
- * HMAC-signed, non-expiring download tokens.
+ * HMAC-signed download tokens with a bounded lifetime (default 30 days).
  *
- * The token encodes the R2 storage path + filename; the backend route
- * `/download/:token` validates the signature and streams the file. This
- * gives persistent links safe to store in chat history without signed-URL
- * expiry or R2 CORS headaches.
+ * The token encodes the storage path + filename + an expiry; the backend route
+ * `/download/:token` validates the signature + expiry and streams the file.
+ * This gives stable links safe to store in chat history without signed-URL
+ * CORS headaches, while still capping how long a leaked link stays valid.
+ * Legacy tokens minted before the expiry field have no expiry and still verify.
  */
 
 function getSecret(): string {
-    const secret = process.env.DOWNLOAD_SIGNING_SECRET;
+    // Fail closed: no insecure literal fallback. A dedicated
+    // DOWNLOAD_SIGNING_SECRET is preferred, but EULEX_MCP_JWT_SECRET is always
+    // set in prod (auth middleware hard-fails without it), so existing tokens
+    // signed with it keep verifying.
+    const secret =
+        process.env.DOWNLOAD_SIGNING_SECRET ?? process.env.EULEX_MCP_JWT_SECRET;
     if (!secret) {
         throw new Error(
-            "DOWNLOAD_SIGNING_SECRET must be set. " +
-                "Generate a strong random value (e.g. `openssl rand -hex 32`) and set it in the environment.",
+            "DOWNLOAD_SIGNING_SECRET (or EULEX_MCP_JWT_SECRET) not configured",
         );
     }
     return secret;
@@ -35,12 +40,31 @@ function b64urlDecode(s: string): Buffer {
 }
 
 function timingSafeEqStr(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+    // Pad to equal length so the comparison is constant-time and never leaks
+    // length via an early return; the trailing length check keeps it correct.
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    const len = Math.max(ab.length, bb.length);
+    const pa = Buffer.alloc(len);
+    const pb = Buffer.alloc(len);
+    ab.copy(pa);
+    bb.copy(pb);
+    return crypto.timingSafeEqual(pa, pb) && ab.length === bb.length;
 }
 
-export function signDownload(path: string, filename: string): string {
-    const payload = JSON.stringify({ p: path, f: filename });
+/** Default download-token lifetime: 30 days. */
+const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function signDownload(
+    path: string,
+    filename: string,
+    ttlMs: number = DEFAULT_TTL_MS,
+): string {
+    const payload = JSON.stringify({
+        p: path,
+        f: filename,
+        e: Date.now() + ttlMs, // expiry (epoch ms)
+    });
     const enc = b64urlEncode(Buffer.from(payload, "utf8"));
     const sig = crypto
         .createHmac("sha256", getSecret())
@@ -64,8 +88,12 @@ export function verifyDownload(
         const parsed = JSON.parse(b64urlDecode(enc).toString("utf8")) as {
             p: string;
             f: string;
+            e?: number;
         };
         if (!parsed?.p || !parsed?.f) return null;
+        // Reject expired tokens. Legacy tokens without `e` have no expiry and
+        // still verify (backward compatible).
+        if (typeof parsed.e === "number" && Date.now() > parsed.e) return null;
         return { path: parsed.p, filename: parsed.f };
     } catch {
         return null;

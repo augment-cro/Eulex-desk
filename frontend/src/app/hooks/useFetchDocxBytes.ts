@@ -47,6 +47,14 @@ export function useFetchDocxBytes(
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
+    console.log("[useFetchDocxBytes] init", {
+        documentId,
+        versionId,
+        refetchKey,
+        initialKey,
+        cacheHit: initialKey ? bytesCache.has(initialKey) : null,
+    });
+
     useEffect(() => {
         if (!documentId) {
             setBytes(null);
@@ -56,7 +64,7 @@ export function useFetchDocxBytes(
 
         const key = cacheKey(documentId, versionId, refetchKey);
         const apiBase =
-            process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+            process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
         const qs = versionId
             ? `?version_id=${encodeURIComponent(versionId)}`
             : "";

@@ -1,31 +1,29 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Upload, Search, Loader2, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { X, Upload, Search, Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import {
     uploadStandaloneDocument,
     uploadProjectDocument,
     addDocumentToProject,
     deleteDocument,
 } from "@/app/lib/mikeApi";
-import type { Document } from "./types";
+import { track, fileTypeOf } from "@/app/lib/analytics";
+import type { MikeDocument } from "./types";
 import { FileDirectory } from "./FileDirectory";
 import { useDirectoryData, invalidateDirectoryCache } from "./useDirectoryData";
 import { OwnerOnlyModal } from "./OwnerOnlyModal";
+import { ConnectorsButton } from "./ConnectorsButton";
 import { useAuth } from "@/contexts/AuthContext";
-import { Modal } from "./Modal";
-import {
-    SUPPORTED_DOCUMENT_ACCEPT,
-    formatUnsupportedDocumentWarning,
-    partitionSupportedDocumentFiles,
-} from "@/app/lib/documentUploadValidation";
 
 export { invalidateDirectoryCache };
 
 interface Props {
     open: boolean;
     onClose: () => void;
-    onSelect: (documents: Document[], projectId?: string) => void;
+    onSelect: (documents: MikeDocument[], projectId?: string) => void;
     breadcrumb: string[];
     allowMultiple?: boolean;
     projectId?: string;
@@ -41,12 +39,12 @@ export function AddDocumentsModal({
 }: Props) {
     const { loading, standaloneDocuments, projects } = useDirectoryData(open);
     const { user } = useAuth();
+    const t = useTranslations("documents");
+    const tc = useTranslations("common");
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [uploading, setUploading] = useState(false);
-    const [uploadingFilenames, setUploadingFilenames] = useState<string[]>([]);
-    const [uploadWarning, setUploadWarning] = useState<string | null>(null);
     const [search, setSearch] = useState("");
-    const [extraUploadedDocs, setExtraUploadedDocs] = useState<Document[]>([]);
+    const [extraUploadedDocs, setExtraUploadedDocs] = useState<MikeDocument[]>([]);
     // IDs deleted in this session — hidden locally since `useDirectoryData`'s
     // cached state won't re-fetch until the modal reopens.
     const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
@@ -59,8 +57,6 @@ export function AddDocumentsModal({
         setSelectedIds(new Set());
         setExtraUploadedDocs([]);
         setDeletedIds(new Set());
-        setUploadingFilenames([]);
-        setUploadWarning(null);
     }, [open]);
 
     if (!open) return null;
@@ -75,9 +71,7 @@ export function AddDocumentsModal({
     ].filter((d) => !deletedIds.has(d.id));
 
     const filteredStandalone = q
-        ? allStandalone.filter((d) =>
-              d.filename.toLowerCase().includes(q),
-          )
+        ? allStandalone.filter((d) => d.filename.toLowerCase().includes(q))
         : allStandalone;
 
     const filteredProjects = projects
@@ -87,8 +81,7 @@ export function AddDocumentsModal({
             documents: (p.documents || []).filter(
                 (d) =>
                     !deletedIds.has(d.id) &&
-                    (!q ||
-                        d.filename.toLowerCase().includes(q)),
+                    (!q || d.filename.toLowerCase().includes(q)),
             ),
         }))
         .filter(
@@ -144,7 +137,7 @@ export function AddDocumentsModal({
     async function handleDelete(ids: string[]) {
         // Server only allows the doc creator to delete. Filter to owned
         // and warn for the rest.
-        const docsById = new Map<string, Document>();
+        const docsById = new Map<string, MikeDocument>();
         for (const d of [
             ...standaloneDocuments,
             ...extraUploadedDocs,
@@ -187,21 +180,31 @@ export function AddDocumentsModal({
     async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
         const files = Array.from(e.target.files || []);
         if (!files.length) return;
-        const { supported, unsupported } = partitionSupportedDocumentFiles(files);
-        setUploadWarning(formatUnsupportedDocumentWarning(unsupported));
-        if (supported.length === 0) {
-            if (fileInputRef.current) fileInputRef.current.value = "";
-            return;
-        }
-        setUploadingFilenames(supported.map((file) => file.name));
         setUploading(true);
         try {
             const uploaded = await Promise.all(
-                supported.map((f) =>
-                    projectId
-                        ? uploadProjectDocument(projectId, f)
-                        : uploadStandaloneDocument(f),
-                ),
+                files.map(async (f) => {
+                    const surface = projectId ? "project" : "standalone";
+                    const fileType = fileTypeOf(f);
+                    try {
+                        const doc = projectId
+                            ? await uploadProjectDocument(projectId, f)
+                            : await uploadStandaloneDocument(f);
+                        track("document_uploaded", {
+                            surface,
+                            file_type: fileType,
+                            result: "success",
+                        });
+                        return doc;
+                    } catch (err) {
+                        track("document_uploaded", {
+                            surface,
+                            file_type: fileType,
+                            result: "error",
+                        });
+                        throw err;
+                    }
+                }),
             );
             invalidateDirectoryCache();
             setExtraUploadedDocs((prev) => [...uploaded, ...prev]);
@@ -212,64 +215,59 @@ export function AddDocumentsModal({
             console.error("Upload failed:", err);
         } finally {
             setUploading(false);
-            setUploadingFilenames([]);
             if (fileInputRef.current) fileInputRef.current.value = "";
         }
     }
 
-    return (
-        <>
-            <Modal
-                open={open}
-                onClose={onClose}
-                breadcrumbs={breadcrumb}
-                secondaryAction={{
-                    label: uploading ? "Uploading…" : "Upload",
-                    icon: uploading ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                        <Upload className="h-3.5 w-3.5" />
-                    ),
-                    onClick: () => fileInputRef.current?.click(),
-                    disabled: uploading,
-                }}
-                footerStatus={
-                    selectedIds.size > 0 ? (
-                        <span className="text-xs text-gray-400">
-                            {selectedIds.size} selected
-                        </span>
-                    ) : null
-                }
-                primaryAction={{
-                    label: uploading ? "Saving…" : "Confirm",
-                    onClick: handleConfirm,
-                    disabled: selectedIds.size === 0 || uploading,
-                }}
-            >
-                <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept={SUPPORTED_DOCUMENT_ACCEPT}
-                    multiple
-                    className="hidden"
-                    onChange={handleUpload}
-                />
+    // Cloud-connector imports (Google Drive / Microsoft 365 / Box). The
+    // ConnectorsButton already drives the OAuth + picker flow and hands us
+    // the resulting MikeDocument; we just need to surface it in the list
+    // and pre-select it so the user can confirm in one click.
+    function handleConnectorImport(doc: MikeDocument) {
+        invalidateDirectoryCache();
+        setExtraUploadedDocs((prev) =>
+            prev.some((d) => d.id === doc.id) ? prev : [doc, ...prev],
+        );
+        setSelectedIds((prev) => new Set([...prev, doc.id]));
+    }
+
+    return createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-foreground/10 backdrop-blur-xs">
+            <div className="w-full max-w-2xl rounded-2xl bg-background border border-border flex flex-col h-[600px]">
+                {/* Header */}
+                <div className="flex items-center justify-between px-5 py-4">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
+                        {breadcrumb.map((segment, i) => (
+                            <span key={i} className="flex items-center gap-1.5">
+                                {i > 0 && <span>›</span>}
+                                {segment}
+                            </span>
+                        ))}
+                    </div>
+                    <button
+                        onClick={onClose}
+                        className="rounded-lg p-1.5 text-muted-foreground/70 hover:bg-accent hover:text-muted-foreground"
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
+
                 {/* Search bar */}
-                <div className="pt-1 pb-2">
-                    <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-                        <Search className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                <div className="px-4 pt-1 pb-2">
+                    <div className="flex items-center gap-2 rounded-lg border border-input bg-surface-elevated px-3 py-2">
+                        <Search className="h-3.5 w-3.5 text-muted-foreground/70 shrink-0" />
                         <input
                             type="text"
-                            placeholder="Search…"
+                            placeholder={t("searchPlaceholder")}
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
-                            className="flex-1 bg-transparent text-sm text-gray-700 placeholder:text-gray-400 outline-none"
+                            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground/70 outline-none"
                             autoFocus
                         />
                         {search && (
                             <button
                                 onClick={() => setSearch("")}
-                                className="text-gray-400 hover:text-gray-600"
+                                className="text-muted-foreground/70 hover:text-muted-foreground"
                             >
                                 <X className="h-3.5 w-3.5" />
                             </button>
@@ -277,40 +275,79 @@ export function AddDocumentsModal({
                     </div>
                 </div>
 
-                {uploadWarning && (
-                    <div className="mb-2 flex items-center gap-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-gray-900">
-                        <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-600" />
-                        <span className="min-w-0 flex-1">{uploadWarning}</span>
+                {/* File browser */}
+                <div className="flex-1 overflow-y-auto px-4 pb-2">
+                    <FileDirectory
+                        standaloneDocs={filteredStandalone}
+                        directoryProjects={filteredProjects}
+                        loading={loading}
+                        selectedIds={selectedIds}
+                        onChange={setSelectedIds}
+                        allowMultiple={allowMultiple}
+                        forceExpanded={!!q}
+                        emptyMessage={
+                            q ? t("noMatches") : t("noDocuments")
+                        }
+                        onDelete={handleDelete}
+                    />
+                </div>
+
+                {/* Footer */}
+                <div className="border-t border-border px-4 py-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".pdf,.docx,.doc"
+                            multiple
+                            className="hidden"
+                            onChange={handleUpload}
+                        />
                         <button
-                            type="button"
-                            onClick={() => setUploadWarning(null)}
-                            className="shrink-0 rounded p-0.5 text-black hover:bg-gray-100"
-                            aria-label="Dismiss warning"
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={uploading}
+                            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent disabled:opacity-50"
                         >
-                            <X className="h-3.5 w-3.5" />
+                            {uploading ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                                <Upload className="h-3.5 w-3.5" />
+                            )}
+                            {uploading ? t("uploading") : t("upload")}
+                        </button>
+                        <ConnectorsButton
+                            projectId={projectId ?? null}
+                            onImport={handleConnectorImport}
+                        />
+                    </div>
+                    <div className="flex items-center gap-2">
+                        {selectedIds.size > 0 && (
+                            <span className="text-xs text-muted-foreground/70">
+                                {t("selected", { count: selectedIds.size })}
+                            </span>
+                        )}
+                        <button
+                            onClick={onClose}
+                            className="rounded-lg px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent"
+                        >
+                            {tc("cancel")}
+                        </button>
+                        <button
+                            onClick={handleConfirm}
+                            disabled={selectedIds.size === 0 || uploading}
+                            className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+                        >
+                            {uploading ? tc("saving") : t("confirm")}
                         </button>
                     </div>
-                )}
-
-                {/* File browser */}
-                <FileDirectory
-                    standaloneDocs={filteredStandalone}
-                    directoryProjects={filteredProjects}
-                    loading={loading}
-                    selectedIds={selectedIds}
-                    onChange={setSelectedIds}
-                    allowMultiple={allowMultiple}
-                    forceExpanded={!!q}
-                    emptyMessage={q ? "No matches found" : "No documents yet"}
-                    onDelete={handleDelete}
-                    uploadingFilenames={uploadingFilenames}
-                />
-            </Modal>
+                </div>
+            </div>
             <OwnerOnlyModal
                 open={!!ownerOnlyAction}
                 action={ownerOnlyAction ?? undefined}
                 onClose={() => setOwnerOnlyAction(null)}
             />
-        </>
+        </div>,
+        document.body,
     );
 }

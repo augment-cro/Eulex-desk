@@ -1,18 +1,14 @@
 "use client";
 
 import ExcelJS from "exceljs";
-import type {
-    ColumnConfig,
-    Document,
-    TabularCell,
-} from "../shared/types";
-import { preprocessCitations } from "./citation-utils";
+import type { ColumnConfig, MikeDocument, TabularCell } from "../shared/types";
+import { preprocessCitations, unwrapNestedSummaryJson } from "./citation-utils";
 
 function formatCellForExport(cell: TabularCell | undefined): string {
     if (!cell) return "";
     if (cell.status === "pending" || cell.status === "generating") return "";
     if (cell.status === "error") return "Error";
-    const summary = cell.content?.summary;
+    const summary = unwrapNestedSummaryJson(cell.content?.summary ?? "");
     if (!summary) return "";
     const { processed } = preprocessCitations(summary);
     return processed
@@ -35,7 +31,7 @@ function sanitizeFilename(name: string): string {
 export async function exportTabularReviewToExcel(params: {
     reviewTitle: string;
     columns: ColumnConfig[];
-    documents: Document[];
+    documents: MikeDocument[];
     cells: TabularCell[];
 }) {
     const { reviewTitle, columns, documents, cells } = params;

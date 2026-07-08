@@ -524,7 +524,7 @@ function indexAll(hay: string, needle: string): number[] {
 // a canonical form for matching, then map matched offsets back to the
 // original paragraph text.
 
-function preNormalize(s: string): string {
+export function preNormalize(s: string): string {
     // All 1-to-1 character replacements — preserves length for straightforward
     // index mapping.
     return s
@@ -578,29 +578,45 @@ function findUniqueAnchor(
 ): { start: number; end: number } | { error: "none" | "ambiguous" } {
     const candidates: number[] = [];
 
+    // Case-INSENSITIVE matching. The find_in_document search tool lowercases
+    // both haystack and query (normalizeWithMap/normalizeQuery in chatTools),
+    // so the model copies a `find` whose casing may differ from the document
+    // ("članak" vs "Članak"). The edit matcher used to be case-sensitive,
+    // which produced "Pronađeno … 1 rezultat" (search) followed by
+    // "Uređivanje nije uspjelo" (edit) — a retry loop. We lowercase only for
+    // COMPARISON; the returned indices still address the original case-
+    // preserving `hayNorm`, so the downstream origIdx mapping is unchanged.
+    // Safe because Croatian/Latin (incl. č ć š ž đ) lowercase 1:1 — character
+    // positions don't shift. The actual w:ins/w:del text still comes from the
+    // original document run, so casing in the redline is preserved.
+    const hayCmp = hayNorm.toLowerCase();
+    const findCmp = findNorm.toLowerCase();
+    const ctxBeforeCmp = ctxBeforeNorm.toLowerCase();
+    const ctxAfterCmp = ctxAfterNorm.toLowerCase();
+
     const checkCtx = (pos: number): boolean => {
-        if (ctxBeforeNorm) {
-            const start = pos - ctxBeforeNorm.length;
+        if (ctxBeforeCmp) {
+            const start = pos - ctxBeforeCmp.length;
             if (start < 0) return false;
-            if (hayNorm.slice(start, pos) !== ctxBeforeNorm) return false;
+            if (hayCmp.slice(start, pos) !== ctxBeforeCmp) return false;
         }
-        if (ctxAfterNorm) {
-            const end = pos + findNorm.length;
-            if (hayNorm.slice(end, end + ctxAfterNorm.length) !== ctxAfterNorm)
+        if (ctxAfterCmp) {
+            const end = pos + findCmp.length;
+            if (hayCmp.slice(end, end + ctxAfterCmp.length) !== ctxAfterCmp)
                 return false;
         }
         return true;
     };
 
-    if (findNorm.length === 0) {
+    if (findCmp.length === 0) {
         // Pure insertion — scan every position
-        for (let i = 0; i <= hayNorm.length; i++) {
+        for (let i = 0; i <= hayCmp.length; i++) {
             if (checkCtx(i)) candidates.push(i);
         }
     } else {
         let from = 0;
-        while (from <= hayNorm.length - findNorm.length) {
-            const idx = hayNorm.indexOf(findNorm, from);
+        while (from <= hayCmp.length - findCmp.length) {
+            const idx = hayCmp.indexOf(findCmp, from);
             if (idx < 0) break;
             if (checkCtx(idx)) candidates.push(idx);
             from = idx + 1;
@@ -611,7 +627,7 @@ function findUniqueAnchor(
     if (candidates.length > 1) return { error: "ambiguous" };
     return {
         start: candidates[0],
-        end: candidates[0] + findNorm.length,
+        end: candidates[0] + findCmp.length,
     };
 }
 
@@ -710,18 +726,75 @@ function maxTrackedId(doc: XNode[]): number {
 }
 
 /**
+ * Parse `word/comments.xml` from the zip and return a map from comment id
+ * to `{ author, text }`.  Returns an empty map if the file doesn't exist
+ * or is malformed — callers can safely proceed without comments.
+ */
+async function parseComments(
+    zip: JSZip,
+    parser: ReturnType<typeof createParser>,
+): Promise<Map<string, { author: string; text: string }>> {
+    const map = new Map<string, { author: string; text: string }>();
+    const commentsFile = getZipEntry(zip, "word/comments.xml");
+    if (!commentsFile) return map;
+    try {
+        const xml = await commentsFile.async("string");
+        const tree = parser.parse(xml) as XNode[];
+        // tree → [ { "w:comments": [...] } ]
+        for (const top of tree) {
+            if (elName(top) !== "w:comments") continue;
+            for (const cNode of elChildren(top)) {
+                if (elName(cNode) !== "w:comment") continue;
+                const attrs = elAttrs(cNode);
+                const id = String(attrs["@_w:id"] ?? "");
+                const author = String(attrs["@_w:author"] ?? "Unknown");
+                // Collect all text from w:p > w:r > w:t inside the comment
+                const parts: string[] = [];
+                const collectText = (nodes: XNode[]) => {
+                    for (const n of nodes) {
+                        const name = elName(n);
+                        if (!name) {
+                            if (isTextNode(n)) parts.push(String(n[TEXT_KEY] ?? ""));
+                            continue;
+                        }
+                        if (name === "w:t") {
+                            parts.push(getTextContent(n));
+                        } else {
+                            collectText(elChildren(n));
+                        }
+                    }
+                };
+                collectText(elChildren(cNode));
+                if (id) map.set(id, { author, text: parts.join("") });
+            }
+        }
+    } catch {
+        // Malformed comments.xml — continue without comments
+    }
+    return map;
+}
+
+/**
  * Extract the body text of a .docx using the same flattening rules as the
  * tracked-changes matcher. Paragraphs are joined by a single newline. The
  * output is what the LLM should base its `find` / `context_before` /
  * `context_after` strings on, since it exactly mirrors the string the
  * anchor matcher operates against.
+ *
+ * Comment bubbles from `word/comments.xml` are surfaced as inline markers:
+ * `{>>by Author Name: comment text<<}` placed at the w:commentRangeEnd
+ * position within the paragraph.
  */
 export async function extractDocxBodyText(bytes: Buffer): Promise<string> {
     const zip = await JSZip.loadAsync(bytes);
+    const parser = createParser();
+
+    // Load comments map (empty if no comments.xml)
+    const commentsMap = await parseComments(zip, parser);
+
     const docXmlFile = getZipEntry(zip, "word/document.xml");
     if (!docXmlFile) return "";
     const docXmlRaw = await docXmlFile.async("string");
-    const parser = createParser();
     const tree = parser.parse(docXmlRaw) as XNode[];
     const bodyChildren = findBody(tree);
     if (!bodyChildren) return "";
@@ -732,8 +805,42 @@ export async function extractDocxBodyText(bytes: Buffer): Promise<string> {
             const name = elName(n);
             if (!name) continue;
             if (name === "w:p") {
-                const flat = flattenParagraph(elChildren(n));
-                lines.push(flat.paraText);
+                // Walk paragraph children to build text + inline comments
+                const paraKids = elChildren(n);
+                let paraText = "";
+                // Pending comment IDs that have started but not yet ended
+                for (const kid of paraKids) {
+                    const kidName = elName(kid);
+                    if (kidName === "w:r") {
+                        // Extract text from run
+                        for (const rk of elChildren(kid)) {
+                            if (elName(rk) === "w:t") {
+                                paraText += getTextContent(rk);
+                            }
+                        }
+                    } else if (kidName === "w:ins") {
+                        // Accepted view: include inserted text
+                        for (const inner of elChildren(kid)) {
+                            if (elName(inner) === "w:r") {
+                                for (const rk of elChildren(inner)) {
+                                    if (elName(rk) === "w:t") {
+                                        paraText += getTextContent(rk);
+                                    }
+                                }
+                            }
+                        }
+                    } else if (kidName === "w:commentRangeEnd") {
+                        // Insert comment marker at this position
+                        const attrs = elAttrs(kid);
+                        const commentId = String(attrs["@_w:id"] ?? "");
+                        const comment = commentsMap.get(commentId);
+                        if (comment) {
+                            paraText += ` {>>by ${comment.author}: ${comment.text}<<}`;
+                        }
+                    }
+                    // w:del, w:commentRangeStart, w:bookmarkStart/End, etc. — skip
+                }
+                lines.push(paraText);
             } else if (
                 name === "w:tbl" ||
                 name === "w:tr" ||
@@ -784,12 +891,26 @@ export async function extractTrackedChangeIds(
     return out;
 }
 
+// `extractDocxBodyText` surfaces Word comments to the model as synthetic
+// `{>>by Author: text<<}` markers (with a leading space). The matcher's
+// `paraText` (flattenParagraph) does NOT contain them, so if the model copies
+// a `find`/`context` that overlaps a marker, the anchor can't be located and
+// the edit silently no-ops. The system prompt tells the model these are
+// read-only annotations, but as a server-side safety net we also strip the
+// full injected marker from the anchor strings before matching. Stripping
+// find + replace together keeps collapseDiff aligned; the marker is synthetic,
+// so it must never be part of an edit's deleted/inserted text.
+const INJECTED_COMMENT_MARKER_RE = /\s?\{>>by [\s\S]*?<<\}/g;
+function stripInjectedCommentMarkers(s: string): string {
+    return s.includes("{>>by ") ? s.replace(INJECTED_COMMENT_MARKER_RE, "") : s;
+}
+
 export async function applyTrackedEdits(
     bytes: Buffer,
     edits: EditInput[],
     opts?: { author?: string },
 ): Promise<ApplyTrackedEditsResult> {
-    const author = opts?.author ?? "Mike";
+    const author = opts?.author ?? "Eulex Desk";
     const now = new Date().toISOString();
 
     const zip = await JSZip.loadAsync(bytes);
@@ -850,10 +971,13 @@ export async function applyTrackedEdits(
 
     for (let editIdx = 0; editIdx < edits.length; editIdx++) {
         const edit = edits[editIdx];
-        const find = edit.find ?? "";
-        const replace = edit.replace ?? "";
-        const ctxBefore = edit.context_before ?? "";
-        const ctxAfter = edit.context_after ?? "";
+        // Strip any synthetic comment markers the model may have copied from
+        // read_document/find_in_document output — they aren't in the matcher's
+        // paraText, so leaving them in would silently fail to locate the anchor.
+        const find = stripInjectedCommentMarkers(edit.find ?? "");
+        const replace = stripInjectedCommentMarkers(edit.replace ?? "");
+        const ctxBefore = stripInjectedCommentMarkers(edit.context_before ?? "");
+        const ctxAfter = stripInjectedCommentMarkers(edit.context_after ?? "");
 
         if (!find && !replace) {
             errors.push({ index: editIdx, reason: "Empty edit." });
@@ -971,8 +1095,8 @@ export async function applyTrackedEdits(
             deleteEnd: minEnd,
             deletedText: deleted,
             insertedText: inserted,
-            contextBefore: edit.context_before ?? "",
-            contextAfter: edit.context_after ?? "",
+            contextBefore: ctxBefore,
+            contextAfter: ctxAfter,
             reason: edit.reason,
             changeId,
             delWId: deleted ? String(nextWId++) : undefined,

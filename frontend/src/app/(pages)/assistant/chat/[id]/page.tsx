@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
@@ -18,6 +18,7 @@ export default function AssistantChatPage() {
     const initialMessages = newChatMessages ?? [];
     const { messages, isResponseLoading, handleChat, setMessages, cancel } =
         useAssistantChat({ initialMessages, chatId: id });
+    const [chatTitle, setChatTitle] = useState<string | null>(null);
 
     const hasAutoSent = useRef(false);
     const hasLoaded = useRef(false);
@@ -35,7 +36,8 @@ export default function AssistantChatPage() {
         hasLoaded.current = true;
 
         getChat(id)
-            .then(({ messages: loaded }) => {
+            .then(({ chat, messages: loaded }) => {
+                setChatTitle(chat?.title ?? null);
                 if (loaded.length > 0) {
                     setMessages(loaded);
                 } else {
@@ -61,11 +63,19 @@ export default function AssistantChatPage() {
 
     return (
         <ChatView
-            chatId={id}
             messages={messages}
             isResponseLoading={isResponseLoading}
             handleChat={handleChat}
             cancel={cancel}
+            chatId={id}
+            chatTitle={chatTitle}
+            onFlagChange={(mid, flagged) =>
+                setMessages((prev) =>
+                    prev.map((m) =>
+                        m.id === mid ? { ...m, flagged } : m,
+                    ),
+                )
+            }
         />
     );
 }

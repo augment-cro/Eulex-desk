@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Loader2, Upload } from "lucide-react";
-import type { Document, Project, Workflow } from "../shared/types";
+import { createPortal } from "react-dom";
+import { Check, ChevronDown, Loader2, Upload, X } from "lucide-react";
+import { useTranslations } from "next-intl";
+import type { MikeDocument, MikeProject, MikeWorkflow } from "../shared/types";
 import {
     getProject,
     listProjects,
@@ -11,9 +13,13 @@ import {
     uploadProjectDocument,
     uploadStandaloneDocument,
 } from "@/app/lib/mikeApi";
+import { track, fileTypeOf } from "@/app/lib/analytics";
 import { FileDirectory } from "../shared/FileDirectory";
-import { BUILT_IN_WORKFLOWS } from "../workflows/builtinWorkflows";
-import { Modal } from "../shared/Modal";
+import { ConnectorsButton } from "../shared/ConnectorsButton";
+import {
+    fetchBuiltinWorkflows,
+    getLocalizedWorkflowTitle,
+} from "../workflows/builtinWorkflows";
 
 interface Props {
     open: boolean;
@@ -22,13 +28,16 @@ interface Props {
         title: string,
         projectId?: string,
         documentIds?: string[],
-        columnsConfig?: Workflow["columns_config"],
+        columnsConfig?: MikeWorkflow["columns_config"],
     ) => void;
-    projects?: Project[];
+    projects?: MikeProject[];
     /** When provided, skip the project/directory picker and show only these docs */
-    projectDocs?: Document[];
+    projectDocs?: MikeDocument[];
     projectName?: string;
     projectCmNumber?: string | null;
+    /** Required when invoked inside a project (isProjectMode) so connector
+     *  imports land in the right project. */
+    projectId?: string;
 }
 
 export function AddNewTRModal({
@@ -39,7 +48,10 @@ export function AddNewTRModal({
     projectDocs: fixedProjectDocs,
     projectName,
     projectCmNumber,
+    projectId,
 }: Props) {
+    const t = useTranslations("addNewTR");
+    const tBuiltinTitles = useTranslations("builtinWorkflows");
     const isProjectMode = fixedProjectDocs !== undefined;
     const [title, setTitle] = useState("");
     const [underProject, setUnderProject] = useState(false);
@@ -47,12 +59,12 @@ export function AddNewTRModal({
     const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
 
     // Project-scoped docs (when underProject is true and no fixedProjectDocs)
-    const [projectDocs, setProjectDocs] = useState<Document[]>([]);
+    const [projectDocs, setProjectDocs] = useState<MikeDocument[]>([]);
     const [loadingDocs, setLoadingDocs] = useState(false);
 
     // Full directory (when underProject is false)
-    const [standaloneDocs, setStandaloneDocs] = useState<Document[]>([]);
-    const [directoryProjects, setDirectoryProjects] = useState<Project[]>(
+    const [standaloneDocs, setStandaloneDocs] = useState<MikeDocument[]>([]);
+    const [directoryProjects, setDirectoryProjects] = useState<MikeProject[]>(
         [],
     );
     const [loadingDirectory, setLoadingDirectory] = useState(false);
@@ -64,24 +76,29 @@ export function AddNewTRModal({
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Workflow templates
-    const [workflows, setWorkflows] = useState<Workflow[]>([]);
+    const [workflows, setWorkflows] = useState<MikeWorkflow[]>([]);
     const [loadingWorkflows, setLoadingWorkflows] = useState(false);
     const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(
         null,
     );
     const [workflowDropdownOpen, setWorkflowDropdownOpen] = useState(false);
-    const formId = "new-tabular-review-modal-form";
 
     useEffect(() => {
         if (!open) return;
 
         setLoadingWorkflows(true);
-        const builtinTabular = BUILT_IN_WORKFLOWS.filter(
-            (w) => w.type === "tabular",
-        );
-        listWorkflows("tabular")
-            .then((custom) => setWorkflows([...builtinTabular, ...custom]))
-            .catch(() => setWorkflows(builtinTabular))
+        // Built-ins come from the backend (governance pack); [] when no
+        // pack is configured. Customs fail soft so the built-ins still show.
+        Promise.all([
+            fetchBuiltinWorkflows(),
+            listWorkflows("tabular").catch(() => [] as MikeWorkflow[]),
+        ])
+            .then(([allBuiltins, custom]) =>
+                setWorkflows([
+                    ...allBuiltins.filter((w) => w.type === "tabular"),
+                    ...custom,
+                ]),
+            )
             .finally(() => setLoadingWorkflows(false));
 
         if (isProjectMode) {
@@ -170,11 +187,35 @@ export function AddNewTRModal({
         setUploading(true);
         try {
             const uploaded = await Promise.all(
-                files.map((f) =>
-                    underProject && selectedProjectId
-                        ? uploadProjectDocument(selectedProjectId, f)
-                        : uploadStandaloneDocument(f),
-                ),
+                files.map(async (f) => {
+                    const surface =
+                        underProject && selectedProjectId
+                            ? "project"
+                            : "standalone";
+                    const fileType = fileTypeOf(f);
+                    try {
+                        const doc =
+                            underProject && selectedProjectId
+                                ? await uploadProjectDocument(
+                                      selectedProjectId,
+                                      f,
+                                  )
+                                : await uploadStandaloneDocument(f);
+                        track("document_uploaded", {
+                            surface,
+                            file_type: fileType,
+                            result: "success",
+                        });
+                        return doc;
+                    } catch (err) {
+                        track("document_uploaded", {
+                            surface,
+                            file_type: fileType,
+                            result: "error",
+                        });
+                        throw err;
+                    }
+                }),
             );
             if (underProject && selectedProjectId) {
                 setProjectDocs((prev) => [...uploaded, ...prev]);
@@ -192,6 +233,31 @@ export function AddNewTRModal({
         }
     }
 
+    // Determine which project (if any) the connector import should land
+    // in. Mirrors the same projectId resolution used by handleUpload so
+    // a "Project docs" view stays consistent.
+    const importTargetProjectId: string | null = isProjectMode
+        ? (projectId ?? null)
+        : underProject && selectedProjectId
+          ? selectedProjectId
+          : null;
+
+    function handleConnectorImport(doc: MikeDocument) {
+        // Drop the new doc into the same list the directory is currently
+        // showing so the user immediately sees it as the freshly-added
+        // top row.
+        if (importTargetProjectId) {
+            setProjectDocs((prev) =>
+                prev.some((d) => d.id === doc.id) ? prev : [doc, ...prev],
+            );
+        } else {
+            setStandaloneDocs((prev) =>
+                prev.some((d) => d.id === doc.id) ? prev : [doc, ...prev],
+            );
+        }
+        setSelectedDocIds((prev) => new Set([...prev, doc.id]));
+    }
+
     const selectedProject = projects.find((p) => p.id === selectedProjectId);
     const selectedWorkflow = workflows.find((w) => w.id === selectedWorkflowId);
 
@@ -206,7 +272,7 @@ export function AddNewTRModal({
         : underProject
           ? []
           : directoryProjects;
-    const flatProjectDocs: Document[] =
+    const flatProjectDocs: MikeDocument[] =
         !isProjectMode && underProject ? projectDocs : [];
     const directoryLoading = isProjectMode
         ? false
@@ -214,64 +280,61 @@ export function AddNewTRModal({
           ? loadingDocs
           : loadingDirectory;
     const showDirectory = isProjectMode || !underProject || !!selectedProjectId;
-    const breadcrumbs =
-        isProjectMode && projectName
-            ? [
-                  "Projects",
-                  `${projectName}${projectCmNumber ? ` (#${projectCmNumber})` : ""}`,
-                  "New Tabular Review",
-              ]
-            : ["Tabular Reviews", "New Tabular Review"];
 
-    return (
-        <Modal
-            open={open}
-            onClose={handleClose}
-            breadcrumbs={breadcrumbs}
-            secondaryAction={{
-                label: uploading ? "Uploading…" : "Upload",
-                icon: uploading ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                    <Upload className="h-3.5 w-3.5" />
-                ),
-                onClick: () => fileInputRef.current?.click(),
-                disabled: uploading,
-            }}
-            primaryAction={{
-                label: "Create",
-                type: "submit",
-                form: formId,
-                disabled: !title.trim() || (underProject && !selectedProjectId),
-            }}
-        >
-            <input
-                ref={fileInputRef}
-                type="file"
-                accept=".pdf,.docx,.doc"
-                multiple
-                className="hidden"
-                onChange={handleUpload}
-            />
-            <form
-                id={formId}
-                onSubmit={handleSubmit}
-                className="flex flex-col min-h-0 flex-1"
-            >
-                <div className="space-y-5">
-                    <input
-                        type="text"
-                        value={title}
-                        onChange={(e) => setTitle(e.target.value)}
-                        placeholder="Review name"
-                        className="w-full text-2xl font-serif text-gray-800 placeholder-gray-400 focus:outline-none bg-transparent"
-                        autoFocus
-                    />
+    return createPortal(
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-primary/20 backdrop-blur-xs">
+            <div className="w-full max-w-2xl rounded-2xl bg-surface-elevated border border-border flex flex-col h-[600px]">
+                {/* Header */}
+                <div className="flex items-center justify-between px-6 pt-5 pb-2 shrink-0">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
+                        {isProjectMode && projectName ? (
+                            <>
+                                <span>{t("projects")}</span>
+                                <span>›</span>
+                                <span>
+                                    {projectName}
+                                    {projectCmNumber ? ` (#${projectCmNumber})` : ""}
+                                </span>
+                                <span>›</span>
+                                <span>{t("tabularReviews")}</span>
+                                <span>›</span>
+                                <span>{t("newReview")}</span>
+                            </>
+                        ) : (
+                            <>
+                                <span>{t("tabularReviews")}</span>
+                                <span>›</span>
+                                <span>{t("newReview")}</span>
+                            </>
+                        )}
+                    </div>
+                    <button
+                        onClick={handleClose}
+                        className="rounded-lg p-1.5 text-muted-foreground/70 hover:bg-accent hover:text-muted-foreground transition-colors"
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
+
+                <form
+                    onSubmit={handleSubmit}
+                    className="flex flex-col min-h-0 flex-1"
+                >
+                    <div className="px-6 pt-3 pb-4 space-y-5 overflow-y-auto flex-1">
+                        {/* Title */}
+                        <input
+                            type="text"
+                            value={title}
+                            onChange={(e) => setTitle(e.target.value)}
+                            placeholder={t("reviewName")}
+                            className="w-full text-2xl font-serif text-foreground placeholder-muted-foreground/70 focus:outline-none bg-transparent"
+                            autoFocus
+                        />
 
                         {/* Workflow template */}
                         <div className="space-y-2">
-                            <p className="text-xs font-medium text-gray-700">
-                                Workflow Template
+                            <p className="text-xs font-medium text-foreground">
+                                {t("workflowTemplate")}
                             </p>
                             <div className="relative">
                                 <button
@@ -280,47 +343,50 @@ export function AddNewTRModal({
                                         setWorkflowDropdownOpen((o) => !o)
                                     }
                                     disabled={loadingWorkflows}
-                                    className="flex items-center justify-between w-full rounded-lg border border-gray-200 px-3 py-2 text-sm hover:border-gray-400 focus:outline-none bg-white transition-colors"
+                                    className="flex items-center justify-between w-full rounded-lg border border-input px-3 py-2 text-sm hover:border-ring focus:outline-none bg-surface-elevated transition-colors"
                                 >
                                     <div className="flex items-center gap-2 min-w-0">
                                         {loadingWorkflows && (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-400 shrink-0" />
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground/70 shrink-0" />
                                         )}
                                         <span
                                             className={
                                                 selectedWorkflow
-                                                    ? "text-gray-800 truncate"
-                                                    : "text-gray-400"
+                                                    ? "text-foreground truncate"
+                                                    : "text-muted-foreground/70"
                                             }
                                         >
                                             {loadingWorkflows
-                                                ? "Loading templates…"
+                                                ? t("loadingTemplates")
                                                 : selectedWorkflow
-                                                  ? selectedWorkflow.title
-                                                  : "No template — start from scratch"}
+                                                  ? getLocalizedWorkflowTitle(
+                                                        selectedWorkflow,
+                                                        tBuiltinTitles,
+                                                    )
+                                                  : t("noTemplate")}
                                         </span>
                                     </div>
-                                    <ChevronDown className="h-3.5 w-3.5 text-gray-400 shrink-0 ml-2" />
+                                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/70 shrink-0 ml-2" />
                                 </button>
                                 {workflowDropdownOpen && !loadingWorkflows && (
-                                    <div className="absolute left-0 top-full z-20 mt-1 w-full rounded-xl border border-gray-100 bg-white shadow-lg overflow-y-auto max-h-52">
+                                    <div className="absolute left-0 top-full z-20 mt-1 w-full rounded-xl border border-border bg-surface-elevated overflow-y-auto max-h-52">
                                         <button
                                             type="button"
                                             onClick={() => {
                                                 setSelectedWorkflowId(null);
                                                 setWorkflowDropdownOpen(false);
                                             }}
-                                            className={`w-full text-left flex items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-gray-50 ${!selectedWorkflowId ? "bg-gray-50 text-gray-900" : "text-gray-500"}`}
+                                            className={`w-full text-left flex items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-accent ${!selectedWorkflowId ? "bg-accent text-foreground" : "text-muted-foreground"}`}
                                         >
                                             <span className="flex-1">
-                                                No template — start from scratch
+                                                {t("noTemplate")}
                                             </span>
                                             {!selectedWorkflowId && (
-                                                <Check className="h-3.5 w-3.5 text-gray-500 shrink-0" />
+                                                <Check className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                                             )}
                                         </button>
                                         {workflows.length > 0 && (
-                                            <div className="border-t border-gray-100" />
+                                            <div className="border-t border-border" />
                                         )}
                                         {workflows.map((wf) => (
                                             <button
@@ -334,14 +400,17 @@ export function AddNewTRModal({
                                                         false,
                                                     );
                                                 }}
-                                                className={`w-full text-left flex items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-gray-50 ${selectedWorkflowId === wf.id ? "bg-gray-50 text-gray-900" : "text-gray-700"}`}
+                                                className={`w-full text-left flex items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-accent ${selectedWorkflowId === wf.id ? "bg-accent text-foreground" : "text-foreground"}`}
                                             >
                                                 <span className="flex-1 truncate">
-                                                    {wf.title}
+                                                    {getLocalizedWorkflowTitle(
+                                                        wf,
+                                                        tBuiltinTitles,
+                                                    )}
                                                 </span>
                                                 {selectedWorkflowId ===
                                                     wf.id && (
-                                                    <Check className="h-3.5 w-3.5 text-gray-500 shrink-0" />
+                                                    <Check className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                                                 )}
                                             </button>
                                         ))}
@@ -367,14 +436,14 @@ export function AddNewTRModal({
                                 className="flex items-center gap-2.5 w-fit"
                             >
                                 <span
-                                    className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors duration-200 ${underProject ? "bg-gray-900" : "bg-gray-200"}`}
+                                    className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors duration-200 ${underProject ? "bg-primary" : "bg-secondary"}`}
                                 >
                                     <span
-                                        className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${underProject ? "translate-x-4" : "translate-x-0"}`}
+                                        className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-background border border-border transition-transform duration-200 ${underProject ? "translate-x-4" : "translate-x-0"}`}
                                     />
                                 </span>
-                                <span className="text-sm text-gray-600">
-                                    Create under a project
+                                <span className="text-sm text-muted-foreground">
+                                    {t("createUnderProject")}
                                 </span>
                             </button>
 
@@ -385,13 +454,13 @@ export function AddNewTRModal({
                                         onClick={() =>
                                             setProjectDropdownOpen((o) => !o)
                                         }
-                                        className="flex items-center justify-between w-full rounded-lg border border-gray-200 px-3 py-2 text-sm hover:border-gray-400 focus:outline-none bg-white transition-colors"
+                                        className="flex items-center justify-between w-full rounded-lg border border-input px-3 py-2 text-sm hover:border-ring focus:outline-none bg-surface-elevated transition-colors"
                                     >
                                         <span
                                             className={
                                                 selectedProject
-                                                    ? "text-gray-800"
-                                                    : "text-gray-400"
+                                                    ? "text-foreground"
+                                                    : "text-muted-foreground/70"
                                             }
                                         >
                                             {selectedProject
@@ -399,15 +468,15 @@ export function AddNewTRModal({
                                                   (selectedProject.cm_number
                                                       ? ` (#${selectedProject.cm_number})`
                                                       : "")
-                                                : "Select project…"}
+                                                : t("selectProject")}
                                         </span>
-                                        <ChevronDown className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                                        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/70 shrink-0" />
                                     </button>
                                     {projectDropdownOpen && (
-                                        <div className="absolute left-0 top-full z-20 mt-1 w-full rounded-xl border border-gray-100 bg-white shadow-lg overflow-y-auto max-h-48">
+                                        <div className="absolute left-0 top-full z-20 mt-1 w-full rounded-xl border border-border bg-surface-elevated overflow-y-auto max-h-48">
                                             {projects.length === 0 ? (
-                                                <p className="px-3 py-2 text-xs text-gray-400">
-                                                    No projects found
+                                                <p className="px-3 py-2 text-xs text-muted-foreground/70">
+                                                    {t("noProjectsFound")}
                                                 </p>
                                             ) : (
                                                 projects.map((p) => (
@@ -419,12 +488,12 @@ export function AddNewTRModal({
                                                                 p.id,
                                                             )
                                                         }
-                                                        className={`w-full text-left flex items-center justify-between px-3 py-2 text-sm transition-colors hover:bg-gray-50 ${selectedProjectId === p.id ? "bg-gray-50 text-gray-900" : "text-gray-700"}`}
+                                                        className={`w-full text-left flex items-center justify-between px-3 py-2 text-sm transition-colors hover:bg-accent ${selectedProjectId === p.id ? "bg-accent text-foreground" : "text-foreground"}`}
                                                     >
                                                         <span className="truncate">
                                                             {p.name}
                                                             {p.cm_number && (
-                                                                <span className="ml-1 text-gray-400">
+                                                                <span className="ml-1 text-muted-foreground/70">
                                                                     (#
                                                                     {
                                                                         p.cm_number
@@ -435,7 +504,7 @@ export function AddNewTRModal({
                                                         </span>
                                                         {selectedProjectId ===
                                                             p.id && (
-                                                            <Check className="h-3.5 w-3.5 text-gray-500 shrink-0" />
+                                                            <Check className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                                                         )}
                                                     </button>
                                                 ))
@@ -449,8 +518,8 @@ export function AddNewTRModal({
                         {/* File directory */}
                         {showDirectory && (
                             <div className="space-y-2">
-                                <p className="text-xs font-medium text-gray-700">
-                                    Select Documents
+                                <p className="text-xs font-medium text-foreground">
+                                    {t("selectDocuments")}
                                 </p>
                                 <div>
                                     <FileDirectory
@@ -471,18 +540,71 @@ export function AddNewTRModal({
                                         loading={directoryLoading}
                                         selectedIds={selectedDocIds}
                                         onChange={setSelectedDocIds}
-                                        heading={isProjectMode ? "Project Documents" : "Documents"}
+                                        heading={isProjectMode ? t("projectDocuments") : t("documents")}
                                         emptyMessage={
                                             isProjectMode || underProject
-                                                ? "No ready documents in this project"
-                                                : "No documents yet"
+                                                ? t("noReadyDocuments")
+                                                : t("noDocumentsYet")
                                         }
                                     />
                                 </div>
                             </div>
                         )}
-                </div>
-            </form>
-        </Modal>
+                    </div>
+
+                    {/* Footer */}
+                    <div className="flex items-center justify-between gap-2 border-t border-border px-6 py-4 shrink-0">
+                        <div className="flex items-center gap-2">
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".pdf,.docx,.doc"
+                                multiple
+                                className="hidden"
+                                onChange={handleUpload}
+                            />
+                            <button
+                                type="button"
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={uploading}
+                                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent disabled:opacity-50 transition-colors"
+                            >
+                                {uploading ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                    <Upload className="h-3.5 w-3.5" />
+                                )}
+                                {uploading ? t("uploading") : t("upload")}
+                            </button>
+                            <ConnectorsButton
+                                projectId={importTargetProjectId}
+                                onImport={handleConnectorImport}
+                                size="md"
+                            />
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={handleClose}
+                                className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:bg-accent transition-colors"
+                            >
+                                {t("cancel")}
+                            </button>
+                            <button
+                                type="submit"
+                                disabled={
+                                    !title.trim() ||
+                                    (underProject && !selectedProjectId)
+                                }
+                                className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
+                            >
+                                {t("create")}
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>,
+        document.body,
     );
 }

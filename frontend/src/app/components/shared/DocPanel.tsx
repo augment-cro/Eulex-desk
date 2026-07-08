@@ -1,25 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Download, Loader2 } from "lucide-react";
+import { Download, Loader2, Pencil } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { supabase } from "@/lib/supabase";
 import { applyOptimisticResolution } from "../assistant/EditCard";
 import { DocView } from "./DocView";
-import { DocxView } from "./DocxView";
+import { DocxViewer } from "./DocxViewer";
 import {
-    RelevantQuotes,
-    type RelevantQuoteItem,
-} from "./RelevantQuotes";
-import {
+    displayCitationQuote,
     expandCitationToEntries,
     formatCitationPage,
-    getDocumentCitationQuotes,
 } from "./types";
 import type {
     CitationQuote,
-    CitationAnnotation,
-    DocumentCitationAnnotation,
-    EditAnnotation,
+    MikeCitationAnnotation,
+    MikeEditAnnotation,
 } from "./types";
 
 function isDocxFilename(name: string): boolean {
@@ -29,16 +25,16 @@ function isDocxFilename(name: string): boolean {
 
 /**
  * Discriminated-union describing what the panel is showing above the viewer.
- *   - "document":  title row + viewer.
- *   - "citation":  title row + relevant quote + viewer.
- *   - "edit":      title row + tracked change + viewer.
+ *   - "document":  no header card, no label — just the viewer.
+ *   - "citation":  "Citation Quote" card with the quoted text and page ref.
+ *   - "edit":      "Tracked Change" card with the diff + Accept/Reject.
  */
 export type DocPanelMode =
     | { kind: "document" }
-    | { kind: "citation"; citation: CitationAnnotation }
+    | { kind: "citation"; citation: MikeCitationAnnotation }
     | {
           kind: "edit";
-          edit: EditAnnotation;
+          edit: MikeEditAnnotation;
           /**
            * True while an accept/reject request for this exact edit is in
            * flight. Scoped per-edit (not per-document) so sibling edits on
@@ -77,6 +73,24 @@ interface Props {
     onWarningDismiss?: () => void;
     initialScrollTop?: number | null;
     onScrollChange?: (scrollTop: number) => void;
+    /**
+     * Fires after the embedded SuperDoc editor saves a new version so the
+     * tab owner can repoint `versionId` to it (Bug 1 fix).
+     */
+    onSaved?: (args: {
+        versionId: string;
+        versionNumber: number | null;
+    }) => void;
+    /**
+     * Poziva se nakon što Draft Mode edit uspješno primijeni novu verziju.
+     * Parent treba bumparse refetchKey ili versionId kako bi reload pokazao
+     * novi dokument sa tracked change-om.
+     */
+    onDraftEditApplied?: (args: {
+        documentId: string;
+        versionId: string;
+        versionNumber: number | null;
+    }) => void;
 }
 
 /**
@@ -96,49 +110,23 @@ export function DocPanel({
     onWarningDismiss,
     initialScrollTop,
     onScrollChange,
+    onSaved,
+    onDraftEditApplied,
 }: Props) {
+    // Draft Mode — lokalni toggle za SuperDoc inline selekcijsko uređivanje.
+    // Aktivan samo za DOCX dokumente (SuperDoc path); DocView (PDF) ignorira.
+    const [draftModeEnabled, setDraftModeEnabled] = useState(false);
     // Pick the viewer from the filename only, not from mode. Switching
     // headers (citation ↔ edit ↔ document) for the same document must
     // not unmount and remount the body — otherwise the user sees a full
     // re-fetch every time they toggle. Tracked-change rendering still
     // only lives in DocxView, which is fine because edits are DOCX-only.
     const useDocxView = isDocxFilename(filename);
-    const citationQuoteId =
-        mode.kind === "citation" ? `document:${mode.citation.ref}:0` : null;
-    const [activeCitationQuoteId, setActiveCitationQuoteId] = useState<
-        string | null
-    >(citationQuoteId);
-    const [quoteFocusKey, setQuoteFocusKey] = useState(0);
 
     const quotes: CitationQuote[] | undefined = useMemo(() => {
         if (mode.kind !== "citation") return undefined;
-        if (!activeCitationQuoteId) return [];
-        const selectedIndex = Number(activeCitationQuoteId.split(":").at(-1));
-        if (!Number.isFinite(selectedIndex)) return [];
-        const selectedQuote =
-            getDocumentCitationQuotes(mode.citation)[selectedIndex];
-        if (!selectedQuote) return [];
-        const documentCitation = mode.citation as DocumentCitationAnnotation;
-        return expandCitationToEntries({
-            ...documentCitation,
-            page: selectedQuote.page,
-            quote: selectedQuote.quote,
-            quotes: [selectedQuote],
-        });
-    }, [activeCitationQuoteId, citationQuoteId, mode]);
-
-    useEffect(() => {
-        setActiveCitationQuoteId(citationQuoteId);
-    }, [citationQuoteId]);
-
-    const handleCitationQuoteSelect = useCallback(
-        (quoteId: string) => {
-            const shouldSelect = activeCitationQuoteId !== quoteId;
-            setActiveCitationQuoteId(shouldSelect ? quoteId : null);
-            if (shouldSelect) setQuoteFocusKey((current) => current + 1);
-        },
-        [activeCitationQuoteId],
-    );
+        return expandCitationToEntries(mode.citation);
+    }, [mode]);
 
     const highlightEdit = useMemo(() => {
         if (mode.kind !== "edit") return null;
@@ -152,50 +140,89 @@ export function DocPanel({
     }, [mode]);
 
     return (
-        <div className="flex h-full flex-col">
-            <DocumentTitleRow
-                documentId={documentId}
-                filename={filename}
-                versionId={versionId}
-                versionNumber={versionNumber}
-                isReloading={isReloading}
-            />
-
-            {mode.kind === "citation" && (
-                <RelevantQuoteSection
+        <div className="flex h-full flex-col px-3 pb-3">
+            {mode.kind === "citation" ? (
+                <CitationHeader
                     citation={mode.citation}
+                    documentId={documentId}
+                    versionId={versionId}
                     filename={filename}
-                    activeQuoteId={activeCitationQuoteId}
-                    onQuoteSelect={handleCitationQuoteSelect}
+                    isReloading={isReloading}
                 />
+            ) : mode.kind === "edit" ? (
+                <TrackedChangeHeader
+                    mode={mode}
+                    documentId={documentId}
+                    versionId={versionId}
+                    filename={filename}
+                    isReloading={isReloading}
+                />
+            ) : (
+                <div className="flex items-center justify-end gap-2 py-2">
+                    <div className="mr-auto flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm text-foreground">
+                            {filename}
+                        </span>
+                        {versionNumber && versionNumber > 0 && (
+                            <span className="shrink-0 inline-flex items-center rounded-md border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                V{versionNumber}
+                            </span>
+                        )}
+                    </div>
+                    {useDocxView && (
+                        <button
+                            type="button"
+                            onClick={() => setDraftModeEnabled((v) => !v)}
+                            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
+                                draftModeEnabled
+                                    ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90"
+                                    : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
+                            }`}
+                            title={draftModeEnabled ? "Izađi iz Draft moda" : "Uredi selekciju (Draft Mode)"}
+                            aria-pressed={draftModeEnabled}
+                        >
+                            <Pencil className="h-3.5 w-3.5" />
+                            Draft
+                        </button>
+                    )}
+                    <DownloadButton
+                        documentId={documentId}
+                        versionId={versionId}
+                        filename={filename}
+                        isReloading={isReloading}
+                    />
+                </div>
             )}
 
-            {mode.kind === "edit" && <TrackedChangeHeader mode={mode} />}
-
-            <div className="flex flex-1 min-h-0 flex-col px-3 py-3">
-                {useDocxView ? (
-                    <DocxView
-                        documentId={documentId}
-                        versionId={versionId ?? undefined}
-                        quotes={quotes}
-                        quoteFocusKey={quoteFocusKey}
-                        highlightEdit={highlightEdit}
-                        warning={warning ?? null}
-                        onWarningDismiss={onWarningDismiss}
-                        initialScrollTop={initialScrollTop ?? null}
-                        onScrollChange={onScrollChange}
-                    />
-                ) : (
-                    <DocView
-                        doc={{
-                            document_id: documentId,
-                            version_id: versionId,
-                        }}
-                        quotes={quotes}
-                        quoteFocusKey={quoteFocusKey}
-                    />
-                )}
-            </div>
+            {useDocxView ? (
+                <DocxViewer
+                    documentId={documentId}
+                    versionId={versionId ?? undefined}
+                    quotes={quotes}
+                    highlightEdit={highlightEdit}
+                    warning={warning ?? null}
+                    onWarningDismiss={onWarningDismiss}
+                    initialScrollTop={initialScrollTop ?? null}
+                    onScrollChange={onScrollChange}
+                    onSaved={onSaved}
+                    draftModeEnabled={draftModeEnabled}
+                    onDraftEditApplied={(result) => {
+                        onDraftEditApplied?.({
+                            documentId: result.document_id,
+                            versionId: result.version_id,
+                            versionNumber: result.version_number ?? null,
+                        });
+                    }}
+                />
+            ) : (
+                <DocView
+                    doc={{
+                        document_id: documentId,
+                        version_id: versionId,
+                    }}
+                    quotes={quotes}
+                />
+            )}
         </div>
     );
 }
@@ -204,108 +231,72 @@ export function DocPanel({
 // Header variants
 // ---------------------------------------------------------------------------
 
-function DocumentTitleRow({
+function SectionLabel({ children }: { children: React.ReactNode }) {
+    return <p className="text-xs font-medium text-foreground">{children}</p>;
+}
+
+function CitationHeader({
+    citation,
     documentId,
-    filename,
     versionId,
-    versionNumber,
+    filename,
     isReloading,
 }: {
+    citation: MikeCitationAnnotation;
     documentId: string;
-    filename: string;
     versionId: string | null;
-    versionNumber: number | null;
+    filename: string;
     isReloading: boolean;
 }) {
+    const t = useTranslations("docPanel");
+    const displayQuote = displayCitationQuote(citation);
+    const pagesLabel = formatCitationPage(citation);
     return (
-        <div className="flex items-start gap-3 px-3 pt-4 pb-3">
-            <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <h2
-                        className="min-w-0 break-words font-serif text-xl text-gray-900"
-                        title={filename}
-                    >
-                        {filename}
-                    </h2>
-                    {versionNumber && versionNumber > 0 && (
-                        <span className="shrink-0 inline-flex items-center rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
-                            V{versionNumber}
-                        </span>
-                    )}
+        <div className="pt-2 pb-3">
+            <div className="flex items-center gap-2 mb-2">
+                <SectionLabel>{t("citation")}</SectionLabel>
+                <div className="ml-auto shrink-0">
+                    <DownloadButton
+                        documentId={documentId}
+                        versionId={versionId}
+                        filename={filename}
+                        isReloading={isReloading}
+                    />
                 </div>
             </div>
-            <div className="shrink-0">
-                <DownloadButton
-                    documentId={documentId}
-                    versionId={versionId}
-                    filename={filename}
-                    isReloading={isReloading}
-                />
+            <div className="w-full rounded-md bg-muted border border-border px-2 py-2">
+                <p className="text-sm font-serif text-muted-foreground">
+                    &ldquo;{displayQuote}&rdquo;
+                    {pagesLabel && (
+                        <span className="ml-1 text-muted-foreground/70">
+                            ({pagesLabel})
+                        </span>
+                    )}
+                </p>
             </div>
         </div>
     );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
-    return <p className="text-xs font-medium text-gray-700">{children}</p>;
-}
-
-function RelevantQuoteSection({
-    citation,
-    filename,
-    activeQuoteId,
-    onQuoteSelect,
-}: {
-    citation: CitationAnnotation;
-    filename: string;
-    activeQuoteId: string | null;
-    onQuoteSelect: (quoteId: string) => void;
-}) {
-    const citationQuotes = getDocumentCitationQuotes(citation);
-    const pagesLabel = formatCitationPage(citation);
-    const citationText = [filename, pagesLabel].filter(Boolean).join(", ");
-    const relevantQuotes: RelevantQuoteItem[] = citationQuotes.map(
-        (quote, index) => {
-            const pageLabel = `Page ${quote.page}`;
-            return {
-                id: `document:${citation.ref}:${index}`,
-                quote: quote.quote.replaceAll("[[PAGE_BREAK]]", "..."),
-                inlineDetail: pageLabel,
-                citationText: [filename, pageLabel].filter(Boolean).join(", "),
-            };
-        },
-    );
-    const currentIndex = Math.max(
-        0,
-        relevantQuotes.findIndex((quote) => quote.id === activeQuoteId),
-    );
-
-    return (
-        <RelevantQuotes
-            quotes={relevantQuotes}
-            activeQuoteId={activeQuoteId}
-            currentIndex={currentIndex}
-            citationRef={citation.ref}
-            citationText={citationText}
-            onSelect={(quote) => onQuoteSelect(quote.id)}
-            onIndexChange={(index) => {
-                const quote = relevantQuotes[index];
-                if (quote) onQuoteSelect(quote.id);
-            }}
-        />
-    );
-}
-
 function TrackedChangeHeader({
     mode,
+    documentId,
+    versionId,
+    filename,
+    isReloading,
 }: {
     mode: Extract<DocPanelMode, { kind: "edit" }>;
+    documentId: string;
+    versionId: string | null;
+    filename: string;
+    isReloading: boolean;
 }) {
+    const t = useTranslations("docPanel");
     const { edit, isEditReloading, onResolveStart, onResolved, onError } = mode;
     return (
-        <div className="px-3 pb-3">
+        <div className="pt-2 pb-3">
             <div className="flex items-center gap-2 mb-2">
-                <SectionLabel>Tracked Change</SectionLabel>
+                <SectionLabel>{t("trackedChange")}</SectionLabel>
                 <div className="ml-auto flex items-center gap-2 shrink-0">
                     <EditResolveButtons
                         edit={edit}
@@ -314,20 +305,26 @@ function TrackedChangeHeader({
                         onResolved={onResolved}
                         onError={onError}
                     />
+                    <DownloadButton
+                        documentId={documentId}
+                        versionId={versionId}
+                        filename={filename}
+                        isReloading={isReloading}
+                    />
                 </div>
             </div>
             {edit.reason && (
-                <p className="mb-2 text-xs text-gray-500">{edit.reason}</p>
+                <p className="mb-2 text-xs text-muted-foreground">{edit.reason}</p>
             )}
-            <div className="w-full rounded-md bg-gray-50 border border-gray-200 px-2 py-2">
+            <div className="w-full rounded-md bg-muted border border-border px-2 py-2">
                 <div className="text-sm leading-relaxed font-serif">
                     {edit.inserted_text && (
-                        <span className="text-green-700">
+                        <span className="text-success">
                             {edit.inserted_text}
                         </span>
                     )}
                     {edit.deleted_text && (
-                        <span className="text-red-600 line-through">
+                        <span className="text-destructive line-through">
                             {edit.deleted_text}
                         </span>
                     )}
@@ -348,7 +345,7 @@ function EditResolveButtons({
     onResolved,
     onError,
 }: {
-    edit: EditAnnotation;
+    edit: MikeEditAnnotation;
     /**
      * True while an accept/reject for any edit on this document is in
      * flight (triggered from here, the inline EditCard, the bulk bar, or
@@ -414,7 +411,7 @@ function EditResolveButtons({
                 } = await supabase.auth.getSession();
                 const token = session?.access_token;
                 const apiBase =
-                    process.env.NEXT_PUBLIC_API_BASE_URL ??
+                    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ||
                     "http://localhost:3001";
                 const resp = await fetch(
                     `${apiBase}/single-documents/${edit.document_id}/edits/${edit.edit_id}/${verb}`,
@@ -469,22 +466,23 @@ function EditResolveButtons({
         [busy, resolved, edit, onResolveStart, onResolved, onError],
     );
 
+    const t = useTranslations("assistant.editCard");
     const inFlight = busy || !!isReloading;
     return (
         <div className="flex items-center gap-2">
             <button
                 onClick={() => handle("accept")}
                 disabled={inFlight || resolved}
-                className="inline-flex items-center gap-1 rounded-lg border border-gray-900 bg-gray-900 px-2 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-1 rounded-lg border border-primary bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-                {status === "accepted" ? "Accepted" : "Accept"}
+                {status === "accepted" ? t("accepted") : t("accept")}
             </button>
             <button
                 onClick={() => handle("reject")}
                 disabled={inFlight || resolved}
-                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-1 rounded-lg border border-border bg-background px-2 py-1.5 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed"
             >
-                {status === "rejected" ? "Rejected" : "Reject"}
+                {status === "rejected" ? t("rejected") : t("reject")}
             </button>
         </div>
     );
@@ -505,6 +503,7 @@ function DownloadButton({
     filename: string;
     isReloading?: boolean;
 }) {
+    const t = useTranslations("docPanel");
     const [busy, setBusy] = useState(false);
 
     const handleClick = async () => {
@@ -516,7 +515,7 @@ function DownloadButton({
             } = await supabase.auth.getSession();
             const token = session?.access_token;
             const apiBase =
-                process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+                process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
             const qs = versionId
                 ? `?version_id=${encodeURIComponent(versionId)}`
                 : "";
@@ -546,14 +545,14 @@ function DownloadButton({
         <button
             onClick={handleClick}
             disabled={spinning}
-            className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
         >
             {spinning ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
                 <Download className="h-3.5 w-3.5" />
             )}
-            Download
+            {t("download")}
         </button>
     );
 }

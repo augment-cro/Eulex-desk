@@ -1,0 +1,50 @@
+{
+  "$schema_description": "Declarative search/research configuration. Resolved at request time by backend/src/lib/search/search_config.ts. Sibling to external_sources.json (which catalogs concrete domains); this file decides WHICH providers, WHICH curated source-keys, and WHICH MCP search-grade tools are in scope per project. Edit and redeploy — no DB write needed.",
+
+  "defaults": {
+    "providers": ["tavily", "exa", "parallel", "you"],
+    "preferred_provider": "tavily",
+    "source_keys": [],
+    "recency_days": null,
+    "num_results": 5,
+    "mcp_search_tools": []
+  },
+
+  "mcp_search_tool_patterns": [
+    "mcp__sys-eulex__eulex_search",
+    "mcp__sys-eulex__eulex_get_article",
+    "mcp__sys-eulex__eulex_get_metadata",
+    "mcp__sys-eulex__eulex_verify_document",
+    "mcp__sys-eulex__eulex_get_timeline",
+    "mcp__sys-zakon-ai__hr_search",
+    "mcp__sys-zakon-ai__hr_find_publication",
+    "mcp__sys-zakon-ai__hr_get_article",
+    "mcp__sys-zakon-ai__hr_search_caselaw",
+    "mcp__sys-zakon-ai__hr_get_decision",
+    "mcp__sys-zakon-ai__hr_get_decision_citations",
+    "mcp__sys-zakon-ai__hr_get_related_decisions",
+    "mcp__sys-legal-data-hunter__search",
+    "mcp__sys-legal-data-hunter__get_document",
+    "mcp__sys-legal-data-hunter__resolve_reference",
+    "mcp__sys-uk-legal__case_law_search",
+    "mcp__sys-uk-legal__case_law_grep_judgment",
+    "mcp__sys-uk-legal__legislation_search",
+    "mcp__sys-uk-legal__legislation_get_toc",
+    "mcp__sys-uk-legal__legislation_get_section",
+    "mcp__sys-uk-legal__parliament_search_hansard",
+    "mcp__sys-uk-legal__bills_search_bills",
+    "mcp__sys-uk-legal__votes_search_divisions",
+    "mcp__sys-uk-legal__committees_search_evidence",
+    "mcp__sys-uk-legal__citations_resolve",
+    "mcp__sys-uk-legal__hmrc_search_guidance",
+    "mcp__sys-ris-at__ris_bundesrecht",
+    "mcp__sys-ris-at__ris_landesrecht",
+    "mcp__sys-ris-at__ris_judikatur",
+    "mcp__sys-ris-at__ris_bundesgesetzblatt",
+    "mcp__sys-ris-at__ris_landesgesetzblatt",
+    "mcp__sys-ris-at__ris_regierungsvorlagen",
+    "mcp__sys-ris-at__ris_dokument"
+  ],
+
+  "projects": {}
+}

@@ -1,0 +1,140 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Context Provider",
+        "version": "1.0.0",
+        "description": "Optional context provider the Eulex Desk core consults when CONTEXTS_URL is set. IDs are opaque to the core. The /notifications path is implemented BY the core (direction: service -> core)."
+    },
+    "paths": {
+        "/contexts": {
+            "get": {
+                "summary": "List contexts available to the identified user (picker)",
+                "security": [{ "serviceIdentity": [] }],
+                "responses": {
+                    "200": {
+                        "description": "Context summaries",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": { "$ref": "#/components/schemas/ContextSummary" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/contexts/{id}/resolve": {
+            "post": {
+                "summary": "Resolve a context into promptable content for one query",
+                "security": [{ "serviceIdentity": [] }],
+                "parameters": [
+                    { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["query"],
+                                "properties": { "query": { "type": "string" } }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Assembled promptable content",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/ResolveResult" }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/notifications": {
+            "post": {
+                "summary": "Generic notification intake implemented by the CORE (service -> core). The core stores and displays notifications without understanding their semantics.",
+                "security": [{ "serviceIdentity": [] }],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": { "$ref": "#/components/schemas/NotificationIn" }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": { "description": "{ ok: true, inserted: n }" },
+                    "401": { "description": "Missing/invalid service identity" }
+                }
+            }
+        }
+    },
+    "components": {
+        "securitySchemes": {
+            "serviceIdentity": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT — see service-identity.md"
+            }
+        },
+        "schemas": {
+            "ContextSummary": {
+                "type": "object",
+                "required": ["id", "name"],
+                "properties": {
+                    "id": { "type": "string", "description": "Opaque to the core" },
+                    "name": { "type": "string" },
+                    "description": { "type": "string" }
+                }
+            },
+            "ResolveResult": {
+                "type": "object",
+                "required": ["instructions_md", "sources"],
+                "properties": {
+                    "instructions_md": { "type": "string" },
+                    "sources": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["id"],
+                            "properties": {
+                                "id": { "type": "string", "description": "Opaque to the core" },
+                                "label": { "type": "string" },
+                                "url": { "type": "string" }
+                            }
+                        }
+                    },
+                    "scope_allowlist": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Opaque source IDs the core enforces as a retrieval scope"
+                    }
+                }
+            },
+            "NotificationIn": {
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                    "title": { "type": "string", "maxLength": 500 },
+                    "body_md": { "type": "string" },
+                    "link": { "type": "string" },
+                    "user_ids": {
+                        "type": "array",
+                        "maxItems": 100,
+                        "items": { "type": "string", "format": "uuid" }
+                    },
+                    "context_ref": {
+                        "type": "string",
+                        "description": "Opaque reference when user fan-out is service-side"
+                    }
+                }
+            }
+        }
+    }
+}

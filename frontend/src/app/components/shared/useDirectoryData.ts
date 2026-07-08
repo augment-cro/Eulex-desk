@@ -2,13 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { getProject, listProjects, listStandaloneDocuments } from "@/app/lib/mikeApi";
-import type { Document, Project } from "./types";
+import type { MikeDocument, MikeProject } from "./types";
 
 const CACHE_TTL_MS = 30_000;
 
 interface DirectoryCache {
-    standaloneDocuments: Document[];
-    projects: Project[];
+    standaloneDocuments: MikeDocument[];
+    projects: MikeProject[];
     fetchedAt: number;
 }
 
@@ -20,8 +20,8 @@ export function invalidateDirectoryCache() {
 
 export function useDirectoryData(enabled: boolean) {
     const [loading, setLoading] = useState(true);
-    const [standaloneDocuments, setStandaloneDocuments] = useState<Document[]>([]);
-    const [projects, setProjects] = useState<Project[]>([]);
+    const [standaloneDocuments, setStandaloneDocuments] = useState<MikeDocument[]>([]);
+    const [projects, setProjects] = useState<MikeProject[]>([]);
 
     useEffect(() => {
         if (!enabled) return;

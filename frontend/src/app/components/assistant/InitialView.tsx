@@ -1,90 +1,86 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
-import { MikeIcon } from "@/components/chat/mike-icon";
+import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
+import { useMcpServers } from "@/app/contexts/McpServersContext";
 import { ChatInput } from "./ChatInput";
 import { SelectAssistantProjectModal } from "./SelectAssistantProjectModal";
-import type { Message } from "../shared/types";
+import type { MikeMessage } from "../shared/types";
 
 interface InitialViewProps {
-    onSubmit: (message: Message) => void;
+    onSubmit: (message: MikeMessage) => void;
 }
 
-const ICON_SIZE = 30;
-const GAP = 12; // gap-4 = 1rem = 16px
+const GAP = 16; // gap-4 = 1rem = 16px
 
 export function InitialView({ onSubmit }: InitialViewProps) {
     const { user } = useAuth();
-    const { profile } = useUserProfile();
+    const { profile, loading: profileLoading } = useUserProfile();
+    const { chats } = useChatHistoryContext();
+    const { loading: mcpLoading } = useMcpServers();
+    const t = useTranslations("assistant");
     const [loaded, setLoaded] = useState(false);
     const [projectModalOpen, setProjectModalOpen] = useState(false);
-    const [iconOffset, setIconOffset] = useState(0);
-    const [textOffset, setTextOffset] = useState(0);
-    const textRef = useRef<HTMLHeadingElement>(null);
 
     const username =
         profile?.displayName?.trim() || user?.email?.split("@")[0] || "there";
 
-    useLayoutEffect(() => {
-        if (!profile || !textRef.current) return;
-        const h1Width = textRef.current.offsetWidth;
-        setIconOffset((h1Width + GAP) / 2);
-        setTextOffset((ICON_SIZE + GAP) / 2);
-    }, [profile]);
+    // Composer stays disabled and the compass icon stays spinning until
+    // all the boot-time dependent data is in memory: the user profile
+    // (for model/effort defaults), chat history (sidebar render +
+    // currentChatId routing) and the MCP connector lists (so the
+    // toggle button next to the composer has something to show on
+    // first open). Without this, the user could type and submit a
+    // request before the connector list is even known, which would
+    // either fire without their just-opted-in connector enabled, or
+    // race against the connector PATCH below.
+    const isInitialLoading =
+        profileLoading || chats === null || mcpLoading;
 
     useEffect(() => {
-        if (!iconOffset) return;
         const t = setTimeout(() => setLoaded(true), 100);
         return () => clearTimeout(t);
-    }, [iconOffset]);
+    }, []);
 
     return (
         <div className="flex flex-col h-full w-full px-6">
             <div className="flex-1 flex flex-col items-center justify-center">
                 <div className="flex-col items-center w-full max-w-4xl relative px-0 xl:px-8">
-                    <div className="mb-10 relative flex items-center justify-center">
+                    <div className="mb-10 flex items-center justify-center h-[50px]">
                         <div
-                            className="absolute h-[30px] w-[30px] top-[-14px]"
+                            className="flex items-center justify-center transition-all duration-[900ms] ease-in-out"
                             style={{
-                                left: "50%",
-                                transform: loaded
-                                    ? `translateX(calc(-50% - ${iconOffset}px))`
-                                    : "translateX(-50%)",
-                                transition:
-                                    "transform 900ms cubic-bezier(0.25, 0.46, 0.45, 0.94)",
+                                gap: loaded ? `${GAP}px` : "0px",
                             }}
                         >
-                            <MikeIcon size={ICON_SIZE} />
+                            <div
+                                className="transition-all duration-[900ms] ease-in-out overflow-hidden flex items-center"
+                                style={{
+                                    maxWidth: loaded ? "800px" : "0px",
+                                    opacity: loaded ? 1 : 0,
+                                }}
+                            >
+                                <h1 className="text-4xl font-serif font-light text-foreground whitespace-nowrap pt-1">
+                                    {t("greeting", { username })}
+                                </h1>
+                            </div>
                         </div>
-                        <h1
-                            ref={textRef}
-                            className="absolute text-4xl font-serif font-light text-gray-900 whitespace-nowrap"
-                            style={{
-                                left: "50%",
-                                transform: loaded
-                                    ? `translateX(calc(-50% + ${textOffset}px))`
-                                    : "translateX(-50%)",
-                                opacity: loaded ? 1 : 0,
-                                transition:
-                                    "transform 900ms cubic-bezier(0.25, 0.46, 0.45, 0.94), opacity 800ms ease-in-out 300ms",
-                            }}
-                        >
-                            Hi, {username}
-                        </h1>
                     </div>
 
                     <ChatInput
                         onSubmit={onSubmit}
                         onCancel={() => {}}
                         isLoading={false}
+                        disabled={isInitialLoading}
                         onProjectsClick={() => setProjectModalOpen(true)}
                     />
 
                     <div className="text-center">
-                        <p className="text-xs py-3 mb-3 text-gray-500">
-                            AI can make mistakes. Answers are not legal advice.
+                        <p className="text-xs py-3 mb-3 text-muted-foreground">
+                            {t("disclaimer")}
                         </p>
                     </div>
                 </div>

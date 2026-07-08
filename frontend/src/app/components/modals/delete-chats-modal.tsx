@@ -1,7 +1,16 @@
 "use client";
 
+import { Check, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { X, Check } from "lucide-react";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import { useTranslations } from "next-intl";
 
 interface DeleteChatsModalProps {
     isOpen: boolean;
@@ -20,78 +29,73 @@ export function DeleteChatsModal({
     isDeleting,
     isSuccess = false,
 }: DeleteChatsModalProps) {
-    if (!isOpen) return null;
+    const t = useTranslations("deleteChats");
+    const tc = useTranslations("common");
+
+    const handleOpenChange = (open: boolean) => {
+        if (!open && !isDeleting && !isSuccess) onClose();
+    };
 
     return (
-        <>
-            {/* Backdrop */}
-            <div
-                className="fixed inset-0 bg-black/50 z-199"
-                onClick={isDeleting || isSuccess ? undefined : onClose}
-            />
-
-            {/* Modal */}
-            <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-200 w-full max-w-md">
-                <div className="bg-white rounded-2xl shadow-2xl p-8">
-                    {isSuccess ? (
-                        <>
-                            {/* Success State */}
-                            <div className="text-center">
-                                <div className="mx-auto w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-4">
-                                    <Check className="h-8 w-8 text-green-600" />
+        <Dialog open={isOpen} onOpenChange={handleOpenChange}>
+            <DialogContent
+                className="sm:max-w-md"
+                showCloseButton={!isDeleting && !isSuccess}
+            >
+                {isSuccess ? (
+                    <>
+                        <DialogHeader>
+                            <div className="flex flex-col items-center text-center gap-3 py-2">
+                                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-success/10">
+                                    <Check className="h-7 w-7 text-success" />
                                 </div>
-                                <h2 className="text-3xl font-light font-eb-garamond text-gray-900 mb-2">
-                                    All Chats Deleted
-                                </h2>
-                                <p className="text-gray-600 text-sm">
-                                    Your chat history has been successfully
-                                    deleted.
-                                </p>
+                                <DialogTitle className="text-xl font-semibold text-foreground">
+                                    {t("successTitle")}
+                                </DialogTitle>
+                                <DialogDescription className="text-sm text-muted-foreground">
+                                    {t("successMessage")}
+                                </DialogDescription>
                             </div>
-                        </>
-                    ) : (
-                        <>
-                            {/* Header */}
-                            <div className="flex items-center justify-between mb-6">
-                                <h2 className="text-4xl font-light font-eb-garamond text-red-700">
-                                    Delete All Chats
-                                </h2>
-                            </div>
-
-                            {/* Content */}
-                            <div className="space-y-4">
-                                <p className="text-gray-600 text-sm leading-relaxed">
-                                    Are you sure you want to delete all{" "}
-                                    {chatCount} chat
-                                    {chatCount !== 1 ? "s" : ""}? This action is
-                                    permanent and cannot be undone.
-                                </p>
-
-                                <div className="space-y-3 pt-4">
-                                    <Button
-                                        onClick={onConfirm}
-                                        disabled={isDeleting}
-                                        variant="destructive"
-                                        className="w-full bg-red-600 hover:bg-red-700 text-white"
-                                    >
-                                        {isDeleting
-                                            ? "Deleting..."
-                                            : "Delete All Chats"}
-                                    </Button>
-                                    <Button
-                                        onClick={onClose}
-                                        variant="outline"
-                                        disabled={isDeleting}
-                                        className="w-full border-gray-300 text-gray-700 hover:bg-gray-50"
-                                    >
-                                        Cancel
-                                    </Button>
+                        </DialogHeader>
+                    </>
+                ) : (
+                    <>
+                        <DialogHeader>
+                            <div className="flex items-start gap-3">
+                                <div className="shrink-0 mt-0.5 rounded-full bg-destructive/10 p-2 border border-destructive/20">
+                                    <Trash2 className="h-4 w-4 text-destructive" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <DialogTitle className="text-base font-semibold text-foreground">
+                                        {t("title")}
+                                    </DialogTitle>
+                                    <DialogDescription className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                                        {t("confirmMessage", { count: chatCount })}
+                                    </DialogDescription>
                                 </div>
                             </div>
-                        </>
-                    )}
-                </div>
-            </div>
-        </>
+                        </DialogHeader>
+
+                        <DialogFooter className="mt-2 gap-2 sm:gap-2">
+                            <Button
+                                variant="outline"
+                                onClick={onClose}
+                                disabled={isDeleting}
+                                className="flex-1 sm:flex-none"
+                            >
+                                {tc("cancel")}
+                            </Button>
+                            <Button
+                                onClick={onConfirm}
+                                disabled={isDeleting}
+                                className="flex-1 sm:flex-none bg-destructive hover:bg-destructive/90 text-destructive-foreground disabled:opacity-60"
+                            >
+                                {isDeleting ? t("deleting") : t("deleteAll")}
+                            </Button>
+                        </DialogFooter>
+                    </>
+                )}
+            </DialogContent>
+        </Dialog>
     );
 }

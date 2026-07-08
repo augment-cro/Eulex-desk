@@ -1,0 +1,166 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Prompt Pack",
+        "version": "1.0.0",
+        "description": "Optional prompt-pack provider the Eulex Desk core consults when GOVERNANCE_URL is set. GET /prompt-pack is the fetch-and-cache channel for STATIC prompt content: the core fetches at boot, re-validates with ETag every ~5 minutes, keeps the result in memory, and merges the blocks into the CACHED static system-prompt prefix at fixed assembly positions. The service serves the version selected by its 'production' environment pointer; pointer moves (promote/rollback) are a server-side concern invisible to this contract. POST /enrich is the query-enrichment channel proxied by the core's /chat/enrich. Failure posture (both paths): the core NEVER errors a user turn on seam failure — it keeps serving the last-known pack, falls back to a short generic block set when it has never had one, and passes the original query through unenriched. Block texts are OPAQUE to the core except for the documented placeholder tokens it substitutes at assembly time."
+    },
+    "paths": {
+        "/prompt-pack": {
+            "get": {
+                "summary": "Fetch the whole prompt pack (all blocks, all locales, workflow packs, enrichment prompt) at the production pointer",
+                "security": [{ "serviceIdentity": [] }],
+                "parameters": [
+                    {
+                        "name": "If-None-Match",
+                        "in": "header",
+                        "required": false,
+                        "schema": { "type": "string" },
+                        "description": "ETag from a previous 200; the service answers 304 when the served pack version is unchanged"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The full pack. The ETag response header identifies this pack version for revalidation.",
+                        "headers": {
+                            "ETag": {
+                                "required": true,
+                                "schema": { "type": "string" },
+                                "description": "Changes exactly when the served pack version changes"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/PromptPack" }
+                            }
+                        }
+                    },
+                    "304": { "description": "Pack unchanged since the presented ETag — the core keeps its cached copy" },
+                    "401": { "description": "Missing/invalid service identity" }
+                }
+            }
+        },
+        "/enrich": {
+            "post": {
+                "summary": "Rewrite one legal query into an improved research query (moved server-side from the core's local enrichment pass)",
+                "security": [{ "serviceIdentity": [] }],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["query", "locale"],
+                                "properties": {
+                                    "query": { "type": "string" },
+                                    "locale": { "type": "string", "enum": ["hr", "en"] }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Enrichment result. On any failure or timeout the core falls back to the original query (passthrough), never an error to the user.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["enriched"],
+                                    "properties": {
+                                        "enriched": { "type": "string" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": { "description": "Missing/invalid service identity" }
+                }
+            }
+        }
+    },
+    "components": {
+        "securitySchemes": {
+            "serviceIdentity": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT — see service-identity.md. sub is desk-core for /prompt-pack (system-level fetch) and desk-<userId> for /enrich (per-user call)."
+            }
+        },
+        "schemas": {
+            "PromptPack": {
+                "type": "object",
+                "required": ["version", "blocks", "workflow_packs", "enrichment_prompt"],
+                "properties": {
+                    "version": {
+                        "type": "integer",
+                        "description": "Immutable pack version. The core logs it, exposes it in /health as promptPackVersion, and evals manifests pin it."
+                    },
+                    "blocks": { "$ref": "#/components/schemas/PromptBlocks" },
+                    "workflow_packs": {
+                        "type": "array",
+                        "items": { "$ref": "#/components/schemas/WorkflowPack" }
+                    },
+                    "enrichment_prompt": {
+                        "type": "string",
+                        "description": "System-prompt template for the enrichment pass, consumed by the SERVICE's /enrich implementation (the core never renders it). Placeholders: {{SOURCES}}, {{DOC_CONTEXT}}, {{LOCALE_RULE}} — see notes."
+                    },
+                    "notes": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Per-block documentation of assembly position and placeholder semantics — informative, not consumed programmatically"
+                    }
+                }
+            },
+            "PromptBlocks": {
+                "type": "object",
+                "description": "Opaque prompt texts the core inserts at fixed positions in its static system prompt. Blocks that ride the mid-prompt positions (method, citations_legal, locale_legal) are bare text joined with blank lines by the core; the appended blocks (grounding, jurisdictions, layered_research, topic_routing) carry their own '---' separators. An empty string means: insert nothing at that position.",
+                "required": [
+                    "method",
+                    "citations_legal",
+                    "grounding",
+                    "grounding_point1_eulex",
+                    "grounding_point1_generic",
+                    "jurisdictions",
+                    "layered_research",
+                    "topic_routing",
+                    "locale_legal"
+                ],
+                "properties": {
+                    "method": { "type": "string", "description": "Legal reasoning & method section of the base system prompt" },
+                    "citations_legal": { "type": "string", "description": "Prose-citation rules for legal sources" },
+                    "grounding": {
+                        "type": "string",
+                        "description": "MCP grounding block, appended when >=1 connector is live. Placeholder {{GROUNDING_POINT_1}} is replaced by the core with grounding_point1_eulex when an EU-law (eulex) connector is live, else grounding_point1_generic"
+                    },
+                    "grounding_point1_eulex": { "type": "string" },
+                    "grounding_point1_generic": { "type": "string" },
+                    "jurisdictions": {
+                        "type": "string",
+                        "description": "available_legal_sources block. Placeholder {{ACTIVE_JURISDICTIONS}} is replaced by the core with the active jurisdiction labels joined by '; '"
+                    },
+                    "layered_research": { "type": "string", "description": "Appended only when an EU source AND a Member-State national source are both live" },
+                    "topic_routing": { "type": "string", "description": "Appended only when more than one jurisdiction/domain source is live" },
+                    "locale_legal": {
+                        "type": "object",
+                        "required": ["hr", "en"],
+                        "properties": {
+                            "hr": { "type": "string" },
+                            "en": { "type": "string" }
+                        },
+                        "description": "Locale-specific legal-methodology halves of the locale context block; generic locale plumbing stays in the core"
+                    }
+                }
+            },
+            "WorkflowPack": {
+                "type": "object",
+                "required": ["id", "title", "prompt_md"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "prompt_md": { "type": "string" }
+                }
+            }
+        }
+    }
+}

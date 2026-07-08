@@ -9,8 +9,6 @@ interface DocRow {
 }
 
 interface VersionPathRow extends DocRow {
-    /** API/client alias for document_versions.filename of the active version. */
-    filename?: string | null;
     /** Set from document_versions.storage_path of the active version. */
     storage_path?: string | null;
     /** Set from document_versions.pdf_storage_path of the active version. */
@@ -18,10 +16,6 @@ interface VersionPathRow extends DocRow {
     current_version_id?: string | null;
     /** Set from document_versions.version_number of the active version. */
     active_version_number?: number | null;
-    /** Active-version file metadata. */
-    file_type?: string | null;
-    size_bytes?: number | null;
-    page_count?: number | null;
 }
 
 export interface ActiveVersion {
@@ -29,11 +23,8 @@ export interface ActiveVersion {
     storage_path: string;
     pdf_storage_path: string | null;
     version_number: number | null;
-    filename: string | null;
+    display_name: string | null;
     source: string | null;
-    file_type: string | null;
-    size_bytes: number | null;
-    page_count: number | null;
 }
 
 /**
@@ -63,10 +54,9 @@ export async function loadActiveVersion(
     const { data: v } = await db
         .from("document_versions")
         .select(
-            "id, document_id, storage_path, pdf_storage_path, version_number, filename, source, file_type, size_bytes, page_count",
+            "id, document_id, storage_path, pdf_storage_path, version_number, display_name, source",
         )
         .eq("id", targetVersionId)
-        .is("deleted_at", null)
         .single();
     if (!v || v.document_id !== documentId || !v.storage_path) return null;
     return {
@@ -74,11 +64,8 @@ export async function loadActiveVersion(
         storage_path: v.storage_path as string,
         pdf_storage_path: (v.pdf_storage_path as string | null) ?? null,
         version_number: (v.version_number as number | null) ?? null,
-        filename: (v.filename as string | null) ?? null,
+        display_name: (v.display_name as string | null) ?? null,
         source: (v.source as string | null) ?? null,
-        file_type: (v.file_type as string | null) ?? null,
-        size_bytes: (v.size_bytes as number | null) ?? null,
-        page_count: (v.page_count as number | null) ?? null,
     };
 }
 
@@ -98,32 +85,21 @@ export async function attachActiveVersionPaths<T extends VersionPathRow>(
         .filter((id): id is string => typeof id === "string");
     if (versionIds.length === 0) {
         for (const d of docs) {
-            d.filename = "Untitled document";
             d.storage_path = null;
             d.pdf_storage_path = null;
-            d.file_type = null;
-            d.size_bytes = null;
-            d.page_count = null;
         }
         return docs;
     }
     const { data: rows } = await db
         .from("document_versions")
-        .select(
-            "id, storage_path, pdf_storage_path, version_number, filename, file_type, size_bytes, page_count",
-        )
-        .in("id", versionIds)
-        .is("deleted_at", null);
+        .select("id, storage_path, pdf_storage_path, version_number")
+        .in("id", versionIds);
     const byId = new Map<
         string,
         {
             storage_path: string | null;
             pdf_storage_path: string | null;
             version_number: number | null;
-            filename: string | null;
-            file_type: string | null;
-            size_bytes: number | null;
-            page_count: number | null;
         }
     >();
     for (const r of (rows ?? []) as {
@@ -131,19 +107,11 @@ export async function attachActiveVersionPaths<T extends VersionPathRow>(
         storage_path: string | null;
         pdf_storage_path: string | null;
         version_number: number | null;
-        filename: string | null;
-        file_type: string | null;
-        size_bytes: number | null;
-        page_count: number | null;
     }[]) {
         byId.set(r.id, {
             storage_path: r.storage_path ?? null,
             pdf_storage_path: r.pdf_storage_path ?? null,
             version_number: r.version_number ?? null,
-            filename: r.filename ?? null,
-            file_type: r.file_type ?? null,
-            size_bytes: r.size_bytes ?? null,
-            page_count: r.page_count ?? null,
         });
     }
     for (const d of docs) {
@@ -151,10 +119,6 @@ export async function attachActiveVersionPaths<T extends VersionPathRow>(
         d.storage_path = v?.storage_path ?? null;
         d.pdf_storage_path = v?.pdf_storage_path ?? null;
         d.active_version_number = v?.version_number ?? null;
-        d.filename = v?.filename?.trim() || "Untitled document";
-        d.file_type = v?.file_type ?? null;
-        d.size_bytes = v?.size_bytes ?? null;
-        d.page_count = v?.page_count ?? null;
     }
     return docs;
 }
@@ -176,7 +140,6 @@ export async function attachLatestVersionNumbers<T extends DocRow>(
         .select("document_id, version_number")
         .in("document_id", ids)
         .eq("source", "assistant_edit")
-        .is("deleted_at", null)
         .not("version_number", "is", null);
 
     const latestByDoc = new Map<string, number>();

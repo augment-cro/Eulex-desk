@@ -1,21 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Folder, Search, X } from "lucide-react";
-import type { Document, Workflow } from "../shared/types";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import {
+    ChevronDown,
+    Folder,
+    MessageSquare,
+    Search,
+    Table2,
+    X,
+} from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { MikeDocument, MikeWorkflow } from "../shared/types";
 import { createTabularReview } from "@/app/lib/mikeApi";
+import { track } from "@/app/lib/analytics";
 import { useRouter } from "next/navigation";
+import { formatIcon, formatLabelT } from "../tabular/columnFormat";
 import { useDirectoryData } from "../shared/useDirectoryData";
 import { FileDirectory } from "../shared/FileDirectory";
-import type { Project } from "../shared/types";
+import type { MikeProject } from "../shared/types";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
-import { Modal } from "../shared/Modal";
-import { WorkflowPickerContent } from "./WorkflowPickerContent";
-import { workflowDetailPath } from "./workflowRoutes";
+import { useTranslations } from "next-intl";
 
 interface Props {
-    workflows: Workflow[];
-    workflow: Workflow | null;
+    workflows: MikeWorkflow[];
+    workflow: MikeWorkflow | null;
     onClose: () => void;
 }
 
@@ -27,10 +37,10 @@ function Toggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
         <button
             type="button"
             onClick={onToggle}
-            className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ${on ? "bg-gray-900" : "bg-gray-200"}`}
+            className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ${on ? "bg-primary" : "bg-secondary"}`}
         >
             <span
-                className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${on ? "translate-x-4" : "translate-x-0"}`}
+                className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-background border border-border transition-transform duration-200 ${on ? "translate-x-4" : "translate-x-0"}`}
             />
         </button>
     );
@@ -43,10 +53,14 @@ function SimpleProjectPicker({
     projects,
     selectedId,
     onSelect,
+    selectProjectPlaceholder = "Select a project…",
+    noProjectsFoundLabel = "No projects found",
 }: {
-    projects: Project[];
+    projects: MikeProject[];
     selectedId: string | null;
     onSelect: (id: string | null) => void;
+    selectProjectPlaceholder?: string;
+    noProjectsFoundLabel?: string;
 }) {
     const [search, setSearch] = useState("");
     const [open, setOpen] = useState(false);
@@ -69,8 +83,8 @@ function SimpleProjectPicker({
                 }}
                 onFocus={() => setOpen(true)}
                 onBlur={() => setTimeout(() => setOpen(false), 150)}
-                placeholder="Select a project…"
-                className="w-full text-xs text-gray-700 placeholder:text-gray-400 bg-gray-50 border border-gray-200 rounded-md px-3 py-2 outline-none"
+                placeholder={selectProjectPlaceholder}
+                className="w-full text-xs text-foreground placeholder:text-muted-foreground/70 bg-secondary border border-input rounded-md px-3 py-2 outline-none"
             />
             {selectedId && (
                 <button
@@ -78,16 +92,16 @@ function SimpleProjectPicker({
                         onSelect(null);
                         setSearch("");
                     }}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/70 hover:text-muted-foreground"
                 >
                     <X className="h-3 w-3" />
                 </button>
             )}
             {open && !selectedId && (
-                <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-sm overflow-y-auto max-h-40">
+                <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-surface-elevated border border-border rounded-md overflow-y-auto max-h-40">
                     {filtered.length === 0 ? (
-                        <p className="px-3 py-3 text-xs text-gray-400 text-center">
-                            No projects found
+                        <p className="px-3 py-3 text-xs text-muted-foreground/70 text-center">
+                            {noProjectsFoundLabel}
                         </p>
                     ) : (
                         filtered.map((p) => (
@@ -98,9 +112,9 @@ function SimpleProjectPicker({
                                     setSearch("");
                                     setOpen(false);
                                 }}
-                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-gray-50 text-gray-700"
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-accent text-foreground"
                             >
-                                <Folder className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+                                <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
                                 {p.name}
                             </button>
                         ))
@@ -112,12 +126,174 @@ function SimpleProjectPicker({
 }
 
 // ---------------------------------------------------------------------------
+// Shared markdown renderer
+// ---------------------------------------------------------------------------
+function MarkdownBody({ content }: { content: string }) {
+    return (
+        <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+                h1: ({ children }) => (
+                    <h1 className="text-base font-semibold text-foreground mt-4 mb-1 first:mt-0">
+                        {children}
+                    </h1>
+                ),
+                h2: ({ children }) => (
+                    <h2 className="text-sm font-semibold text-foreground mt-3 mb-1 first:mt-0">
+                        {children}
+                    </h2>
+                ),
+                h3: ({ children }) => (
+                    <h3 className="text-xs font-semibold text-foreground mt-2 mb-0.5 first:mt-0">
+                        {children}
+                    </h3>
+                ),
+                p: ({ children }) => (
+                    <p className="mb-2 last:mb-0">{children}</p>
+                ),
+                ul: ({ children }) => (
+                    <ul className="list-disc pl-4 mb-2 space-y-0.5">
+                        {children}
+                    </ul>
+                ),
+                ol: ({ children }) => (
+                    <ol className="list-decimal pl-4 mb-2 space-y-0.5">
+                        {children}
+                    </ol>
+                ),
+                li: ({ children }) => <li>{children}</li>,
+                strong: ({ children }) => (
+                    <strong className="font-semibold text-foreground">
+                        {children}
+                    </strong>
+                ),
+                em: ({ children }) => <em className="italic">{children}</em>,
+            }}
+        >
+            {content}
+        </ReactMarkdown>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Right panel for assistant workflows (select screen)
+// ---------------------------------------------------------------------------
+function AssistantPanel({ workflow, workflowPromptLabel = "Workflow Prompt", noPromptLabel = "_No prompt defined._" }: { workflow: MikeWorkflow; workflowPromptLabel?: string; noPromptLabel?: string }) {
+    return (
+        <div className="flex-1 border-l border-t border-border flex flex-col overflow-hidden px-3 pb-3">
+            <div className="py-3 shrink-0">
+                <p className="text-xs font-medium text-foreground">
+                    {workflowPromptLabel}
+                </p>
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 py-3 text-sm border border-border rounded-md text-muted-foreground leading-relaxed font-serif bg-muted">
+                <MarkdownBody
+                    content={workflow.prompt_md ?? noPromptLabel}
+                />
+            </div>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Right panel for tabular workflows — accordion column list (select screen)
+// ---------------------------------------------------------------------------
+function TabularPanel({ workflow, columnsLabel = "Columns", noColumnsLabel = "No columns defined", tagsLabel = "Tags", promptLabel = "Prompt", noPromptLabel = "_No prompt defined._" }: { workflow: MikeWorkflow; columnsLabel?: string; noColumnsLabel?: string; tagsLabel?: string; promptLabel?: string; noPromptLabel?: string }) {
+    const tFmt = useTranslations("columnFormats");
+    const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+    const columns = (workflow.columns_config ?? []).sort(
+        (a, b) => a.index - b.index,
+    );
+
+    return (
+        <div className="flex-1 border-l border-t border-border flex flex-col overflow-hidden px-3 pb-3">
+            <div className="py-3 shrink-0">
+                <p className="text-xs font-medium text-foreground">{columnsLabel}</p>
+            </div>
+            <div className="flex-1 overflow-y-auto border border-border rounded-md bg-muted">
+                {columns.length === 0 ? (
+                    <p className="px-4 py-6 text-xs text-center text-muted-foreground/70">
+                        {noColumnsLabel}
+                    </p>
+                ) : (
+                    columns.map((col) => {
+                        const isExpanded = expandedIndex === col.index;
+                        const FormatIcon = formatIcon(col.format ?? "text");
+                        return (
+                            <div
+                                key={col.index}
+                                className="border-b border-border"
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        setExpandedIndex(
+                                            isExpanded ? null : col.index,
+                                        )
+                                    }
+                                    className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-left hover:bg-surface-elevated transition-colors"
+                                >
+                                    <FormatIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+                                    <span className="flex-1 truncate text-foreground">
+                                        {col.name}
+                                    </span>
+                                    <span className="shrink-0 text-muted-foreground/70">
+                                        {formatLabelT(col.format ?? "text", tFmt)}
+                                    </span>
+                                    <ChevronDown
+                                        className={`h-3 w-3 shrink-0 text-muted-foreground/70 transition-transform duration-150 ${isExpanded ? "rotate-180" : ""}`}
+                                    />
+                                </button>
+                                {isExpanded && (
+                                    <div className="px-4 py-3 bg-surface-elevated border-t border-border text-sm text-muted-foreground leading-relaxed font-serif space-y-3">
+                                        {col.tags && col.tags.length > 0 && (
+                                            <div>
+                                                <p className="text-xs font-medium text-muted-foreground/70 mb-1.5 font-sans">
+                                                    {tagsLabel}
+                                                </p>
+                                                <div className="flex flex-wrap gap-1.5">
+                                                    {col.tags.map((tag) => (
+                                                        <span
+                                                            key={tag}
+                                                            className="inline-block rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground font-sans"
+                                                        >
+                                                            {tag}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div>
+                                            <p className="text-xs font-medium text-muted-foreground/70 mb-1 font-sans">
+                                                {promptLabel}
+                                            </p>
+                                            <MarkdownBody
+                                                content={
+                                                    col.prompt ||
+                                                    noPromptLabel
+                                                }
+                                            />
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
 // DisplayWorkflowModal
 // ---------------------------------------------------------------------------
 export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
+    const t = useTranslations("displayWorkflow");
     const [screen, setScreen] = useState<"select" | "configure">("select");
-    const [selected, setSelected] = useState<Workflow | null>(workflow);
+    const [selected, setSelected] = useState<MikeWorkflow | null>(workflow);
     const [listSearch, setListSearch] = useState("");
+    const selectedRowRef = useRef<HTMLButtonElement>(null);
 
     // Configure screen state
     const [inProject, setInProject] = useState(false);
@@ -149,6 +325,12 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
         }
     }, [workflow?.id]);
 
+    useEffect(() => {
+        if (selected && selectedRowRef.current) {
+            selectedRowRef.current.scrollIntoView({ block: "nearest" });
+        }
+    }, [selected?.id]);
+
     // Reset configure state on back
     useEffect(() => {
         if (screen === "select") {
@@ -178,19 +360,31 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
             const projectId = inProject ? selectedProjectId! : undefined;
             const chatId = await saveChat(projectId);
             if (!chatId) return;
-            const allDocs: Document[] = [
+            const allDocs: MikeDocument[] = [
                 ...standaloneDocuments,
                 ...projects.flatMap((p) => p.documents || []),
             ];
             const files = allDocs
                 .filter((d) => selectedDocIds.has(d.id))
-                .map((d) => ({
-                    filename: d.filename,
-                    document_id: d.id,
-                }));
+                .map((d) => ({ filename: d.filename, document_id: d.id }));
+
+            // Build the actual first message for the assistant.
+            //
+            // The upstream code shipped a literal placeholder string
+            // ("implement workflow") with no further context, which meant
+            // the assistant had no idea WHICH workflow to run and would
+            // respond with "Which of these N workflows would you like?".
+            // We now pass the workflow title + its full prompt_md as the
+            // user message so the model has everything it needs in turn 1.
+            const wfPromptText = wf.prompt_md?.trim() ?? "";
+            const headerLine = `**${t("runWorkflowMessage")}: ${wf.title}**`;
+            const baseContent = wfPromptText
+                ? `${headerLine}\n\n${wfPromptText}`
+                : headerLine;
             const content = assistantPrompt.trim()
-                ? `implement workflow\n\n${assistantPrompt.trim()}`
-                : "implement workflow";
+                ? `${baseContent}\n\n---\n\n**${t("additionalInstructionsLabel")}:**\n${assistantPrompt.trim()}`
+                : baseContent;
+
             setNewChatMessages([
                 {
                     role: "user",
@@ -210,7 +404,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
     }
 
     async function handleCreateReview() {
-        const allDocs: Document[] = [
+        const allDocs: MikeDocument[] = [
             ...standaloneDocuments,
             ...projects.flatMap((p) => p.documents || []),
         ];
@@ -228,6 +422,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                 workflow_id: wf.is_system ? undefined : wf.id,
                 project_id: projectId,
             });
+            track("tabular_review_created", { from_workflow: true });
             handleClose();
             router.push(
                 projectId
@@ -247,9 +442,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
     const projectDocs = selectedProject?.documents ?? [];
 
     const filteredProjectDocs = q
-        ? projectDocs.filter((d) =>
-              d.filename.toLowerCase().includes(q),
-          )
+        ? projectDocs.filter((d) => d.filename.toLowerCase().includes(q))
         : projectDocs;
 
     const filteredStandalone = q
@@ -262,8 +455,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
         .map((p) => ({
             ...p,
             documents: (p.documents || []).filter(
-                (d) =>
-                    !q || d.filename.toLowerCase().includes(q),
+                (d) => !q || d.filename.toLowerCase().includes(q),
             ),
         }))
         .filter(
@@ -273,103 +465,149 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                 p.documents.length > 0,
         );
 
-    const breadcrumbs =
-        screen === "select"
-            ? ["Workflows", "Select workflow"]
-            : [
-                  <button
-                      key="workflows"
-                      type="button"
-                      onClick={() => setScreen("select")}
-                      className="transition-colors hover:text-gray-700"
-                  >
-                      Workflows
-                  </button>,
-                  wf.title,
-                  wf.type === "assistant" ? "New Chat" : "New Review",
-              ];
-
-    const selectPageAction = () => {
-        router.push(workflowDetailPath(wf));
-        handleClose();
-    };
-
     // ---------------------------------------------------------------------------
     // Render
     // ---------------------------------------------------------------------------
-    return (
-        <Modal
-            open={!!workflow}
-            onClose={handleClose}
-            size={screen === "select" ? "xl" : "lg"}
-            breadcrumbs={breadcrumbs}
-            secondaryAction={
-                screen === "select"
-                    ? {
-                          label: wf.is_system ? "View Page" : "Edit",
-                          onClick: selectPageAction,
-                      }
-                    : undefined
-            }
-            footerStatus={
-                screen === "configure" &&
-                (wf.type === "assistant"
-                    ? !inProject && selectedDocIds.size > 0
-                    : selectedDocIds.size > 0) ? (
-                    <span className="text-xs text-gray-400">
-                        {selectedDocIds.size} selected
-                    </span>
-                ) : null
-            }
-            primaryAction={
-                screen === "select"
-                    ? {
-                          label: "Use",
-                          onClick: () => setScreen("configure"),
-                      }
-                    : wf.type === "assistant"
-                      ? {
-                            label: saving ? "Starting…" : "Start Chat",
-                            onClick: handleStartChat,
-                            disabled:
-                                saving || (inProject && !selectedProjectId),
-                        }
-                      : {
-                            label: saving ? "Creating…" : "Create Review",
-                            onClick: handleCreateReview,
-                            disabled:
-                                saving ||
-                                selectedDocIds.size === 0 ||
-                                (inProject && !selectedProjectId),
-                        }
-            }
-            cancelAction={false}
-        >
+    return createPortal(
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-primary/20 backdrop-blur-xs">
+            <div
+                className={`w-full rounded-2xl bg-background border border-border flex flex-col h-[600px] transition-all duration-200 ${screen === "select" ? "max-w-4xl" : "max-w-2xl"}`}
+            >
+                {/* Header */}
+                <div className="flex items-center justify-between px-5 py-4 shrink-0">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
+                        {screen === "select" ? (
+                            <>
+                                <span>{t("breadcrumbRoot")}</span>
+                                <span>›</span>
+                                <span>{t("selectWorkflow")}</span>
+                            </>
+                        ) : (
+                            <>
+                                <button
+                                    onClick={() => setScreen("select")}
+                                    className="hover:text-foreground transition-colors"
+                                >
+                                    {t("breadcrumbRoot")}
+                                </button>
+                                <span>›</span>
+                                <span className="truncate max-w-[160px]">
+                                    {wf.title}
+                                </span>
+                                <span>›</span>
+                                <span>
+                                    {wf.type === "assistant"
+                                        ? t("newChat")
+                                        : t("newReview")}
+                                </span>
+                            </>
+                        )}
+                    </div>
+                    <button
+                        onClick={onClose}
+                        className="rounded-lg p-1.5 text-muted-foreground/70 hover:bg-accent hover:text-muted-foreground"
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
 
                 {/* ── SELECT SCREEN ── */}
                 {screen === "select" && (
-                    <WorkflowPickerContent
-                        workflows={workflows}
-                        selected={wf}
-                        onSelect={(next) => {
-                            if (next) setSelected(next);
-                        }}
-                        search={listSearch}
-                        onSearchChange={setListSearch}
-                        workflowType="all"
-                        previewMode="auto"
-                        showTypeIcon
-                        allowClearPreview={false}
-                    />
+                    <>
+                        <div className="flex flex-row flex-1 min-h-0 overflow-hidden">
+                            {/* Left: workflow list */}
+                            <div className="w-80 shrink-0 flex flex-col border-t border-border">
+                                {/* Search */}
+                                <div className="px-3 py-2 shrink-0 border-b border-border">
+                                    <div className="flex items-center gap-1.5 rounded-md border border-input bg-secondary px-2.5 py-1">
+                                        <Search className="h-3 w-3 text-muted-foreground/70 shrink-0" />
+                                        <input
+                                            type="text"
+                                            placeholder={t("searchPlaceholder")}
+                                            value={listSearch}
+                                            onChange={(e) => setListSearch(e.target.value)}
+                                            className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground/70 outline-none"
+                                        />
+                                        {listSearch && (
+                                            <button onClick={() => setListSearch("")} className="text-muted-foreground/70 hover:text-muted-foreground">
+                                                <X className="h-3 w-3" />
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                                {/* List */}
+                                <div className="overflow-y-auto flex-1">
+                                    {workflows
+                                        .filter((wfItem) => !listSearch || wfItem.title.toLowerCase().includes(listSearch.toLowerCase()))
+                                        .map((wfItem) => {
+                                            const isSelected = selected?.id === wfItem.id;
+                                            const Icon = wfItem.type === "tabular" ? Table2 : MessageSquare;
+                                            return (
+                                                <button
+                                                    key={wfItem.id}
+                                                    ref={isSelected ? selectedRowRef : null}
+                                                    type="button"
+                                                    onClick={() => setSelected(wfItem)}
+                                                    className={`w-full flex items-center gap-3 px-4 py-3 text-xs text-left border-b border-border transition-colors ${isSelected ? "bg-secondary" : "hover:bg-accent"}`}
+                                                >
+                                                    <span className={`flex-1 truncate ${isSelected ? "text-foreground font-medium" : "text-foreground"}`}>
+                                                        {wfItem.title}
+                                                    </span>
+                                                    <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+                                                </button>
+                                            );
+                                        })}
+                                </div>
+                            </div>
+
+                            {/* Right: workflow detail */}
+                            {wf.type === "assistant" ? (
+                                <AssistantPanel key={wf.id} workflow={wf} workflowPromptLabel={t("workflowPrompt")} noPromptLabel={t("noPromptDefined")} />
+                            ) : (
+                                <TabularPanel key={wf.id} workflow={wf} columnsLabel={t("columns")} noColumnsLabel={t("noColumnsDefined")} tagsLabel={t("tags")} promptLabel={t("prompt")} noPromptLabel={t("noPromptDefined")} />
+                            )}
+                        </div>
+
+                        <div className="border-t border-border px-5 py-3 flex items-center justify-between shrink-0">
+                            {wf.is_system ? (
+                                <button
+                                    onClick={() => {
+                                        router.push(`/workflows/${wf.id}`);
+                                        handleClose();
+                                    }}
+                                    className="rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent transition-colors"
+                                >
+                                    {t("viewPage")}
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={() => {
+                                        router.push(`/workflows/${wf.id}`);
+                                        handleClose();
+                                    }}
+                                    className="rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent transition-colors"
+                                >
+                                    {t("edit")}
+                                </button>
+                            )}
+                            <button
+                                onClick={() => setScreen("configure")}
+                                className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                            >
+                                {t("use")}
+                            </button>
+                        </div>
+                    </>
                 )}
 
                 {/* ── ASSISTANT CONFIGURE SCREEN ── */}
                 {screen === "configure" && wf.type === "assistant" && (
-                    <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                    <>
+                        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                             {/* Add-on prompt */}
-                            <div className="pb-3 shrink-0">
-                                <p className="text-xs font-medium text-gray-700 mb-2">
-                                    Message (optional)
+                            <div className="px-5 pb-3 shrink-0">
+                                <p className="text-xs font-medium text-foreground mb-2">
+                                    {t("messageOptional")}
                                 </p>
                                 <textarea
                                     rows={3}
@@ -377,15 +615,15 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                     onChange={(e) =>
                                         setAssistantPrompt(e.target.value)
                                     }
-                                    placeholder="Add any additional instructions to the workflow prompt…"
-                                    className="w-full text-sm text-gray-700 placeholder:text-gray-400 bg-gray-50 border border-gray-200 rounded-md px-3 py-2 resize-none outline-none leading-relaxed"
+                                    placeholder={t("additionalInstructions")}
+                                    className="w-full text-sm text-foreground placeholder:text-muted-foreground/70 bg-secondary border border-input rounded-md px-3 py-2 resize-none outline-none leading-relaxed"
                                 />
                             </div>
 
                             {/* Toggle row */}
-                            <div className="py-3 flex flex-col gap-2 shrink-0">
-                                <span className="text-xs font-medium text-gray-700">
-                                    Create in a project
+                            <div className="px-5 py-3 flex flex-col gap-2 shrink-0">
+                                <span className="text-xs font-medium text-foreground">
+                                    {t("createInProject")}
                                 </span>
                                 <Toggle
                                     on={inProject}
@@ -400,46 +638,48 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
 
                             {inProject ? (
                                 <>
-                                    <div className="pt-1 pb-1 shrink-0">
-                                        <p className="text-xs font-medium text-gray-700">
-                                            Select project
+                                    <div className="px-5 pt-1 pb-1 shrink-0">
+                                        <p className="text-xs font-medium text-foreground">
+                                            {t("selectProject")}
                                         </p>
                                     </div>
-                                    <div className="pb-2 shrink-0">
+                                    <div className="px-5 pb-2 shrink-0">
                                         <SimpleProjectPicker
                                             projects={projects}
                                             selectedId={selectedProjectId}
                                             onSelect={setSelectedProjectId}
+                                            selectProjectPlaceholder={t("selectProjectPlaceholder")}
+                                            noProjectsFoundLabel={t("noProjectsFound")}
                                         />
                                     </div>
                                 </>
                             ) : (
                                 <>
-                                    <div className="pt-1 pb-1 shrink-0">
-                                        <p className="text-xs font-medium text-gray-700">
-                                            Select documents
+                                    <div className="px-5 pt-1 pb-1 shrink-0">
+                                        <p className="text-xs font-medium text-foreground">
+                                            {t("selectDocuments")}
                                         </p>
                                     </div>
 
                                     {/* Search */}
-                                    <div className="pt-1.5 pb-1 shrink-0">
-                                        <div className="flex items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1">
-                                            <Search className="h-3 w-3 text-gray-400 shrink-0" />
+                                    <div className="px-4 pt-1.5 pb-1 shrink-0">
+                                        <div className="flex items-center gap-1.5 rounded-md border border-input bg-secondary px-2.5 py-1">
+                                            <Search className="h-3 w-3 text-muted-foreground/70 shrink-0" />
                                             <input
                                                 type="text"
-                                                placeholder="Search…"
+                                                placeholder={t("searchPlaceholder")}
                                                 value={docSearch}
                                                 onChange={(e) =>
                                                     setDocSearch(e.target.value)
                                                 }
-                                                className="flex-1 bg-transparent text-xs text-gray-700 placeholder:text-gray-400 outline-none"
+                                                className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground/70 outline-none"
                                             />
                                             {docSearch && (
                                                 <button
                                                     onClick={() =>
                                                         setDocSearch("")
                                                     }
-                                                    className="text-gray-400 hover:text-gray-600"
+                                                    className="text-muted-foreground/70 hover:text-muted-foreground"
                                                 >
                                                     <X className="h-3 w-3" />
                                                 </button>
@@ -448,7 +688,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                     </div>
 
                                     {/* File browser */}
-                                    <div className="flex-1 overflow-y-auto pb-2">
+                                    <div className="flex-1 overflow-y-auto px-4 pb-2">
                                         <FileDirectory
                                             standaloneDocs={filteredStandalone}
                                             directoryProjects={
@@ -461,23 +701,42 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                             forceExpanded={!!q}
                                             emptyMessage={
                                                 q
-                                                    ? "No matches found"
-                                                    : "No documents yet"
+                                                    ? t("noMatchesFound")
+                                                    : t("noDocumentsYet")
                                             }
                                         />
                                     </div>
                                 </>
                             )}
-                    </div>
+                        </div>
+
+                        <div className="border-t border-border px-5 py-3 flex items-center justify-between shrink-0">
+                            <span className="text-xs text-muted-foreground/70">
+                                {!inProject && selectedDocIds.size > 0
+                                    ? t("selected", { count: selectedDocIds.size })
+                                    : ""}
+                            </span>
+                            <button
+                                onClick={handleStartChat}
+                                disabled={
+                                    saving || (inProject && !selectedProjectId)
+                                }
+                                className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                            >
+                                {saving ? t("starting") : t("startChat")}
+                            </button>
+                        </div>
+                    </>
                 )}
 
                 {/* ── TABULAR CONFIGURE SCREEN ── */}
                 {screen === "configure" && wf.type === "tabular" && (
-                    <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                    <>
+                        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                             {/* Toggle stacked */}
-                            <div className="pb-3 flex flex-col gap-2 shrink-0">
-                                <span className="text-xs font-medium text-gray-700">
-                                    Create in a project
+                            <div className="px-5 pb-3 flex flex-col gap-2 shrink-0">
+                                <span className="text-xs font-medium text-foreground">
+                                    {t("createInProject")}
                                 </span>
                                 <Toggle
                                     on={inProject}
@@ -493,12 +752,12 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                             {/* Project section */}
                             {inProject && (
                                 <>
-                                    <div className="pt-1 pb-1 shrink-0">
-                                        <p className="text-xs font-medium text-gray-700">
-                                            Select Project
+                                    <div className="px-5 pt-1 pb-1 shrink-0">
+                                        <p className="text-xs font-medium text-foreground">
+                                            {t("selectProject")}
                                         </p>
                                     </div>
-                                    <div className="pb-2 shrink-0">
+                                    <div className="px-5 pb-2 shrink-0">
                                         <SimpleProjectPicker
                                             projects={projects}
                                             selectedId={selectedProjectId}
@@ -509,35 +768,37 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                                         new Set(),
                                                     );
                                             }}
+                                            selectProjectPlaceholder={t("selectProjectPlaceholder")}
+                                            noProjectsFoundLabel={t("noProjectsFound")}
                                         />
                                     </div>
                                 </>
                             )}
 
                             {/* Documents section */}
-                            <div className="pt-3 pb-1 shrink-0">
-                                <p className="text-xs font-medium text-gray-700">
-                                    Select Documents
+                            <div className="px-5 pt-3 pb-1 shrink-0">
+                                <p className="text-xs font-medium text-foreground">
+                                    {t("selectDocuments")}
                                 </p>
                             </div>
 
                             {/* Search */}
-                            <div className="pt-1.5 pb-1 shrink-0">
-                                <div className="flex items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1">
-                                    <Search className="h-3 w-3 text-gray-400 shrink-0" />
+                            <div className="px-4 pt-1.5 pb-1 shrink-0">
+                                <div className="flex items-center gap-1.5 rounded-md border border-input bg-secondary px-2.5 py-1">
+                                    <Search className="h-3 w-3 text-muted-foreground/70 shrink-0" />
                                     <input
                                         type="text"
-                                        placeholder="Search…"
+                                        placeholder={t("searchPlaceholder")}
                                         value={docSearch}
                                         onChange={(e) =>
                                             setDocSearch(e.target.value)
                                         }
-                                        className="flex-1 bg-transparent text-xs text-gray-700 placeholder:text-gray-400 outline-none"
+                                        className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground/70 outline-none"
                                     />
                                     {docSearch && (
                                         <button
                                             onClick={() => setDocSearch("")}
-                                            className="text-gray-400 hover:text-gray-600"
+                                            className="text-muted-foreground/70 hover:text-muted-foreground"
                                         >
                                             <X className="h-3 w-3" />
                                         </button>
@@ -546,7 +807,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                             </div>
 
                             {/* File browser */}
-                            <div className="flex-1 overflow-y-auto pb-2">
+                            <div className="flex-1 overflow-y-auto px-4 pb-2">
                                 <FileDirectory
                                     standaloneDocs={
                                         inProject
@@ -563,15 +824,37 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                     forceExpanded={!!q || inProject}
                                     emptyMessage={
                                         q
-                                            ? "No matches found"
+                                            ? t("noMatchesFound")
                                             : inProject
-                                              ? "No documents in this project"
-                                              : "No documents yet"
+                                              ? t("noDocumentsInProject")
+                                              : t("noDocumentsYet")
                                     }
                                 />
                             </div>
-                    </div>
+                        </div>
+
+                        <div className="border-t border-border px-5 py-3 flex items-center justify-between shrink-0">
+                            <span className="text-xs text-muted-foreground/70">
+                                {selectedDocIds.size > 0
+                                    ? t("selected", { count: selectedDocIds.size })
+                                    : ""}
+                            </span>
+                            <button
+                                onClick={handleCreateReview}
+                                disabled={
+                                    saving ||
+                                    selectedDocIds.size === 0 ||
+                                    (inProject && !selectedProjectId)
+                                }
+                                className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                            >
+                                {saving ? t("creating") : t("createReview")}
+                            </button>
+                        </div>
+                    </>
                 )}
-        </Modal>
+            </div>
+        </div>,
+        document.body,
     );
 }

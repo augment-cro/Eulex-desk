@@ -1,32 +1,38 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import {
     PanelLeft,
     MessageSquare,
     FolderOpen,
     Table2,
     Library,
+    Layers,
     User,
     ChevronsUpDown,
     ChevronDown,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
-import { MikeIcon } from "@/components/chat/mike-icon";
 import { SidebarChatItem } from "@/app/components/shared/SidebarChatItem";
-import { listProjects } from "@/app/lib/mikeApi";
-import type { Project } from "@/app/components/shared/types";
-import { cn } from "@/lib/utils";
+import { LanguageSwitcher } from "@/app/components/shared/LanguageSwitcher";
+import { ThemeSwitcher } from "@/app/components/shared/ThemeSwitcher";
+import { contextsServiceEnabled, listProjects } from "@/app/lib/mikeApi";
 
 const NAV_ITEMS = [
-    { href: "/assistant", label: "Assistant", icon: MessageSquare },
-    { href: "/projects", label: "Projects", icon: FolderOpen },
-    { href: "/tabular-reviews", label: "Tabular Review", icon: Table2 },
-    { href: "/workflows", label: "Workflows", icon: Library },
+    { href: "/assistant", labelKey: "assistant" as const, icon: MessageSquare },
+    { href: "/projects", labelKey: "projects" as const, icon: FolderOpen },
+    { href: "/tabular-reviews", labelKey: "tabularReview" as const, icon: Table2 },
+    { href: "/workflows", labelKey: "workflows" as const, icon: Library },
+    // Contexts only when a contexts service is configured (feature dormant
+    // otherwise).
+    ...(contextsServiceEnabled()
+        ? [{ href: "/contexts", labelKey: "contexts" as const, icon: Layers }]
+        : []),
 ];
 
 interface AppSidebarProps {
@@ -37,29 +43,15 @@ interface AppSidebarProps {
 export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
     const { user } = useAuth();
     const { profile } = useUserProfile();
-    const { chats, hasMoreChats, loadMoreChats, setCurrentChatId } =
-        useChatHistoryContext();
+    const { chats, currentChatId, setCurrentChatId } = useChatHistoryContext();
     const router = useRouter();
     const pathname = usePathname();
-    const routeChatId = useMemo(() => {
-        if (pathname.startsWith("/assistant/chat/")) {
-            return pathname.split("/").pop() ?? null;
-        }
-
-        const projectChatMatch = pathname.match(
-            /^\/projects\/[^/]+\/assistant\/chat\/([^/]+)/,
-        );
-        return projectChatMatch?.[1] ?? null;
-    }, [pathname]);
+    const t = useTranslations("sidebar");
     const [shouldAnimate, setShouldAnimate] = useState(false);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-    const [projectsCollapsed, setProjectsCollapsed] = useState(false);
     const [historyCollapsed, setHistoryCollapsed] = useState(false);
     const [projectNames, setProjectNames] = useState<Record<string, string>>(
         {},
-    );
-    const [recentProjects, setRecentProjects] = useState<Project[] | null>(
-        null,
     );
 
     useEffect(() => {
@@ -69,20 +61,8 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                 const map: Record<string, string> = {};
                 for (const p of projects) map[p.id] = p.name;
                 setProjectNames(map);
-                setRecentProjects(
-                    [...projects]
-                        .sort(
-                            (a, b) =>
-                                Date.parse(b.updated_at || b.created_at) -
-                                Date.parse(a.updated_at || a.created_at),
-                        )
-                        .slice(0, 5),
-                );
             })
-            .catch(() => {
-                setProjectNames({});
-                setRecentProjects([]);
-            });
+            .catch(() => {});
     }, [user]);
 
     useEffect(() => {
@@ -99,8 +79,24 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
     }, [isDropdownOpen]);
 
     useEffect(() => {
-        setCurrentChatId(routeChatId);
-    }, [routeChatId, setCurrentChatId]);
+        if (pathname.startsWith("/assistant/chat/")) {
+            const chatId = pathname.split("/").pop() ?? null;
+            setCurrentChatId(chatId);
+            return;
+        }
+
+        const projectChatMatch = pathname.match(
+            /^\/projects\/[^/]+\/assistant\/chat\/([^/]+)/,
+        );
+        if (projectChatMatch) {
+            setCurrentChatId(projectChatMatch[1]);
+            return;
+        }
+
+        if (pathname === "/assistant") {
+            setCurrentChatId(null);
+        }
+    }, [pathname, setCurrentChatId]);
 
     const getUserInitials = (email: string) => {
         if (profile?.displayName)
@@ -122,76 +118,64 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
 
     return (
         <div
-            className={cn(
+            className={`${
                 isOpen
-                    ? "w-64 h-[calc(100dvh-1rem)] md:h-[calc(100dvh-1.5rem)] bg-white/65"
-                    : "max-md:hidden w-14 md:h-[calc(100dvh-1.5rem)] md:bg-white/65 h-auto bg-transparent pointer-events-none md:pointer-events-auto",
-                "my-2 ml-2 mr-0 md:my-3 md:ml-3 md:mr-0 rounded-2xl border border-white/70 shadow-[0_-2px_7px_rgba(15,23,42,0.044),0_5px_12px_rgba(15,23,42,0.095),inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-2xl overflow-visible",
-                "flex flex-col transition-all duration-300 absolute md:relative z-[99]",
-            )}
+                    ? "w-64 h-dvh bg-muted"
+                    : "w-14 md:h-dvh md:bg-muted h-auto bg-transparent"
+            } border-border flex flex-col transition-all duration-300 absolute md:relative z-[99] overflow-visible`}
         >
-            {/* Toggle + Logo */}
+            {/* Toggle + Logo — h-20 with centered logo matches eulex-www's
+                header (border-b h-20), so the EULEX mark sits at the same
+                vertical position as on the website. */}
             <div
-                className={`items-center justify-between px-2.5 py-3 ${
+                className={`h-20 items-center justify-between px-2.5 ${
                     !isOpen ? "hidden md:flex" : "flex"
                 }`}
             >
                 {isOpen && (
-                    <div className="px-2">
+                    <div className="px-2.5">
                         <Link
                             href="/assistant"
-                            className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+                            className="flex items-center hover:opacity-80 transition-opacity leading-none"
                         >
-                            <MikeIcon size={22} />
-                            <span
-                                className={`text-2xl font-light font-serif ${
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                                src="/eulex-logo.svg"
+                                alt="EULEX"
+                                /* size matches eulex-www LogoImage: w-32 h-auto object-contain */
+                                className={`h-auto w-32 shrink-0 object-contain ${
                                     shouldAnimate ? "sidebar-fade-in" : ""
                                 }`}
-                            >
-                                Mike
-                            </span>
+                            />
                         </Link>
                     </div>
                 )}
                 <button
                     onClick={onToggle}
-                    className={cn(
-                        "h-9 w-9 p-2.5 items-center flex transition-colors",
-                        "rounded-md hover:bg-gray-100",
-                    )}
-                    title={isOpen ? "Close sidebar" : "Open sidebar"}
+                    className="h-9 w-9 p-2.5 items-center flex hover:bg-accent rounded-md transition-colors"
+                    title={isOpen ? t("closeSidebar") : t("openSidebar")}
                 >
                     <PanelLeft className="h-4 w-4" />
                 </button>
             </div>
 
             {/* Nav items */}
-            {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+            {NAV_ITEMS.map(({ href, labelKey, icon: Icon }) => {
                 const isActive =
-                    href === "/assistant"
-                        ? pathname === href
-                        : href === "/projects"
-                          ? pathname === href
-                          : pathname === href ||
-                            pathname.startsWith(href + "/");
+                    pathname === href || pathname.startsWith(href + "/");
+                const label = t(labelKey);
                 return (
-                    <div key={href} className="py-0.5 px-2.5">
+                    <div key={href} className="py-1 px-2.5">
                         <button
                             onClick={() => router.push(href)}
                             title={!isOpen ? label : ""}
-                            className={cn(
-                                "w-full h-9 flex items-center gap-3 px-2.5 py-2 rounded-md transition-colors text-left",
+                            className={`w-full h-9 flex items-center gap-3 px-2.5 py-2 rounded-md transition-colors text-left ${
                                 isActive
-                                    ? "bg-gray-200/60 text-gray-900"
-                                    : "text-gray-700 hover:bg-gray-100",
-                                !isOpen ? "hidden md:flex" : "flex",
-                            )}
+                                    ? "bg-secondary text-foreground"
+                                    : "hover:bg-accent text-foreground"
+                            } ${!isOpen ? "hidden md:flex" : "flex"}`}
                         >
-                            <Icon
-                                className={`h-4 w-4 flex-shrink-0 ${
-                                    isActive ? "text-gray-900" : "text-black"
-                                }`}
-                            />
+                            <Icon className="h-4 w-4 flex-shrink-0 text-foreground" />
                             {isOpen && (
                                 <span
                                     className={`text-sm font-medium ${
@@ -206,206 +190,72 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                 );
             })}
 
-            {isOpen && (
-                <div className="mt-4 flex-1 min-h-0 flex flex-col gap-4">
-                    {/* Recent Projects */}
-                    <div>
-                        <button
-                            onClick={() => setProjectsCollapsed((v) => !v)}
-                            className={`mb-2 flex w-full items-center justify-between px-5 text-xs font-semibold text-gray-500 transition-colors hover:text-gray-700 ${
-                                shouldAnimate ? "sidebar-fade-in" : ""
-                            }`}
-                        >
-                            <span>Recent Projects</span>
-                            <ChevronDown
-                                className={`h-3.5 w-3.5 transition-transform ${
-                                    projectsCollapsed ? "-rotate-90" : ""
-                                }`}
-                            />
-                        </button>
-                        {!projectsCollapsed && (
-                            <>
-                                {!recentProjects ? (
-                                    <div className="space-y-1 px-2.5">
-                                        {[50, 65, 45].map((w, i) => (
-                                            <div
-                                                key={i}
-                                                className="h-9 flex items-center px-3 rounded-md"
-                                            >
-                                                <div
-                                                    className="h-3 bg-gray-200 rounded animate-pulse"
-                                                    style={{ width: `${w}%` }}
-                                                />
-                                            </div>
-                                        ))}
-                                    </div>
-                                ) : recentProjects.length === 0 ? (
-                                    <div
-                                        className={`px-5 py-2 text-xs text-gray-500 ${
-                                            shouldAnimate
-                                                ? "sidebar-fade-in-2"
-                                                : ""
-                                        }`}
-                                    >
-                                        No projects yet
-                                    </div>
-                                ) : (
-                                    <div
-                                        className={`space-y-1 px-2.5 ${
-                                            shouldAnimate
-                                                ? "sidebar-fade-in-2"
-                                                : ""
-                                        }`}
-                                    >
-                                        {recentProjects.map((project) => {
-                                            const isActive =
-                                                pathname ===
-                                                    `/projects/${project.id}` ||
-                                                pathname.startsWith(
-                                                    `/projects/${project.id}/`,
-                                                );
-                                            return (
-                                                <button
-                                                    key={project.id}
-                                                    onClick={() =>
-                                                        router.push(
-                                                            `/projects/${project.id}`,
-                                                        )
-                                                    }
-                                                    title={project.name}
-                                                    className={cn(
-                                                        "flex h-9 w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors",
-                                                        isActive
-                                                            ? "bg-gray-200/60 text-gray-900"
-                                                            : "text-gray-700 hover:bg-gray-100",
-                                                    )}
-                                                >
-                                                    <FolderOpen className="h-3.5 w-3.5 shrink-0 text-gray-600" />
-                                                    <span className="min-w-0 flex-1 truncate">
-                                                        {project.name}
-                                                    </span>
-                                                </button>
-                                            );
-                                        })}
-                                    </div>
-                                )}
-                            </>
-                        )}
-                    </div>
-
-                    {/* Assistant History */}
-                    <div className="flex min-h-0 flex-1 flex-col">
-                        <button
-                            onClick={() => setHistoryCollapsed((v) => !v)}
-                            className={`mb-2 flex w-full items-center justify-between px-5 text-xs font-semibold text-gray-500 transition-colors hover:text-gray-700 ${
-                                shouldAnimate ? "sidebar-fade-in" : ""
-                            }`}
-                        >
-                            <span>Assistant History</span>
-                            <ChevronDown
-                                className={`h-3.5 w-3.5 transition-transform ${
-                                    historyCollapsed ? "-rotate-90" : ""
-                                }`}
-                            />
-                        </button>
+            {/* Assistant History — labeled "Povijest razgovora" header + chevron,
+                placed below the nav list, shown only when conversation history
+                exists (titles render in Sentient via .sidebar-chat-title). */}
+            {isOpen && chats && chats.length > 0 && (
+                <div className="mt-8 flex-1 min-h-0 flex flex-col">
+                    <button
+                        onClick={() => setHistoryCollapsed((v) => !v)}
+                        aria-label={t("assistantHistory")}
+                        className={`mb-2 px-5 flex items-center justify-between text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors ${
+                            shouldAnimate ? "sidebar-fade-in" : ""
+                        }`}
+                    >
+                        <span>{t("assistantHistory")}</span>
+                        <ChevronDown
+                            className={`h-3.5 w-3.5 transition-transform ${historyCollapsed ? "-rotate-90" : ""}`}
+                        />
+                    </button>
+                    <div
+                        className={`overflow-y-auto flex-1 ${historyCollapsed ? "hidden" : ""}`}
+                    >
                         <div
-                            className={`overflow-y-auto flex-1 ${
-                                historyCollapsed ? "hidden" : ""
+                            className={`space-y-1 px-2.5 ${
+                                shouldAnimate ? "sidebar-fade-in-2" : ""
                             }`}
                         >
-                            {!chats ? (
-                                <div className="space-y-1 px-2.5">
-                                    {[40, 60, 50, 70, 45].map((w, i) => (
-                                        <div
-                                            key={i}
-                                            className="h-9 flex items-center px-3 rounded-md"
-                                        >
-                                            <div
-                                                className="h-3 bg-gray-200 rounded animate-pulse"
-                                                style={{ width: `${w}%` }}
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : chats.length === 0 ? (
-                                <div
-                                    className={`text-xs text-gray-500 py-2 px-5 ${
-                                        shouldAnimate ? "sidebar-fade-in-2" : ""
-                                    }`}
-                                >
-                                    No chats yet
-                                </div>
-                            ) : (
-                                <>
-                                    <div
-                                        className={`space-y-1 px-2.5 ${
-                                            shouldAnimate
-                                                ? "sidebar-fade-in-2"
-                                                : ""
-                                        }`}
-                                    >
-                                        {chats.map((chat) => (
-                                            <SidebarChatItem
-                                                key={chat.id}
-                                                chat={chat}
-                                                isActive={
-                                                    routeChatId === chat.id
-                                                }
-                                                projectName={
-                                                    chat.project_id
-                                                        ? projectNames[
-                                                              chat.project_id
-                                                          ]
-                                                        : undefined
-                                                }
-                                                onSelect={() => {
-                                                    setCurrentChatId(chat.id);
-                                                    router.push(
-                                                        chat.project_id
-                                                            ? `/projects/${chat.project_id}/assistant/chat/${chat.id}`
-                                                            : `/assistant/chat/${chat.id}`,
-                                                    );
-                                                }}
-                                            />
-                                        ))}
-                                    </div>
-                                    {hasMoreChats && (
-                                        <div className="px-2.5 pt-1">
-                                            <button
-                                                onClick={loadMoreChats}
-                                                className={cn(
-                                                    "flex h-8 w-full items-center justify-start rounded-md px-3 text-left text-xs font-medium text-gray-500 transition-colors hover:text-gray-700",
-                                                    "hover:bg-gray-100",
-                                                )}
-                                            >
-                                                Load more
-                                            </button>
-                                        </div>
-                                    )}
-                                </>
-                            )}
+                            {chats.map((chat) => (
+                                <SidebarChatItem
+                                    key={chat.id}
+                                    chat={chat}
+                                    isActive={currentChatId === chat.id}
+                                    projectName={
+                                        chat.project_id
+                                            ? projectNames[chat.project_id]
+                                            : undefined
+                                    }
+                                    onSelect={() => {
+                                        setCurrentChatId(chat.id);
+                                        router.push(
+                                            chat.project_id
+                                                ? `/projects/${chat.project_id}/assistant/chat/${chat.id}`
+                                                : `/assistant/chat/${chat.id}`,
+                                        );
+                                    }}
+                                />
+                            ))}
                         </div>
                     </div>
                 </div>
             )}
 
             {/* User Profile */}
-            <div className="mt-auto p-1">
+            <div className="mt-auto">
                 {user && (
                     <div className="relative">
                         <button
                             onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                            className={cn(
-                                "flex items-center transition-colors w-full px-2.5 py-3 border-t",
-                                "rounded-xl border-white/60",
-                                !isOpen ? "hidden md:flex" : "",
+                            className={`flex items-center transition-colors w-full px-3.5 py-4 border-t border-border ${
+                                !isOpen ? "hidden md:flex" : ""
+                            } ${
                                 pathname === "/account" || isDropdownOpen
-                                    ? "bg-gray-200/60"
-                                    : "hover:bg-gray-100",
-                            )}
+                                    ? "bg-secondary"
+                                    : "hover:bg-accent"
+                            }`}
                             title={!isOpen ? user.email : undefined}
                         >
-                            <div className="h-6.5 w-6.5 flex-shrink-0 rounded-full bg-gray-700 flex items-center justify-center text-white text-sm font-medium font-serif">
+                            <div className="h-7 w-7 flex-shrink-0 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-sm font-medium font-serif">
                                 {getUserInitials(user.email)}
                             </div>
                             {isOpen && (
@@ -415,39 +265,32 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                     }`}
                                 >
                                     <div className="flex flex-col gap-0.5 min-w-0">
-                                        <div className="text-sm font-medium text-gray-900 leading-none">
+                                        <div className="text-sm font-medium text-foreground leading-none">
                                             {getDisplayName()}
                                         </div>
-                                        <div className="text-[12px] text-gray-500 leading-none">
+                                        <div className="text-[12px] text-muted-foreground leading-none">
                                             {getUserTier()}
                                         </div>
                                     </div>
-                                    <ChevronsUpDown className="h-4 w-4 flex-shrink-0 text-gray-400" />
+                                    <ChevronsUpDown className="h-4 w-4 flex-shrink-0 text-muted-foreground/70" />
                                 </div>
                             )}
                         </button>
 
                         {isDropdownOpen && (
-                            <div
-                                className={cn(
-                                    "absolute bottom-full left-0 z-50 mb-1 p-1 whitespace-nowrap",
-                                    isOpen ? "right-0" : "w-56",
-                                    "bg-white/80 rounded-xl shadow-[0_6px_17px_rgba(15,23,42,0.1)] border border-white/70 backdrop-blur-xl",
-                                )}
-                            >
+                            <div className="account-menu absolute bottom-full left-0 m-1 bg-surface-elevated rounded-lg border border-border p-1 z-50 w-62 whitespace-nowrap">
                                 <button
                                     onClick={() => {
                                         router.push("/account");
                                         setIsDropdownOpen(false);
                                     }}
-                                    className={cn(
-                                        "w-full px-4 py-2 text-left text-sm text-gray-700 flex items-center gap-2 rounded-md",
-                                        "hover:bg-white/70",
-                                    )}
+                                    className="w-full px-4 py-2 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2 rounded-md"
                                 >
                                     <User className="h-4 w-4" />
-                                    Account Settings
+                                    {t("accountSettings")}
                                 </button>
+                                <LanguageSwitcher />
+                                <ThemeSwitcher />
                             </div>
                         )}
                     </div>

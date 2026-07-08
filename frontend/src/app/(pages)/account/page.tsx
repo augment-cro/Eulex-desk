@@ -2,49 +2,40 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { LogOut, Trash2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { LogOut, Check, CreditCard } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
-import { ConfirmPopup } from "@/app/components/shared/ConfirmPopup";
-import {
-    MfaVerificationPopup,
-    needsMfaVerification,
-} from "@/app/components/shared/MfaVerificationPopup";
-import { WarningPopup } from "@/app/components/shared/WarningPopup";
-import { deleteAccount, isMfaRequiredError } from "@/app/lib/mikeApi";
-import {
-    accountGlassDangerOutlineButtonClassName,
-    accountGlassInputClassName,
-    accountGlassPrimaryButtonClassName,
-} from "./accountStyles";
-import { AccountSection } from "./AccountSection";
-
-const isDev = process.env.NODE_ENV !== "production";
-const devLog = (...args: Parameters<typeof console.log>) => {
-    if (isDev) console.log(...args);
-};
+import { PlanCards } from "@/app/components/account/PlanCards";
+import { TeamSection } from "@/app/components/account/TeamSection";
+import { createBillingPortalSession, deleteAccount } from "@/app/lib/mikeApi";
+import { COUNTRIES } from "@/lib/countries";
 
 export default function AccountPage() {
     const router = useRouter();
-    const { user, signOut, updateEmail } = useAuth();
-    const { profile, updateDisplayName, updateOrganisation } = useUserProfile();
+    const { user, signOut } = useAuth();
+    const { profile, updateDisplayName, updateOrganisation, updateCountry, updateVatNumber } =
+        useUserProfile();
+    const t = useTranslations("account");
+    const tc = useTranslations("common");
+    const tCountries = useTranslations("countries");
     const [displayName, setDisplayName] = useState("");
     const [isSavingName, setIsSavingName] = useState(false);
     const [saved, setSaved] = useState(false);
     const [organisation, setOrganisation] = useState("");
     const [isSavingOrg, setIsSavingOrg] = useState(false);
     const [orgSaved, setOrgSaved] = useState(false);
-    const [email, setEmail] = useState("");
-    const [isSavingEmail, setIsSavingEmail] = useState(false);
-    const [emailSaved, setEmailSaved] = useState(false);
-    const [emailStatus, setEmailStatus] = useState<string | null>(null);
-    const [emailWarning, setEmailWarning] = useState<string | null>(null);
-    const [emailMfaOpen, setEmailMfaOpen] = useState(false);
+    const [country, setCountry] = useState("");
+    const [isSavingCountry, setIsSavingCountry] = useState(false);
+    const [countrySaved, setCountrySaved] = useState(false);
+    const [vatNumber, setVatNumber] = useState("");
+    const [isSavingVat, setIsSavingVat] = useState(false);
+    const [vatSaved, setVatSaved] = useState(false);
     const [deleteConfirm, setDeleteConfirm] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
-    const [accountDeleteMfaOpen, setAccountDeleteMfaOpen] = useState(false);
+    const [isOpeningPortal, setIsOpeningPortal] = useState(false);
 
     useEffect(() => {
         if (profile?.displayName) {
@@ -53,88 +44,89 @@ export default function AccountPage() {
         if (profile?.organisation) {
             setOrganisation(profile.organisation);
         }
+        // Country is stored upper-case; reflect that in the dropdown so
+        // the option matches even if a stale lower-case value snuck in
+        // from an older client. Empty string → "no country selected".
+        setCountry(profile?.country?.toUpperCase() ?? "");
+        setVatNumber(profile?.vatNumber ?? "");
     }, [profile]);
 
-    useEffect(() => {
-        if (user?.email) {
-            setEmail(user.pendingEmail || user.email);
+    const handleCountryChange = async (next: string) => {
+        const previous = country;
+        setCountry(next);
+        if (next === (profile?.country ?? "")) return;
+        setIsSavingCountry(true);
+        const success = await updateCountry(next || null);
+        setIsSavingCountry(false);
+        if (success) {
+            setCountrySaved(true);
+            setTimeout(() => setCountrySaved(false), 1500);
+        } else {
+            setCountry(previous);
+            alert(t("alerts.failedUpdateCountry"));
         }
-    }, [user?.email, user?.pendingEmail]);
+    };
+
+    const handleVatChange = async (value: string) => {
+        setVatNumber(value);
+    };
+
+    const handleVatBlur = async () => {
+        const trimmed = vatNumber.trim();
+        if (trimmed === (profile?.vatNumber ?? "")) return;
+        const previous = profile?.vatNumber ?? "";
+        setIsSavingVat(true);
+        const success = await updateVatNumber(trimmed || null);
+        setIsSavingVat(false);
+        if (success) {
+            setVatSaved(true);
+            setTimeout(() => setVatSaved(false), 1500);
+        } else {
+            setVatNumber(previous);
+            alert(t("alerts.failedUpdateVat"));
+        }
+    };
+
+    const localizedCountryLabel = (code: string, fallback: string): string => {
+        // Localised name lives in messages/<locale>.json under
+        // "countries.<CODE>"; if a translator hasn't filled it in yet
+        // we fall back to the English label shipped in lib/countries.ts
+        // so the UI never shows raw "DE" / "FR".
+        const key = `${code}` as Parameters<typeof tCountries>[0];
+        try {
+            const localized = tCountries(key);
+            return localized && localized !== key ? localized : fallback;
+        } catch {
+            return fallback;
+        }
+    };
 
     const handleLogout = async () => {
         await signOut();
         router.push("/");
     };
 
-    const handleDeleteAccount = async () => {
-        devLog("[account/mfa] delete account requested");
-        setIsDeleting(true);
+    const handleOpenBillingPortal = async () => {
+        setIsOpeningPortal(true);
         try {
-            if (await needsMfaVerification()) {
-                setDeleteConfirm(false);
-                setAccountDeleteMfaOpen(true);
-                setIsDeleting(false);
-                return;
-            }
-            await deleteAccount();
-            await signOut();
-            router.push("/");
-        } catch (error) {
-            setIsDeleting(false);
-            devLog("[account/mfa] delete account failed", {
-                isMfaRequired: isMfaRequiredError(error),
-                error,
-            });
-            if (isMfaRequiredError(error)) {
-                setDeleteConfirm(false);
-                setAccountDeleteMfaOpen(true);
-                return;
-            }
-            setDeleteConfirm(false);
-            alert("Failed to delete account. Please try again.");
+            const { url } = await createBillingPortalSession();
+            window.location.href = url;
+        } catch {
+            setIsOpeningPortal(false);
+            alert(t("alerts.failedOpenBillingPortal"));
         }
     };
 
-    const handleSaveEmail = async () => {
-        const nextEmail = email.trim();
-        if (!nextEmail || nextEmail === user?.email) return;
-
-        devLog("[account/mfa] save email requested");
-        setIsSavingEmail(true);
-        setEmailStatus(null);
-        setEmailWarning(null);
+    const handleDeleteAccount = async () => {
+        setIsDeleting(true);
         try {
-            if (await needsMfaVerification()) {
-                setEmailMfaOpen(true);
-                return;
-            }
-
-            const updatedUser = await updateEmail(nextEmail);
-            const pendingEmail = updatedUser.pendingEmail;
-            setEmail(pendingEmail || updatedUser.email);
-            setEmailSaved(true);
-            setEmailStatus(
-                pendingEmail
-                    ? `Confirmation sent to ${pendingEmail}. Your current email remains ${updatedUser.email} until the change is confirmed.`
-                    : "Email updated.",
-            );
-            setTimeout(() => setEmailSaved(false), 2000);
-        } catch (error: unknown) {
-            devLog("[account/mfa] save email failed", { error });
-            const message =
-                error instanceof Error
-                    ? error.message
-                    : "Failed to update email. Please try again.";
-
-            if (isAlreadyRegisteredEmailError(message)) {
-                setEmail(user?.pendingEmail || user?.email || "");
-                setEmailWarning(message);
-                return;
-            }
-
-            setEmailStatus(message);
-        } finally {
-            setIsSavingEmail(false);
+            await deleteAccount();
+            await signOut();
+            router.push("/");
+        } catch {
+            setIsDeleting(false);
+            setDeleteConfirm(false);
+            alert(t("alerts.failedDeleteAccount"));
         }
     };
 
@@ -147,7 +139,7 @@ export default function AccountPage() {
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
         } else {
-            alert("Failed to update display name. Please try again.");
+            alert(t("alerts.failedUpdateName"));
         }
     };
 
@@ -160,259 +152,258 @@ export default function AccountPage() {
             setOrgSaved(true);
             setTimeout(() => setOrgSaved(false), 2000);
         } else {
-            alert("Failed to update organisation. Please try again.");
+            alert(t("alerts.failedUpdateOrg"));
         }
     };
 
     if (!user) return null;
 
     return (
-        <div className="space-y-8">
+        <div className="space-y-4">
             {/* Profile Settings */}
-            <section className="space-y-3">
-                <h2 className="text-2xl font-medium font-serif text-gray-900">
-                    Profile
-                </h2>
-                <AccountSection className="p-4">
-                    <div className="divide-y divide-gray-200">
-                        <div className="pb-4">
-                            <label className="text-sm text-gray-600 block mb-2">
-                                Display Name
-                            </label>
-                            <div className="space-y-2">
-                                <Input
-                                    type="text"
-                                    value={displayName}
-                                    onChange={(e) =>
-                                        setDisplayName(e.target.value)
-                                    }
-                                    placeholder="Enter your name"
-                                    className={accountGlassInputClassName}
-                                />
-                                <div className="flex justify-end">
-                                    <button
-                                        type="button"
-                                        onClick={handleSaveDisplayName}
-                                        disabled={
-                                            isSavingName ||
-                                            !displayName.trim() ||
-                                            saved
-                                        }
-                                        className="text-xs font-medium text-gray-700 transition-colors hover:text-gray-950 disabled:cursor-not-allowed disabled:text-gray-400"
-                                    >
-                                        {isSavingName ? (
-                                            "Saving..."
-                                        ) : saved ? (
-                                            "Saved"
-                                        ) : (
-                                            "Save"
-                                        )}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="pt-4">
-                            <label className="text-sm text-gray-600 block mb-2">
-                                Organisation
-                            </label>
-                            <div className="space-y-2">
-                                <Input
-                                    type="text"
-                                    value={organisation}
-                                    onChange={(e) =>
-                                        setOrganisation(e.target.value)
-                                    }
-                                    placeholder="Enter your organisation"
-                                    className={accountGlassInputClassName}
-                                />
-                                <div className="flex justify-end">
-                                    <button
-                                        type="button"
-                                        onClick={handleSaveOrganisation}
-                                        disabled={
-                                            isSavingOrg ||
-                                            organisation.trim() ===
-                                                (profile?.organisation ?? "") ||
-                                            orgSaved
-                                        }
-                                        className="text-xs font-medium text-gray-700 transition-colors hover:text-gray-950 disabled:cursor-not-allowed disabled:text-gray-400"
-                                    >
-                                        {isSavingOrg ? (
-                                            "Saving..."
-                                        ) : orgSaved ? (
-                                            "Saved"
-                                        ) : (
-                                            "Save"
-                                        )}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </AccountSection>
-            </section>
-
-            {/* Email */}
-            <section className="space-y-3">
-                <h2 className="text-2xl font-medium font-serif text-gray-900">
-                    Email
-                </h2>
-                <AccountSection className="p-4">
-                    <div className="space-y-2">
-                        <Input
-                            type="email"
-                            value={email}
-                            onChange={(event) => {
-                                setEmail(event.target.value);
-                                setEmailStatus(null);
-                                setEmailWarning(null);
-                                setEmailSaved(false);
-                            }}
-                            placeholder="Enter your email"
-                            className={accountGlassInputClassName}
-                        />
-                        {emailStatus ? (
-                            <p className="text-xs text-gray-500">
-                                {emailStatus}
-                            </p>
-                        ) : user.pendingEmail ? (
-                            <p className="text-xs text-gray-500">
-                                Pending confirmation: {user.pendingEmail}
-                            </p>
-                        ) : null}
-                        {emailStatus && (
-                            <p className="text-xs text-gray-400">
-                                Current email: {user.email}
-                            </p>
-                        )}
-                        <div className="flex justify-end">
-                            <button
-                                type="button"
-                                onClick={handleSaveEmail}
-                                disabled={
-                                    isSavingEmail ||
-                                    !email.trim() ||
-                                    email.trim() === user.email ||
-                                    email.trim() === user.pendingEmail ||
-                                    emailSaved
-                                }
-                                className="text-xs font-medium text-gray-700 transition-colors hover:text-gray-950 disabled:cursor-not-allowed disabled:text-gray-400"
-                            >
-                                {isSavingEmail ? (
-                                    "Saving..."
-                                ) : emailSaved ? (
-                                    "Saved"
-                                ) : (
-                                    "Save"
-                                )}
-                            </button>
-                        </div>
-                    </div>
-                </AccountSection>
-            </section>
-
-            {/* Plan */}
-            <section className="space-y-3">
-                <h2 className="text-2xl font-medium font-serif text-gray-900">
-                    Usage Plan
-                </h2>
-                <AccountSection className="p-4">
+            <div className="pb-6">
+                <div className="flex items-center gap-2 mb-4">
+                    <h2 className="text-2xl font-medium font-serif">{t("profile.title")}</h2>
+                </div>
+                <div className="space-y-4">
                     <div>
-                        <p className="text-base font-medium text-gray-500 capitalize">
-                            {profile?.tier || "Free"}
+                        <label className="text-sm text-muted-foreground block mb-2">
+                            {t("profile.displayName")}
+                        </label>
+                        <div className="flex gap-2">
+                            <Input
+                                type="text"
+                                value={displayName}
+                                onChange={(e) => setDisplayName(e.target.value)}
+                                placeholder={t("profile.displayNamePlaceholder")}
+                                className="flex-1"
+                            />
+                            <Button
+                                onClick={handleSaveDisplayName}
+                                disabled={
+                                    isSavingName || !displayName.trim() || saved
+                                }
+                                className="min-w-[80px] transition-all bg-primary hover:bg-primary/90 text-primary-foreground"
+                            >
+                                {isSavingName ? (
+                                    tc("saving")
+                                ) : saved ? (
+                                    <>
+                                        <Check className="h-4 w-3" />
+                                        {tc("saved")}
+                                    </>
+                                ) : (
+                                    tc("save")
+                                )}
+                            </Button>
+                        </div>
+                    </div>
+                    <div>
+                        <label className="text-sm text-muted-foreground block mb-2">
+                            {t("profile.organisation")}
+                        </label>
+                        <div className="flex gap-2">
+                            <Input
+                                type="text"
+                                value={organisation}
+                                onChange={(e) =>
+                                    setOrganisation(e.target.value)
+                                }
+                                placeholder={t("profile.organisationPlaceholder")}
+                                className="flex-1"
+                            />
+                            <Button
+                                onClick={handleSaveOrganisation}
+                                disabled={
+                                    isSavingOrg ||
+                                    organisation.trim() ===
+                                        (profile?.organisation ?? "") ||
+                                    orgSaved
+                                }
+                                className="min-w-[80px] transition-all bg-primary hover:bg-primary/90 text-primary-foreground"
+                            >
+                                {isSavingOrg ? (
+                                    tc("saving")
+                                ) : orgSaved ? (
+                                    <>
+                                        <Check className="h-4 w-3" />
+                                        {tc("saved")}
+                                    </>
+                                ) : (
+                                    tc("save")
+                                )}
+                            </Button>
+                        </div>
+                    </div>
+                    <div>
+                        <label
+                            htmlFor="profile-country"
+                            className="text-sm text-muted-foreground block mb-2"
+                        >
+                            {t("profile.country")}
+                        </label>
+                        <div className="flex items-center gap-2">
+                            <select
+                                id="profile-country"
+                                value={country}
+                                onChange={(e) =>
+                                    handleCountryChange(e.target.value)
+                                }
+                                disabled={isSavingCountry}
+                                className="flex-1 h-10 rounded-md border border-input bg-surface-elevated px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/10 disabled:opacity-60"
+                            >
+                                <option value="">
+                                    {t("profile.countryPlaceholder")}
+                                </option>
+                                {COUNTRIES.map((c) => (
+                                    <option key={c.code} value={c.code}>
+                                        {localizedCountryLabel(c.code, c.label)}
+                                    </option>
+                                ))}
+                            </select>
+                            {countrySaved ? (
+                                <span className="text-xs text-success inline-flex items-center gap-1">
+                                    <Check className="h-3.5 w-3.5" />
+                                    {tc("saved")}
+                                </span>
+                            ) : isSavingCountry ? (
+                                <span className="text-xs text-muted-foreground">
+                                    {tc("saving")}
+                                </span>
+                            ) : null}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1.5">
+                            {t("profile.countryHint")}
                         </p>
                     </div>
-                </AccountSection>
-            </section>
+                    <div>
+                        <label
+                            htmlFor="profile-vat"
+                            className="text-sm text-muted-foreground block mb-2"
+                        >
+                            {t("profile.vatNumber")}
+                        </label>
+                        <div className="flex items-center gap-2">
+                            <Input
+                                id="profile-vat"
+                                value={vatNumber}
+                                onChange={(e) => handleVatChange(e.target.value)}
+                                onBlur={handleVatBlur}
+                                disabled={isSavingVat}
+                                placeholder={t("profile.vatNumberPlaceholder")}
+                                className="flex-1"
+                            />
+                            {vatSaved ? (
+                                <span className="text-xs text-success inline-flex items-center gap-1">
+                                    <Check className="h-3.5 w-3.5" />
+                                    {tc("saved")}
+                                </span>
+                            ) : isSavingVat ? (
+                                <span className="text-xs text-muted-foreground">
+                                    {tc("saving")}
+                                </span>
+                            ) : null}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1.5">
+                            {t("profile.vatNumberHint")}
+                        </p>
+                    </div>
+                    <div>
+                        <label className="text-sm text-muted-foreground block mb-2">
+                            {t("profile.email")}
+                        </label>
+                        <p className="text-base">{user?.email}</p>
+                    </div>
+                </div>
+            </div>
+
+            {/* Plan */}
+            <div className="py-6">
+                <div className="flex items-center gap-2 mb-4">
+                    <h2 className="text-2xl font-medium font-serif">
+                        {t("plan.title")}
+                    </h2>
+                </div>
+                <PlanCards currentTier={profile?.tierKey} />
+                {profile?.tierKey && profile.tierKey !== "free" && (
+                    <div className="mt-4">
+                        <Button
+                            variant="outline"
+                            onClick={handleOpenBillingPortal}
+                            disabled={isOpeningPortal}
+                            className="w-full sm:w-auto"
+                        >
+                            <CreditCard className="h-4 w-4 mr-2" />
+                            {isOpeningPortal
+                                ? t("plan.openingBillingPortal")
+                                : t("plan.manageBilling")}
+                        </Button>
+                        <p className="text-xs text-gray-500 mt-1.5">
+                            {t("plan.manageBillingHint")}
+                        </p>
+                    </div>
+                )}
+            </div>
+
+            {/* Team (self-hides unless the user belongs to a team) */}
+            <TeamSection />
 
             {/* Actions */}
-            <section className="space-y-3">
-                <h2 className="text-2xl font-medium font-serif text-gray-900">
-                    Actions
+            <div className="py-6">
+                <h2 className="text-2xl font-medium font-serif mb-4">
+                    {t("actions.title")}
                 </h2>
                 <Button
                     variant="outline"
                     onClick={handleLogout}
-                    className="w-full gap-1.5 rounded-lg border border-transparent bg-gray-950 px-3 text-white shadow-none transition-colors hover:bg-gray-900 hover:text-white active:bg-black sm:w-auto"
+                    className="w-full sm:w-auto"
                 >
-                    <LogOut className="h-4 w-4 shrink-0" />
-                    Sign Out
+                    <LogOut className="h-4 w-4 mr-2" />
+                    {t("actions.signOut")}
                 </Button>
-            </section>
+            </div>
 
             {/* Danger Zone */}
-            <section className="space-y-3">
-                <h2 className="text-2xl font-medium font-serif text-red-600">
-                    Danger Zone
+            <div className="py-6">
+                <h2 className="text-2xl font-medium font-serif mb-1 text-destructive">
+                    {t("danger.title")}
                 </h2>
-                <AccountSection className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="space-y-1">
-                        <p className="text-sm font-medium text-gray-900">
-                            Delete account
+                <p className="text-sm text-muted-foreground mb-4">
+                    {t("danger.description")}
+                </p>
+                {deleteConfirm ? (
+                    <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-4 space-y-3 max-w-sm">
+                        <p className="text-sm font-medium text-destructive">
+                            {t("danger.confirmMessage")}
                         </p>
-                        <p className="text-sm text-gray-500">
-                            Permanently delete your account and all associated
-                            data. This action cannot be undone.
-                        </p>
+                        <div className="flex gap-2">
+                            <Button
+                                variant="outline"
+                                onClick={() => setDeleteConfirm(false)}
+                                disabled={isDeleting}
+                                className="text-sm"
+                            >
+                                {tc("cancel")}
+                            </Button>
+                            <Button
+                                onClick={handleDeleteAccount}
+                                disabled={isDeleting}
+                                className="text-sm bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+                            >
+                                {isDeleting ? t("danger.deleting") : t("danger.deleteAccount")}
+                            </Button>
+                        </div>
                     </div>
+                ) : (
                     <Button
                         variant="outline"
                         onClick={() => setDeleteConfirm(true)}
-                        disabled={isDeleting}
-                        className={`w-full shrink-0 gap-1.5 sm:w-auto ${accountGlassDangerOutlineButtonClassName}`}
+                        className="w-full sm:w-auto border-destructive/20 text-destructive hover:bg-destructive/10 hover:text-destructive"
                     >
-                        <Trash2 className="h-4 w-4 shrink-0" />
-                        Delete account
+                        {t("danger.deleteAccount")}
                     </Button>
-                </AccountSection>
-            </section>
-            <ConfirmPopup
-                open={deleteConfirm}
-                title="Delete account?"
-                message="This will permanently delete your account and all associated data. This action cannot be undone."
-                confirmLabel="Delete"
-                confirmStatus={isDeleting ? "loading" : "idle"}
-                cancelLabel="Cancel"
-                onCancel={() => {
-                    if (isDeleting) return;
-                    setDeleteConfirm(false);
-                }}
-                onConfirm={() => void handleDeleteAccount()}
-            />
-            <WarningPopup
-                open={!!emailWarning}
-                title="Email already registered"
-                message={emailWarning}
-                onClose={() => setEmailWarning(null)}
-            />
-            <MfaVerificationPopup
-                open={accountDeleteMfaOpen}
-                onCancel={() => setAccountDeleteMfaOpen(false)}
-                onVerified={() => {
-                    devLog("[account/mfa] account delete verification callback");
-                    setAccountDeleteMfaOpen(false);
-                    void handleDeleteAccount();
-                }}
-                title="Two-factor verification required"
-                message="Account deletion is sensitive. Enter a code from your authenticator app to continue."
-            />
-            <MfaVerificationPopup
-                open={emailMfaOpen}
-                onCancel={() => setEmailMfaOpen(false)}
-                onVerified={() => {
-                    devLog("[account/mfa] email verification callback");
-                    setEmailMfaOpen(false);
-                    void handleSaveEmail();
-                }}
-                title="Two-factor verification required"
-                message="Email changes are sensitive. Enter a code from your authenticator app to continue."
-            />
+                )}
+            </div>
         </div>
     );
-}
-
-function isAlreadyRegisteredEmailError(message: string) {
-    return message
-        .toLowerCase()
-        .includes("a user with this email address has already been registered");
 }

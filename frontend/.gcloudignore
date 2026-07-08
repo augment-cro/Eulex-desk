@@ -1,0 +1,21 @@
+# Used when `gcloud run deploy --source frontend` (or builds) package only
+# this directory. Paths are relative to frontend/ — the repo root
+# .gcloudignore rule `!frontend/.env.production` never matches a file named
+# `.env.production` here, so `.env.*` would wrongly omit deploy.sh output
+# and the client bundle keeps http://localhost:3001.
+
+.env
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.*
+!.env.production
+
+node_modules
+.next
+dist
+out
+build
+.git

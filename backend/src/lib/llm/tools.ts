@@ -10,6 +10,7 @@ export type ClaudeTool = {
     name: string;
     description: string;
     input_schema: Record<string, unknown>;
+    strict?: boolean;
 };
 
 export function toClaudeTools(tools: OpenAIToolSchema[]): ClaudeTool[] {
@@ -17,6 +18,7 @@ export function toClaudeTools(tools: OpenAIToolSchema[]): ClaudeTool[] {
         name: t.function.name,
         description: t.function.description,
         input_schema: normalizeSchema(t.function.parameters),
+        ...((t.function as Record<string, unknown>).strict === true ? { strict: true } : {}),
     }));
 }
 

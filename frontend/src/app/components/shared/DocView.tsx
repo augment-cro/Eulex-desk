@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, ZoomIn, ZoomOut } from "lucide-react";
+import { ZoomIn, ZoomOut } from "lucide-react";
+import { MikeIcon } from "@/components/chat/mike-icon";
 import { useFetchSingleDoc } from "@/app/hooks/useFetchSingleDoc";
-import { DocxView } from "./DocxView";
+import { DocxViewer } from "./DocxViewer";
 import type { CitationQuote } from "./types";
 import {
     clearHighlights,
@@ -16,8 +17,6 @@ interface Props {
     doc: { document_id: string; version_id?: string | null } | null;
     /** Preferred: one or more (page, quote) pairs to highlight. */
     quotes?: CitationQuote[];
-    /** Changes when the parent wants the current quote re-focused. */
-    quoteFocusKey?: string | number;
     /** Back-compat single-quote API. Ignored if `quotes` is provided. */
     quote?: string;
     fallbackPage?: number;
@@ -43,7 +42,6 @@ type RenderedPage = {
 export function DocView({
     doc,
     quotes,
-    quoteFocusKey,
     quote,
     fallbackPage,
     rounded = true,
@@ -218,7 +216,7 @@ export function DocView({
                 wrapper.style.position = "relative";
                 wrapper.style.margin = "0 auto 8px";
                 wrapper.style.width = "fit-content";
-                wrapper.className = "shadow-md";
+                wrapper.className = "border border-border";
 
                 const canvas = document.createElement("canvas");
                 canvas.width = viewport.width;
@@ -497,8 +495,9 @@ export function DocView({
     useEffect(() => {
         if (!pdfDocRef.current) return;
         quoteListRef.current = quoteList;
+        if (quoteList.length === 0) return;
         rehighlightQuotes(quoteList);
-    }, [quoteKey, quoteFocusKey, rehighlightQuotes]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [quoteKey, rehighlightQuotes]); // eslint-disable-line react-hooks/exhaustive-deps
 
     function handleZoomIn() {
         const next = Math.min(
@@ -533,34 +532,36 @@ export function DocView({
     }
 
     if (fallbackToDocx && doc?.document_id) {
+        // Wrapper bira SuperDoc ili docx-preview na temelju
+        // NEXT_PUBLIC_USE_SUPERDOC flag-a — bez ovog, modal je u
+        // produkciji renderao prazan sivi panel jer SuperDoc CSS i
+        // docx-preview Word-page zoom rade konflikt unutar fiksne
+        // modal kontejner širine (800px). Sad i modal i postranje
+        // ploče dijele istu DOCX rendering rutu.
         return (
-            <DocxView
+            <DocxViewer
                 documentId={doc.document_id}
-                versionId={doc.version_id ?? null}
                 quotes={quotes}
-                quoteFocusKey={quoteFocusKey}
-                rounded={rounded}
-                bordered={bordered}
             />
         );
     }
 
     return (
         <div
-            className={`relative flex flex-col flex-1 overflow-hidden ${bordered ? "border border-gray-200" : ""} ${rounded ? "rounded-lg" : ""}`}
+            className={`relative flex flex-col flex-1 overflow-hidden ${bordered ? "border border-border" : ""} ${rounded ? "rounded-xl" : ""}`}
         >
             <div
                 ref={scrollContainerRef}
-                className="flex-1 overflow-auto bg-gray-100 px-3 pt-5 pb-3"
+                className="flex-1 overflow-auto bg-muted px-3 pt-5 pb-3"
             >
                 {loading && (
                     <div className="flex h-full items-center justify-center">
-                        <Loader2 className="h-7 w-7 animate-spin text-gray-400" />
+                        <MikeIcon spin mike size={28} />
                     </div>
                 )}
                 {error && (
                     <div className="flex h-full items-center justify-center">
-                        <p className="text-sm text-red-500">{error}</p>
+                        <p className="text-sm text-destructive">{error}</p>
                     </div>
                 )}
                 <div ref={containerRef} />
@@ -569,27 +570,27 @@ export function DocView({
                 <>
                     {/* Page counter — bottom left */}
                     <div className="absolute bottom-4 left-4 pointer-events-none">
-                        <span className="flex items-center px-3 py-1.5 rounded-full text-xs font-medium tabular-nums text-gray-700 bg-white/25 backdrop-blur-md border border-white/30 shadow-md">
+                        <span className="flex items-center px-3 py-1.5 rounded-full text-xs font-medium tabular-nums text-foreground bg-background/25 backdrop-blur-md border border-border">
                             {currentPage}/{numPages}
                         </span>
                     </div>
 
                     {/* Zoom controls — bottom right */}
-                    <div className="absolute bottom-4 right-4 flex items-center gap-px rounded-full bg-white/25 backdrop-blur-md border border-white/30 shadow-md px-1 py-1">
+                    <div className="absolute bottom-4 right-4 flex items-center gap-px rounded-full bg-background/25 backdrop-blur-md border border-border px-1 py-1">
                         <button
                             onClick={handleZoomOut}
                             disabled={zoom <= ZOOM_MIN}
-                            className="flex items-center justify-center w-7 h-7 rounded-full text-gray-600 hover:bg-white/80 disabled:opacity-30 transition-colors"
+                            className="flex items-center justify-center w-7 h-7 rounded-full text-muted-foreground hover:bg-background/80 disabled:opacity-30 transition-colors"
                         >
                             <ZoomOut className="h-3.5 w-3.5" />
                         </button>
-                        <span className="text-xs font-medium text-gray-600 tabular-nums w-9 text-center select-none">
+                        <span className="text-xs font-medium text-muted-foreground tabular-nums w-9 text-center select-none">
                             {Math.round(zoom * 100)}%
                         </span>
                         <button
                             onClick={handleZoomIn}
                             disabled={zoom >= ZOOM_MAX}
-                            className="flex items-center justify-center w-7 h-7 rounded-full text-gray-600 hover:bg-white/80 disabled:opacity-30 transition-colors"
+                            className="flex items-center justify-center w-7 h-7 rounded-full text-muted-foreground hover:bg-background/80 disabled:opacity-30 transition-colors"
                         >
                             <ZoomIn className="h-3.5 w-3.5" />
                         </button>

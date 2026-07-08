@@ -2,33 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FolderOpen, ChevronDown } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { Plus, FolderOpen, ChevronDown } from "lucide-react";
+import { HeaderSearchBtn } from "@/app/components/shared/HeaderSearchBtn";
 import { listProjects, updateProject, deleteProject } from "@/app/lib/mikeApi";
 import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
 import { useAuth } from "@/contexts/AuthContext";
-import type { Project } from "@/app/components/shared/types";
+import type { MikeProject } from "@/app/components/shared/types";
 import { NewProjectModal } from "./NewProjectModal";
-import { TableToolbar } from "@/app/components/shared/TableToolbar";
-import {
-    RowActionMenuItems,
-    RowActions,
-} from "@/app/components/shared/RowActions";
-import { PageHeader } from "@/app/components/shared/PageHeader";
-import {
-    TABLE_CHECKBOX_CLASS,
-    TABLE_STICKY_CELL_BG,
-    SkeletonDot,
-    SkeletonLine,
-    TableBody,
-    TableCell,
-    TableEmptyState,
-    TableHeaderCell,
-    TableHeaderRow,
-    TablePrimaryCell,
-    TableRow,
-    TableScrollArea,
-    TableStickyCell,
-} from "@/app/components/shared/TablePrimitive";
+import { ToolbarTabs } from "@/app/components/shared/ToolbarTabs";
+import { RowActions } from "@/app/components/shared/RowActions";
+import { useConfirmDialog } from "@/app/components/modals/confirm-dialog";
 
 function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString(undefined, {
@@ -38,23 +22,16 @@ function formatDate(iso: string) {
     });
 }
 
-function getProjectOwnerLabel(project: Project, currentUserId?: string | null) {
-    if (project.is_owner ?? project.user_id === currentUserId) return "Me";
-    return (
-        project.owner_display_name?.trim() ||
-        project.owner_email?.trim() ||
-        "Shared"
-    );
-}
+type Tab = "all" | "mine" | "shared-with-me";
 
-type ProjectFilter = "all" | "mine" | "shared-with-me";
+const CHECK_W = "w-8 shrink-0";
+const NAME_COL_W = "w-[300px] shrink-0";
 
 export function ProjectsOverview() {
-    const [projects, setProjects] = useState<Project[]>([]);
+    const [projects, setProjects] = useState<MikeProject[]>([]);
     const [loading, setLoading] = useState(true);
-    const [loadError, setLoadError] = useState<string | null>(null);
     const [modalOpen, setModalOpen] = useState(false);
-    const [activeFilter, setActiveFilter] = useState<ProjectFilter>("all");
+    const [activeTab, setActiveTab] = useState<Tab>("all");
     const [renamingId, setRenamingId] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [cmEditingId, setCmEditingId] = useState<string | null>(null);
@@ -65,46 +42,23 @@ export function ProjectsOverview() {
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
     const actionsRef = useRef<HTMLDivElement>(null);
     const router = useRouter();
-    const { user, isAuthenticated, authLoading } = useAuth();
+    const { user } = useAuth();
+    const t = useTranslations("projects");
+    const tc = useTranslations("common");
+    const tDelete = useTranslations("confirmDelete");
+    const { confirm: confirmDialog, dialog: confirmDialogEl } =
+        useConfirmDialog();
 
     useEffect(() => {
-        if (authLoading) {
-            setLoading(true);
-            return;
-        }
-        if (!isAuthenticated) {
-            setProjects([]);
-            setLoadError(null);
-            setLoading(false);
-            return;
-        }
-
-        let cancelled = false;
-        setLoading(true);
-        setLoadError(null);
         listProjects()
-            .then((loaded) => {
-                if (!cancelled) setProjects(loaded);
-            })
-            .catch((err) => {
-                console.error("[projects] failed to load projects", err);
-                if (!cancelled) {
-                    setProjects([]);
-                    setLoadError("Could not load projects.");
-                }
-            })
-            .finally(() => {
-                if (!cancelled) setLoading(false);
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [authLoading, isAuthenticated, user?.id]);
+            .then(setProjects)
+            .catch(() => setProjects([]))
+            .finally(() => setLoading(false));
+    }, []);
 
     useEffect(() => {
         setSelectedIds([]);
-    }, [activeFilter]);
+    }, [activeTab]);
 
     useEffect(() => {
         function handleClick(e: MouseEvent) {
@@ -120,9 +74,9 @@ export function ProjectsOverview() {
 
     const q = search.toLowerCase();
     const filtered = (
-        activeFilter === "all"
+        activeTab === "all"
             ? projects
-            : activeFilter === "mine"
+            : activeTab === "mine"
               ? projects.filter((p) => p.is_owner ?? p.user_id === user?.id)
               : projects.filter((p) => !(p.is_owner ?? p.user_id === user?.id))
     ).filter(
@@ -152,10 +106,10 @@ export function ProjectsOverview() {
         );
     }
 
-    const filters: { id: ProjectFilter; label: string }[] = [
-        { id: "all", label: "All" },
-        { id: "mine", label: "Mine" },
-        { id: "shared-with-me", label: "Shared with me" },
+    const tabs: { id: Tab; label: string }[] = [
+        { id: "all", label: t("tabs.all") },
+        { id: "mine", label: t("tabs.mine") },
+        { id: "shared-with-me", label: t("tabs.sharedWithMe") },
     ];
 
     async function handleRenameSubmit(projectId: string) {
@@ -184,15 +138,37 @@ export function ProjectsOverview() {
         setActionsOpen(false);
         // Only the project owner can delete; the per-row delete is hidden
         // for shared projects but the bulk action can still pick them up
-        // if a user toggled them across filters. Filter and warn.
+        // if a user toggled them across tabs. Filter and warn.
         const owned = ids.filter((id) => {
             const p = projects.find((pp) => pp.id === id);
             return !p || (p.is_owner ?? p.user_id === user?.id);
         });
         const blocked = ids.length - owned.length;
+        if (owned.length > 0) {
+            const ok = await confirmDialog({
+                title: tDelete("projectsTitle"),
+                message: tDelete("projectsBody", { count: owned.length }),
+                confirmLabel: tDelete("deleteAction"),
+                destructive: true,
+            });
+            if (!ok) return;
+        }
         setSelectedIds([]);
-        await Promise.all(owned.map((id) => deleteProject(id).catch(() => {})));
-        setProjects((prev) => prev.filter((p) => !owned.includes(p.id)));
+        // Remove from the list only the rows that ACTUALLY deleted —
+        // otherwise a failed delete vanishes from the UI and silently
+        // reappears on the next reload.
+        const results = await Promise.all(
+            owned.map((id) =>
+                deleteProject(id)
+                    .then(() => id)
+                    .catch(() => null),
+            ),
+        );
+        const deleted = new Set(
+            results.filter((id): id is string => id !== null),
+        );
+        if (deleted.size > 0)
+            setProjects((prev) => prev.filter((p) => !deleted.has(p.id)));
         if (blocked > 0) {
             setOwnerOnlyAction(
                 `delete ${blocked} of the selected projects — only the project owner can delete a project`,
@@ -201,70 +177,67 @@ export function ProjectsOverview() {
     }
 
     const toolbarActions = (
-        <>
+        <div className="flex items-center gap-2">
             {selectedIds.length > 0 && (
                 <div ref={actionsRef} className="relative">
                     <button
                         onClick={() => setActionsOpen((v) => !v)}
-                        className="flex items-center gap-1 text-xs font-medium text-gray-700 hover:text-gray-900 transition-colors"
+                        className="flex items-center gap-1 text-xs font-medium text-foreground transition-colors"
                     >
-                        Actions
+                        {tc("actions")}
                         <ChevronDown className="h-3.5 w-3.5" />
                     </button>
                     {actionsOpen && (
-                        <div className="absolute top-full right-0 mt-1 w-36 rounded-lg border border-gray-100 bg-white shadow-lg z-50 overflow-hidden">
+                        <div className="absolute top-full right-0 mt-1 w-36 rounded-lg border border-border bg-surface-elevated z-50 overflow-hidden">
                             <button
                                 onClick={handleDeleteSelected}
-                                className="w-full px-3 py-1.5 text-left text-xs text-red-600 hover:bg-red-50 transition-colors"
+                                className="w-full px-3 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 transition-colors"
                             >
-                                Delete
+                                {tc("delete")}
                             </button>
                         </div>
                     )}
                 </div>
             )}
-        </>
+        </div>
     );
 
     return (
-        <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto bg-background">
             {/* Page header */}
-            <PageHeader
-                loading={loading}
-                actions={[
-                    {
-                        type: "search",
-                        value: search,
-                        onChange: setSearch,
-                        placeholder: "Search projects…",
-                    },
-                    {
-                        type: "new",
-                        onClick: () => setModalOpen(true),
-                        title: "New project",
-                    },
-                ]}
-            >
-                <h1 className="text-2xl font-medium font-serif text-gray-900">
-                    Projects
+            <div className="flex items-center justify-between px-8 py-4">
+                <h1 className="text-2xl font-medium font-serif text-foreground">
+                    {t("title")}
                 </h1>
-            </PageHeader>
+                <div className="flex items-center gap-2">
+                    <HeaderSearchBtn
+                        value={search}
+                        onChange={setSearch}
+                        placeholder={t("searchPlaceholder")}
+                    />
+                    <button
+                        onClick={() => setModalOpen(true)}
+                        className="flex items-center justify-center p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                        <Plus className="h-4 w-4" />
+                    </button>
+                </div>
+            </div>
 
-            <TableToolbar
-                items={filters}
-                active={activeFilter}
-                onChange={setActiveFilter}
+            <ToolbarTabs
+                tabs={tabs}
+                active={activeTab}
+                onChange={setActiveTab}
                 actions={toolbarActions}
             />
 
             {/* Table */}
-            <TableScrollArea>
+            <div className="w-full overflow-x-auto">
+                <div className="min-w-max">
                 {/* Column headers */}
-                <TableHeaderRow>
-                    <TableStickyCell header>
-                        {loading ? (
-                            <SkeletonDot />
-                        ) : (
+                <div className="flex items-center h-8 pr-8 border-b border-border text-xs text-muted-foreground font-medium select-none">
+                    <div className={`sticky left-0 z-[60] ${CHECK_W} relative bg-background flex items-center justify-center self-stretch before:absolute before:inset-x-0 before:bottom-0 before:h-px before:bg-background`}>
+                        {!loading && (
                             <input
                                 type="checkbox"
                                 checked={allSelected}
@@ -272,164 +245,138 @@ export function ProjectsOverview() {
                                     if (el) el.indeterminate = someSelected;
                                 }}
                                 onChange={toggleAll}
-                                className={TABLE_CHECKBOX_CLASS}
+                                className="h-2.5 w-2.5 rounded border-border cursor-pointer accent-primary"
                             />
                         )}
-                        <span>Name</span>
-                    </TableStickyCell>
-                    <TableHeaderCell className="ml-auto w-32">CM</TableHeaderCell>
-                    <TableHeaderCell className="w-32">Owner</TableHeaderCell>
-                    <TableHeaderCell className="w-24">Files</TableHeaderCell>
-                    <TableHeaderCell className="w-24">Chats</TableHeaderCell>
-                    <TableHeaderCell className="w-36">
-                        Tabular Reviews
-                    </TableHeaderCell>
-                    <TableHeaderCell className="w-32">Created</TableHeaderCell>
-                    <TableHeaderCell className="w-8" />
-                </TableHeaderRow>
+                    </div>
+                    <div className={`sticky left-8 z-[60] ${NAME_COL_W} bg-background pl-2 text-left`}>
+                        {t("columns.name")}
+                    </div>
+                    <div className="ml-auto w-32 shrink-0 text-left">{t("columns.cm")}</div>
+                    <div className="w-24 shrink-0 text-left">{t("columns.files")}</div>
+                    <div className="w-24 shrink-0 text-left">{t("columns.chats")}</div>
+                    <div className="w-36 shrink-0 text-left">
+                        {t("columns.tabularReviews")}
+                    </div>
+                    <div className="w-32 shrink-0 text-left">{t("columns.created")}</div>
+                    <div className="w-8 shrink-0" />
+                </div>
 
                 {loading ? (
-                    <TableBody>
+                    <div>
                         {[1, 2, 3].map((i) => (
-                            <TableRow
+                            <div
                                 key={i}
-                                interactive={false}
+                                className="flex items-center h-10 pr-8 border-b border-border"
                             >
-                                <TableStickyCell
-                                    hover={false}
-                                    bgClassName="bg-transparent"
-                                >
-                                    <SkeletonDot />
-                                    <SkeletonLine className="h-3.5 w-48" />
-                                </TableStickyCell>
-                                <TableCell className="ml-auto w-32">
-                                    <SkeletonLine className="w-20" />
-                                </TableCell>
-                                <TableCell className="w-32">
-                                    <SkeletonLine className="w-16" />
-                                </TableCell>
-                                <TableCell className="w-24">
-                                    <SkeletonLine className="w-8" />
-                                </TableCell>
-                                <TableCell className="w-24">
-                                    <SkeletonLine className="w-8" />
-                                </TableCell>
-                                <TableCell className="w-36">
-                                    <SkeletonLine className="w-8" />
-                                </TableCell>
-                                <TableCell className="w-32">
-                                    <SkeletonLine className="w-20" />
-                                </TableCell>
-                                <TableCell className="w-8" />
-                            </TableRow>
+                                <div className="w-8 shrink-0" />
+                                <div className="flex-1 min-w-0 pl-3 pr-4">
+                                    <div className="h-3.5 w-48 rounded bg-muted animate-pulse" />
+                                </div>
+                                <div className="w-32 shrink-0">
+                                    <div className="h-3 w-20 rounded bg-muted animate-pulse" />
+                                </div>
+                                <div className="w-24 shrink-0">
+                                    <div className="h-3 w-8 rounded bg-muted animate-pulse" />
+                                </div>
+                                <div className="w-24 shrink-0">
+                                    <div className="h-3 w-8 rounded bg-muted animate-pulse" />
+                                </div>
+                                <div className="w-36 shrink-0">
+                                    <div className="h-3 w-8 rounded bg-muted animate-pulse" />
+                                </div>
+                                <div className="w-32 shrink-0">
+                                    <div className="h-3 w-20 rounded bg-muted animate-pulse" />
+                                </div>
+                                <div className="w-8 shrink-0" />
+                            </div>
                         ))}
-                    </TableBody>
-                ) : loadError ? (
-                    <TableEmptyState>
-                        <FolderOpen className="h-8 w-8 text-gray-300 mb-4" />
-                        <p className="text-2xl font-medium font-serif text-gray-900">
-                            Projects
-                        </p>
-                        <p className="mt-1 text-xs text-red-500 max-w-xs">
-                            {loadError}
-                        </p>
-                    </TableEmptyState>
+                    </div>
                 ) : filtered.length === 0 ? (
-                    <TableEmptyState>
-                        {activeFilter === "all" || activeFilter === "mine" ? (
+                    <div className="flex flex-col items-start py-24 w-full max-w-xs mx-auto">
+                        {activeTab === "all" || activeTab === "mine" ? (
                             <>
-                                <FolderOpen className="h-8 w-8 text-gray-300 mb-4" />
-                                <p className="text-2xl font-medium font-serif text-gray-900">
-                                    Projects
+                                <FolderOpen className="h-8 w-8 text-muted-foreground/70 mb-4" />
+                                <p className="text-2xl font-medium font-serif text-foreground">
+                                    {t("title")}
                                 </p>
-                                <p className="mt-1 text-xs text-gray-400 max-w-xs">
-                                    Upload documents into projects and to
-                                    commence chats and tabular reviews with
-                                    them.
+                                <p className="mt-1 text-xs text-muted-foreground/70 max-w-xs">
+                                    {t("empty.description")}
                                 </p>
                                 <button
                                     onClick={() => setModalOpen(true)}
-                                    className="mt-4 inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white hover:bg-gray-700 transition-colors shadow-md"
+                                    className="mt-4 inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
                                 >
-                                    + Create New
+                                    {t("empty.createNew")}
                                 </button>
                             </>
                         ) : (
-                            <p className="text-sm text-gray-400">
-                                No {activeFilter} projects
+                            <p className="text-sm text-muted-foreground/70">
+                                {t("empty.noProjects", { tab: activeTab })}
                             </p>
                         )}
-                    </TableEmptyState>
+                    </div>
                 ) : (
-                    <TableBody>
+                    <div>
                         {filtered.map((project) => {
                             const rowBg = selectedIds.includes(project.id)
-                                ? "bg-gray-50"
-                                : TABLE_STICKY_CELL_BG;
+                                ? "bg-secondary"
+                                : "bg-background";
                             return (
-                            <TableRow
+                            <div
                                 key={project.id}
-                                rightClickDropdown={
-                                    (project.is_owner ??
-                                        project.user_id === user?.id)
-                                        ? (close) => (
-                                              <RowActionMenuItems
-                                                  onClose={close}
-                                                  onRename={() => {
-                                                      setRenameValue(
-                                                          project.name,
-                                                      );
-                                                      setRenamingId(project.id);
-                                                  }}
-                                                  onUpdateCmNumber={() => {
-                                                      setCmValue(
-                                                          project.cm_number ??
-                                                              "",
-                                                      );
-                                                      setCmEditingId(
-                                                          project.id,
-                                                      );
-                                                  }}
-                                                  onDelete={async () => {
-                                                      await deleteProject(
-                                                          project.id,
-                                                      );
-                                                      setProjects((prev) =>
-                                                          prev.filter(
-                                                              (p) =>
-                                                                  p.id !==
-                                                                  project.id,
-                                                          ),
-                                                      );
-                                                  }}
-                                              />
-                                          )
-                                        : undefined
-                                }
                                 onClick={() => {
                                     if (renamingId === project.id) return;
                                     router.push(`/projects/${project.id}`);
                                 }}
+                                className="group flex items-center h-10 pr-8 border-b border-border hover:bg-accent cursor-pointer transition-colors"
                             >
-                                {/* Project Name */}
-                                <TablePrimaryCell
-                                    bgClassName={rowBg}
-                                    selected={selectedIds.includes(project.id)}
-                                    onSelectionChange={() =>
-                                        toggleOne(project.id)
-                                    }
-                                    label={project.name}
-                                    editing={renamingId === project.id}
-                                    editValue={renameValue}
-                                    onEditValueChange={setRenameValue}
-                                    onEditCommit={() =>
-                                        handleRenameSubmit(project.id)
-                                    }
-                                    onEditCancel={() => setRenamingId(null)}
-                                />
+                                <div
+                                    className={`sticky left-0 z-[60] ${CHECK_W} p-2 flex items-center justify-center ${rowBg} group-hover:bg-accent`}
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedIds.includes(
+                                            project.id,
+                                        )}
+                                        onChange={() => toggleOne(project.id)}
+                                        className="h-2.5 w-2.5 rounded border-border cursor-pointer accent-primary"
+                                    />
+                                </div>
 
-                                <TableCell
-                                    className="ml-auto w-32"
+                                {/* Project Name */}
+                                <div className={`sticky left-8 z-[60] ${NAME_COL_W} p-2 ${rowBg} group-hover:bg-accent`}>
+                                    {renamingId === project.id ? (
+                                        <input
+                                            autoFocus
+                                            value={renameValue}
+                                            onChange={(e) =>
+                                                setRenameValue(e.target.value)
+                                            }
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter")
+                                                    handleRenameSubmit(
+                                                        project.id,
+                                                    );
+                                                if (e.key === "Escape")
+                                                    setRenamingId(null);
+                                            }}
+                                            onBlur={() =>
+                                                handleRenameSubmit(project.id)
+                                            }
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="w-full text-sm text-foreground bg-transparent outline-none"
+                                        />
+                                    ) : (
+                                        <span className="text-sm text-foreground truncate block">
+                                            {project.name}
+                                        </span>
+                                    )}
+                                </div>
+
+                                <div
+                                    className="ml-auto w-32 shrink-0 text-sm text-muted-foreground truncate"
                                     onClick={(e) => e.stopPropagation()}
                                 >
                                     {cmEditingId === project.id ? (
@@ -448,32 +395,29 @@ export function ProjectsOverview() {
                                             onBlur={() =>
                                                 handleCmSubmit(project.id)
                                             }
-                                            placeholder="CM #"
-                                            className="w-full text-sm text-gray-800 bg-transparent outline-none"
+                                            placeholder={t("cmPlaceholder")}
+                                            className="w-full text-sm text-foreground bg-transparent outline-none"
                                         />
                                     ) : (
                                         (project.cm_number ?? (
-                                            <span className="text-gray-300">
+                                            <span className="text-muted-foreground/70">
                                                 —
                                             </span>
                                         ))
                                     )}
-                                </TableCell>
-                                <TableCell className="w-32">
-                                    {getProjectOwnerLabel(project, user?.id)}
-                                </TableCell>
-                                <TableCell className="w-24">
+                                </div>
+                                <div className="w-24 shrink-0 text-sm text-muted-foreground truncate">
                                     {project.document_count ?? 0}
-                                </TableCell>
-                                <TableCell className="w-24">
+                                </div>
+                                <div className="w-24 shrink-0 text-sm text-muted-foreground truncate">
                                     {project.chat_count ?? 0}
-                                </TableCell>
-                                <TableCell className="w-36">
+                                </div>
+                                <div className="w-36 shrink-0 text-sm text-muted-foreground truncate">
                                     {project.review_count ?? 0}
-                                </TableCell>
-                                <TableCell className="w-32">
+                                </div>
+                                <div className="w-32 shrink-0 text-sm text-muted-foreground truncate">
                                     {formatDate(project.created_at)}
-                                </TableCell>
+                                </div>
 
                                 <div
                                     className="w-8 shrink-0 flex justify-end"
@@ -493,6 +437,21 @@ export function ProjectsOverview() {
                                                 setCmEditingId(project.id);
                                             }}
                                             onDelete={async () => {
+                                                const ok = await confirmDialog({
+                                                    title: tDelete(
+                                                        "projectTitle",
+                                                    ),
+                                                    message: tDelete(
+                                                        "projectBodyNamed",
+                                                        {
+                                                            title: project.name,
+                                                        },
+                                                    ),
+                                                    confirmLabel:
+                                                        tDelete("deleteAction"),
+                                                    destructive: true,
+                                                });
+                                                if (!ok) return;
                                                 await deleteProject(project.id);
                                                 setProjects((prev) =>
                                                     prev.filter(
@@ -504,12 +463,13 @@ export function ProjectsOverview() {
                                         />
                                     )}
                                 </div>
-                            </TableRow>
+                            </div>
                             );
                         })}
-                    </TableBody>
+                    </div>
                 )}
-            </TableScrollArea>
+            </div>
+            </div>
 
             <NewProjectModal
                 open={modalOpen}
@@ -525,6 +485,8 @@ export function ProjectsOverview() {
                 action={ownerOnlyAction ?? undefined}
                 onClose={() => setOwnerOnlyAction(null)}
             />
+
+            {confirmDialogEl}
         </div>
     );
 }

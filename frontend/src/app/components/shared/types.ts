@@ -1,6 +1,6 @@
-// Shared TypeScript types for Mike AI legal assistant
+// Shared TypeScript types for Eulex Desk AI legal assistant
 
-export interface Folder {
+export interface MikeFolder {
   id: string;
   project_id: string;
   user_id: string;
@@ -10,32 +10,28 @@ export interface Folder {
   updated_at: string;
 }
 
-export interface Project {
+export interface MikeProject {
   id: string;
   user_id: string;
   is_owner?: boolean;
-  owner_display_name?: string | null;
-  owner_email?: string | null;
   name: string;
   cm_number: string | null;
   shared_with: string[];
   created_at: string;
   updated_at: string;
-  documents?: Document[];
-  folders?: Folder[];
+  documents?: MikeDocument[];
+  folders?: MikeFolder[];
   document_count?: number;
   chat_count?: number;
   review_count?: number;
 }
 
-export interface Document {
+export interface MikeDocument {
   id: string;
   user_id?: string;
   project_id: string | null;
   folder_id?: string | null;
   filename: string;
-  owner_email?: string | null;
-  owner_display_name?: string | null;
   file_type: string | null; // pdf | docx | doc
   storage_path: string | null;
   pdf_storage_path: string | null;
@@ -45,9 +41,7 @@ export interface Document {
   status: "pending" | "processing" | "ready" | "error";
   created_at: string | null;
   updated_at?: string | null;
-  /** Version number of the document row pointed to by current_version_id. */
-  active_version_number?: number | null;
-  /** Legacy: max version_number across assistant_edit rows, null if doc is unedited. */
+  /** Max version_number across assistant_edit rows, null if doc is unedited. */
   latest_version_number?: number | null;
 }
 
@@ -59,16 +53,15 @@ export interface StructureNode {
   children: StructureNode[];
 }
 
-export interface Chat {
+export interface MikeChat {
   id: string;
   project_id: string | null;
   user_id: string;
-  creator_display_name?: string | null;
   title: string | null;
   created_at: string;
 }
 
-export interface EditAnnotation {
+export interface MikeEditAnnotation {
   type?: "edit_data";
   kind?: "edit";
   edit_id: string;
@@ -89,264 +82,313 @@ export interface EditAnnotation {
 
 export type AssistantEvent =
   | { type: "reasoning"; text: string; isStreaming?: boolean }
-  | { type: "error"; message: string }
   | {
-      type: "tool_call_start";
-      name: string;
-      isStreaming?: boolean;
-    }
-  | {
-      type: "mcp_tool_call";
-      connector_id: string;
-      connector_name: string;
-      tool_name: string;
-      openai_tool_name: string;
-      status: "ok" | "error";
-      error?: string;
-      isStreaming?: boolean;
+        type: "tool_call_start";
+        name: string;
+        /** Friendly label (e.g. "Legal Data Hunter · search") for MCP tools. */
+        display_name?: string;
+        isStreaming?: boolean;
     }
   | { type: "thinking"; isStreaming?: boolean }
   | {
-      type: "doc_read";
-      filename: string;
-      document_id?: string;
-      isStreaming?: boolean;
+        type: "doc_read";
+        filename: string;
+        document_id?: string;
+        isStreaming?: boolean;
     }
   | {
-      type: "doc_find";
-      filename: string;
-      query: string;
-      total_matches: number;
-      isStreaming?: boolean;
+        type: "doc_find";
+        filename: string;
+        query: string;
+        total_matches: number;
+        isStreaming?: boolean;
     }
   | {
-      type: "doc_created";
-      filename: string;
-      download_url: string;
-      /** Set when the generated doc is persisted as a first-class document. */
-      document_id?: string;
-      version_id?: string;
-      version_number?: number | null;
-      isStreaming?: boolean;
+        type: "doc_created";
+        filename: string;
+        download_url: string;
+        /** Set when the generated doc is persisted as a first-class document. */
+        document_id?: string;
+        version_id?: string;
+        version_number?: number | null;
+        isStreaming?: boolean;
     }
   | { type: "doc_download"; filename: string; download_url: string }
   | {
-      type: "doc_replicated";
-      /** Source document filename. */
-      filename: string;
-      /** How many copies were produced in this single tool call. */
-      count: number;
-      /** One entry per new copy. Empty while streaming. */
-      copies?: {
-        new_filename: string;
-        document_id: string;
-        version_id: string;
-      }[];
-      error?: string;
-      isStreaming?: boolean;
+        type: "mcp_tool_result";
+        server: string;
+        tool: string;
+        ok: boolean;
+        /** JSON-stringified args (capped server-side). */
+        args: string;
+        /** Tool output text (capped server-side). */
+        output: string;
+        isStreaming?: boolean;
+    }
+  | {
+        type: "doc_replicated";
+        /** Source document filename. */
+        filename: string;
+        /** How many copies were produced in this single tool call. */
+        count: number;
+        /** One entry per new copy. Empty while streaming. */
+        copies?: {
+            new_filename: string;
+            document_id: string;
+            version_id: string;
+        }[];
+        error?: string;
+        isStreaming?: boolean;
     }
   | { type: "workflow_applied"; workflow_id: string; title: string }
   | {
-      type: "doc_edited";
-      filename: string;
-      document_id: string;
-      version_id: string;
-      /** Per-document monotonic Vn written at emit time. */
-      version_number?: number | null;
-      download_url: string;
-      annotations: EditAnnotation[];
-      error?: string;
-      isStreaming?: boolean;
-    }
-  | {
-      type: "courtlistener_search_case_law";
-      query: string;
-      result_count?: number;
-      error?: string;
-      isStreaming?: boolean;
-    }
-  | {
-      type: "courtlistener_get_cases";
-      cluster_ids: number[];
-      case_count?: number;
-      opinion_count?: number;
-      cases?: {
-        cluster_id: number;
-        case_name: string | null;
-        citation: string | null;
-        dateFiled?: string | null;
-        url?: string | null;
-      }[];
-      error?: string;
-      isStreaming?: boolean;
-    }
-  | {
-      type: "courtlistener_find_in_case";
-      cluster_id: number | null;
-      query: string;
-      total_matches?: number;
-      case_name?: string | null;
-      citation?: string | null;
-      searches?: {
-        cluster_id: number | null;
-        query: string;
-        total_matches?: number;
-        case_name?: string | null;
-        citation?: string | null;
+        type: "doc_edited";
+        filename: string;
+        document_id: string;
+        version_id: string;
+        /** Per-document monotonic Vn written at emit time. */
+        version_number?: number | null;
+        download_url: string;
+        annotations: MikeEditAnnotation[];
         error?: string;
-      }[];
-      error?: string;
-      isStreaming?: boolean;
+        isStreaming?: boolean;
     }
   | {
-      type: "courtlistener_read_case";
-      cluster_id: number | null;
-      case_name?: string | null;
-      citation?: string | null;
-      opinion_count?: number;
-      error?: string;
-      isStreaming?: boolean;
+        /**
+         * Live `web_search` tool call kicked off by the LLM. Emitted before
+         * the provider round-trip so the UI can show a "Searching the web…"
+         * affordance immediately. Replaced/merged with `web_search_result`
+         * once results land (matched by `query` so concurrent searches
+         * don't collide).
+         */
+        type: "web_search_started";
+        query: string;
+        provider: string;
+        /** Which role-based search ran: official sources / web / news. */
+        kind?: "official" | "web" | "news";
+        isStreaming?: boolean;
     }
   | {
-      type: "courtlistener_verify_citations";
-      citation_count?: number;
-      match_count?: number;
-      error?: string;
-      isStreaming?: boolean;
-    }
-  | {
-      type: "case_citation";
-      cluster_id: number | null;
-      case_name: string | null;
-      citation: string | null;
-      url: string;
-      pdfUrl?: string | null;
-      dateFiled?: string | null;
-      case?: Extract<AssistantEvent, { type: "case_opinions" }>["case"];
-    }
-  | {
-      type: "case_opinions";
-      cluster_id: number;
-      case: {
-        id: number | null;
-        caseName?: string | null;
-        dateFiled?: string | null;
-        citations?: string[];
-        url?: string | null;
-        pdfUrl?: string | null;
-        opinions: {
-          opinionId: number | null;
-          apiUrl?: string | null;
-          type: string | null;
-          author: string | null;
-          url: string | null;
-          text?: string | null;
-          html?: string | null;
+        /**
+         * Final `web_search` tool result — surfaced as a "Sources" panel
+         * the user can click through. `error` is set when the provider
+         * round-trip failed; `results` is empty in that case.
+         */
+        type: "web_search_result";
+        query: string;
+        provider: string;
+        /** Which role-based search ran: official sources / web / news. */
+        kind?: "official" | "web" | "news";
+        results: {
+            title: string;
+            url: string;
+            snippet: string;
+            published_date: string | null;
         }[];
-      };
+        error: string | null;
+        isStreaming?: boolean;
+    }
+  | {
+        /**
+         * Live `read_url` tool call — the model is fetching a web page or
+         * PDF. Emitted before the round-trip so the UI can show a
+         * "Reading link…" affordance; replaced by `web_extract_result`
+         * (matched by `url`) once the text lands.
+         */
+        type: "web_extract_started";
+        url: string;
+        isStreaming?: boolean;
+    }
+  | {
+        /**
+         * Final `read_url` result — a single page/PDF the model read.
+         * `snippet` is a short preview of the extracted text (the full
+         * body went to the model, not the wire). `error` is set when the
+         * fetch failed.
+         */
+        type: "web_extract_result";
+        url: string;
+        title: string | null;
+        snippet: string;
+        /** The URL looked like a PDF (UI badge only). */
+        is_pdf: boolean;
+        /** true → the whole document was read; false → a focused preview. */
+        full: boolean;
+        error: string | null;
+        isStreaming?: boolean;
+    }
+  | {
+        /**
+         * Per-turn registry of legal sources (EU / HR / FR) harvested from
+         * MCP tool results. Drives the clickable citation pills, the "Izvori"
+         * list under the answer, and the right-side document panel. Mirrors
+         * `web_search_result` — structured data, separate from the
+         * `mcp_tool_result` activity dot.
+         */
+        type: "legal_sources";
+        sources: LegalSource[];
+        isStreaming?: boolean;
     }
   | { type: "content"; text: string; isStreaming?: boolean };
 
-export type CaseCitationQuote = {
-  opinionId: number | null;
-  type: string | null;
-  author: string | null;
-  quote: string;
-};
+/**
+ * Unified legal-source citation shape for the three legal MCP servers
+ * (EU/EUR-Lex, Croatian, French). Built backend-side by `harvestLegalSources`.
+ */
+export interface LegalSource {
+  /** Stable id a citation references (HR/FR own id, EU "@eu/celex/…"). */
+  id: string;
+  scope: "@eu" | "@hr" | "@fr";
+  title: string;
+  citation?: string | null;
+  /** Cited passage text harvested from the tool output (best effort). */
+  snippet?: string | null;
+  /** Public canonical URL: eur-lex / narodne-novine / legifrance. */
+  externalUrl?: string | null;
+  articleLabel?: string | null;
+  /** In-app fetch path for the full document (Phase 2 proxy). */
+  fetchPath?: string | null;
+  /** EU only — drives the /legal-docs/eu/{celex} proxy. */
+  celex?: string | null;
+  inForce?: boolean | null;
+}
 
-export interface Message {
+export interface MikeMessage {
+  /**
+   * Server-assigned chat_messages.id. Present after the message has been
+   * persisted by the backend (set from the `message_id` stream event for
+   * fresh assistant turns, or from `getChat` for historical loads).
+   * Powers per-message actions like flag/unflag and analytics.
+   */
+  id?: string;
   role: "user" | "assistant";
   content: string;
   files?: { filename: string; document_id?: string }[];
   workflow?: { id: string; title: string };
   model?: string;
-  annotations?: CitationAnnotation[];
-  citationStatus?: "started" | "partial" | "final";
+  /**
+   * Reasoning intensity selected for this turn. Only sent when the
+   * picked model exposes a reasoning dial (Claude 4.x, GPT-5, Gemini
+   * 3.x); the backend silently ignores it for everything else.
+   */
+  effort?: "low" | "medium" | "high";
+  /**
+   * Composer web-search toggle (globe icon) state at send time. `false`
+   * tells the backend to drop the web-search tools for this turn;
+   * omitted/true keeps them available (subject to provider config).
+   */
+  webSearch?: boolean;
+  annotations?: MikeAnnotation[];
   events?: AssistantEvent[];
   /** Set when streaming failed; rendered as a red error block. */
   error?: string;
+  /**
+   * Set when the turn was blocked by the daily rate limit (429 or
+   * mid-stream `rate_limited`). Renders an in-chat notice telling the
+   * user the limit is reached and to pick a larger plan to continue.
+   */
+  rateLimited?: boolean;
+  /**
+   * "Not appropriate answer" flag — mirrors chat_messages.is_flagged.
+   * Toggled via POST /chat/messages/:id/flag; we keep a denormalised
+   * boolean on the message so the UI can render the active flag state
+   * without an extra round-trip.
+   */
+  flagged?: boolean;
 }
 
 export interface CitationQuote {
-  page?: number;
+  page: number;
   quote: string;
 }
 
-export type DocumentCitationQuote = {
-  page: number | string;
-  quote: string;
-};
-
-export type DocumentCitationAnnotation = {
+/**
+ * A citation emitted by the assistant. Single-page citations have a numeric
+ * `page` and a plain `quote`. A citation that spans a page break (one
+ * continuous sentence cut by a page boundary) has `page` as a range string
+ * like "41-42" and a `quote` containing the `[[PAGE_BREAK]]` sentinel at the
+ * break point (text before is on page 41, text after is on page 42).
+ */
+export interface MikeCitationAnnotation {
   type: "citation_data";
-  kind?: "document";
   ref: number;
   doc_id: string;
   document_id: string;
   version_id?: string | null;
   version_number?: number | null;
   filename: string;
-  /** Legacy single-quote fields. Prefer `quotes` for new annotations. */
   page: number | string;
   quote: string;
-  quotes?: DocumentCitationQuote[];
-};
+}
 
-export type CaseCitationAnnotation = {
-  type: "citation_data";
-  kind: "case";
-  ref: number;
-  cluster_id: number;
-  case_name?: string | null;
+/** One article/section of a fetched legal document (Phase 2 full-doc view). */
+export interface LegalDocumentArticle {
+  id: string;
+  label: string | null;
+  /** Bare article number for scroll-to-article (language-independent). */
+  number?: string | null;
+  text: string;
+  /** HR full-document only: source `segment_type` (article_heading, stavak,
+   *  section_heading, …) driving the panel's hierarchy + article grouping. */
+  segmentType?: string | null;
+}
+
+/** Normalized full legal document returned by the `/legal-docs` proxy. */
+export interface LegalDocument {
+  title: string;
+  articles: LegalDocumentArticle[];
+  /** Law-level citation for the header (HR full-document only). */
   citation?: string | null;
-  url?: string | null;
-  pdfUrl?: string | null;
-  dateFiled?: string | null;
-  quotes: CaseCitationQuote[];
-};
+  /** All NN gazette references for the regulation's versions, newest first. */
+  gazetteRefs?: string[];
+}
 
 /**
- * A citation emitted by the assistant. Document citations have doc/page
- * anchors. Case citations anchor to a CourtListener cluster and include a
- * quoted opinion passage.
+ * One precise sub-article citation target — "stavak 2. točka a)" →
+ * { stavak: "2", tocka: "a" }. Both fields are lowercase; either may be
+ * absent (stavak-only or, in single-stavak articles, točka-only).
  */
-export type CitationAnnotation =
-  | DocumentCitationAnnotation
-  | CaseCitationAnnotation;
+export interface PinpointTarget {
+  /** Stavak (paragraph) number, e.g. "2" from "(2)". */
+  stavak?: string;
+  /** Točka (point) id, e.g. "a" from "a)" or "3" from "3.". */
+  tocka?: string;
+}
+
+/**
+ * Precise sub-article citation parsed from the answer prose around a legal
+ * reference. Holds ALL cited targets in prose order — "članak 38. stavak 2.
+ * točka a) i stavak 9." → { targets: [{ stavak: "2", tocka: "a" },
+ * { stavak: "9" }] }. Drives the magenta pinpoint highlight inside
+ * `LegalSourcePanel` (the cited article stays green; each exact stavak/točka
+ * gets magenta; scroll lands on the first one). Never empty — a citation
+ * with no stavak/točka has `pinpoint: null` instead.
+ */
+export interface CitationPinpoint {
+  targets: PinpointTarget[];
+}
+
+/**
+ * A citation that points at a legal source (EU/HR/FR), not an uploaded
+ * document. Carries a self-contained `LegalSource` snapshot so the message
+ * renders even if the `legal_sources` event is later trimmed.
+ */
+export interface MikeLegalSourceAnnotation {
+  type: "legal_source_data";
+  ref: number;
+  source: LegalSource;
+  /** Exact cited passage (used to highlight inside the source panel). */
+  quote: string;
+  /** Stavak/točka pinpoint parsed from the prose around this reference. */
+  pinpoint?: CitationPinpoint | null;
+}
+
+/** Either citation flavour — what `MikeMessage.annotations` actually holds. */
+export type MikeAnnotation =
+  | MikeCitationAnnotation
+  | MikeLegalSourceAnnotation;
 
 const PAGE_BREAK_SENTINEL = "[[PAGE_BREAK]]";
-
-function expandDocumentQuoteEntry(entry: DocumentCitationQuote): CitationQuote[] {
-  const rangeMatch =
-    typeof entry.page === "string"
-      ? entry.page.match(/^(\d+)\s*-\s*(\d+)$/)
-      : null;
-  if (rangeMatch && entry.quote.includes(PAGE_BREAK_SENTINEL)) {
-    const startPage = parseInt(rangeMatch[1], 10);
-    const endPage = parseInt(rangeMatch[2], 10);
-    const [before, after] = entry.quote.split(PAGE_BREAK_SENTINEL);
-    return [
-      { page: startPage, quote: before.trim() },
-      { page: endPage, quote: after.trim() },
-    ].filter((e) => e.quote.length > 0);
-  }
-  const pageNum =
-    typeof entry.page === "number"
-      ? entry.page
-      : parseInt(String(entry.page), 10);
-  if (!Number.isFinite(pageNum)) return [];
-  return [{ page: pageNum, quote: entry.quote }];
-}
-
-export function getDocumentCitationQuotes(
-  a: CitationAnnotation,
-): DocumentCitationQuote[] {
-  if (a.kind === "case") return [];
-  if (Array.isArray(a.quotes) && a.quotes.length) {
-    return a.quotes.filter((entry) => entry.quote.trim().length > 0);
-  }
-  return [{ page: a.page, quote: a.quote }];
-}
 
 /**
  * Expand a citation into one or more (page, quote) entries suitable for
@@ -354,58 +396,57 @@ export function getDocumentCitationQuotes(
  * cross-page citation with page "N-M" and a `[[PAGE_BREAK]]` split yields two.
  */
 export function expandCitationToEntries(
-  a: CitationAnnotation,
+  a: MikeCitationAnnotation,
 ): CitationQuote[] {
-  if (a.kind === "case") return [];
-  return getDocumentCitationQuotes(a).flatMap(expandDocumentQuoteEntry);
+  const rangeMatch =
+    typeof a.page === "string"
+      ? a.page.match(/^(\d+)\s*-\s*(\d+)$/)
+      : null;
+  if (rangeMatch && a.quote.includes(PAGE_BREAK_SENTINEL)) {
+    const startPage = parseInt(rangeMatch[1], 10);
+    const endPage = parseInt(rangeMatch[2], 10);
+    const [before, after] = a.quote.split(PAGE_BREAK_SENTINEL);
+    return [
+      { page: startPage, quote: before.trim() },
+      { page: endPage, quote: after.trim() },
+    ].filter((e) => e.quote.length > 0);
+  }
+  const pageNum =
+    typeof a.page === "number" ? a.page : parseInt(String(a.page), 10);
+  if (!Number.isFinite(pageNum)) return [];
+  return [{ page: pageNum, quote: a.quote }];
 }
 
 /** Format the page(s) of a citation for display, e.g. "Page 3" or "Page 41-42". */
-export function formatCitationPage(a: CitationAnnotation): string {
-  if (a.kind === "case") {
-    return a.citation || a.case_name || `Case ${a.cluster_id}`;
-  }
-  const quotes = getDocumentCitationQuotes(a);
-  const pages = Array.from(
-    new Set(quotes.map((q) => String(q.page)).filter(Boolean)),
-  );
-  if (pages.length > 1) return `Pages ${pages.join(", ")}`;
-  if (pages.length === 1) return `Page ${pages[0]}`;
+export function formatCitationPage(a: MikeCitationAnnotation): string {
   if (typeof a.page === "string") return `Page ${a.page}`;
   return `Page ${a.page}`;
 }
 
 /** Produce a reader-friendly version of the quote (replaces [[PAGE_BREAK]] with "..."). */
-export function displayCitationQuote(a: CitationAnnotation): string {
-  if (a.kind === "case") {
-    return a.quotes
-      .map((q) => q.quote.replaceAll(PAGE_BREAK_SENTINEL, "..."))
-      .join(" / ");
-  }
-  return getDocumentCitationQuotes(a)
-    .map((q) => q.quote.replaceAll(PAGE_BREAK_SENTINEL, "..."))
-    .join(" / ");
+export function displayCitationQuote(a: MikeCitationAnnotation): string {
+  return a.quote.replaceAll(PAGE_BREAK_SENTINEL, "...");
 }
 
 // Tabular Review
 
 export type ColumnFormat =
-  | "text"
-  | "bulleted_list"
-  | "number"
-  | "currency"
-  | "yes_no"
-  | "date"
-  | "tag"
-  | "percentage"
-  | "monetary_amount";
+    | "text"
+    | "bulleted_list"
+    | "number"
+    | "currency"
+    | "yes_no"
+    | "date"
+    | "tag"
+    | "percentage"
+    | "monetary_amount";
 
 export interface ColumnConfig {
-  index: number;
-  name: string;
-  prompt: string;
-  format?: ColumnFormat;
-  tags?: string[];
+    index: number;
+    name: string;
+    prompt: string;
+    format?: ColumnFormat;
+    tags?: string[];
 }
 
 export interface TabularReview {
@@ -414,7 +455,6 @@ export interface TabularReview {
   user_id: string;
   title: string | null;
   columns_config: ColumnConfig[] | null;
-  document_ids?: string[] | null;
   workflow_id: string | null;
   practice?: string | null;
   /** Per-review email list. Used so standalone (project_id null) reviews can be shared directly. */
@@ -442,7 +482,7 @@ export interface TabularCell {
 
 // Workflows
 
-export interface Workflow {
+export interface MikeWorkflow {
   id: string;
   user_id: string | null;
   title: string;
@@ -459,13 +499,13 @@ export interface Workflow {
 
 // API helpers
 
-export interface ChatDetailOut {
-  chat: Chat;
-  messages: Message[];
+export interface MikeChatDetailOut {
+  chat: MikeChat;
+  messages: MikeMessage[];
 }
 
 export interface TabularReviewDetailOut {
   review: TabularReview;
   cells: TabularCell[];
-  documents: Document[];
+  documents: MikeDocument[];
 }

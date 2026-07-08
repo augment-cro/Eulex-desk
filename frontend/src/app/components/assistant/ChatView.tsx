@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useState, useRef, useEffect } from "react";
-import { flushSync } from "react-dom";
 import { ArrowDown } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { ChatInput } from "./ChatInput";
@@ -11,46 +11,62 @@ import {
     type AssistantSidePanelTab,
 } from "./AssistantSidePanel";
 import { AssistantWorkflowModal } from "./AssistantWorkflowModal";
+import { ShareChatModal } from "../shared/ShareChatModal";
+import { SaveAsContextModal } from "../contexts/SaveAsContextModal";
 import type {
-    AssistantEvent,
-    CitationAnnotation,
-    EditAnnotation,
-    Message,
+    LegalSource,
+    MikeCitationAnnotation,
+    MikeEditAnnotation,
+    MikeLegalSourceAnnotation,
+    MikeMessage,
 } from "../shared/types";
 import { useSidebar } from "@/app/contexts/SidebarContext";
+import { contextsServiceEnabled } from "@/app/lib/mikeApi";
 import { invalidateDocxBytes } from "@/app/hooks/useFetchDocxBytes";
-import { cn } from "@/lib/utils";
+import { usePiiSessionForChat } from "@/app/hooks/usePiiSessionForChat";
 
 interface Props {
-    chatId?: string | null;
-    messages: Message[];
+    messages: MikeMessage[];
     isResponseLoading: boolean;
-    handleChat: (message: Message) => Promise<string | null>;
+    handleChat: (message: MikeMessage) => Promise<string | null>;
     cancel: () => void;
-}
-
-const ASSISTANT_PANEL_TRANSITION_MS = 500;
-const MOBILE_BREAKPOINT_PX = 768;
-
-function isSmallScreen() {
-    return (
-        typeof window !== "undefined" &&
-        window.innerWidth < MOBILE_BREAKPOINT_PX
-    );
+    /**
+     * Optional — present on `/assistant/chat/[id]` but not on the
+     * landing `/assistant` route (no chat exists yet). When set, we
+     * surface a small Share button in the chat header.
+     */
+    chatId?: string;
+    chatTitle?: string | null;
+    /**
+     * Notifier for the "Not appropriate answer" flag — fires after a
+     * successful toggle so the parent can persist the new state into
+     * its message list (which is the source of truth for re-renders).
+     */
+    onFlagChange?: (messageId: string, flagged: boolean) => void;
 }
 
 export function ChatView({
-    chatId,
     messages,
     isResponseLoading,
     handleChat,
     cancel,
+    chatId,
+    chatTitle,
+    onFlagChange,
 }: Props) {
+    const tShare = useTranslations("shareChat");
+    const t = useTranslations("assistant");
+    const [shareOpen, setShareOpen] = useState(false);
     const [tabs, setTabs] = useState<AssistantSidePanelTab[]>([]);
     const [activeTabId, setActiveTabId] = useState<string | null>(null);
     const [panelMounted, setPanelMounted] = useState(false);
     const [panelVisible, setPanelVisible] = useState(false);
     const [workflowModalOpen, setWorkflowModalOpen] = useState(false);
+    // "Save as context" — the cited sources of the answer being saved, or
+    // null when the modal is closed.
+    const [saveCtxSources, setSaveCtxSources] = useState<LegalSource[] | null>(
+        null,
+    );
     const [workflowModalInitialId, setWorkflowModalInitialId] = useState<
         string | undefined
     >();
@@ -64,86 +80,67 @@ export function ChatView({
         () => new Set(),
     );
     const { setSidebarOpen } = useSidebar();
-    const panelCloseTimerRef = useRef<number | null>(null);
+
+    // PII Shield session for this chat. Used by every AssistantMessage so
+    // the lazy `usePiiRenderedText` hook can resolve ⟦PII:…⟧ placeholders
+    // back to their original values on the client. The bump counter is
+    // ticked when a streaming reply ends so a brand-new session (created
+    // mid-turn by /chat → /anonymize) is picked up without a page reload.
+    const piiSessionBumpRef = useRef(0);
+    // Monotonic counter for legal-source clicks — see openLegalSource.
+    const legalFocusNonceRef = useRef(0);
+    const [piiSessionBump, setPiiSessionBump] = useState(0);
+    const { sessionId: piiSessionId } = usePiiSessionForChat(
+        chatId ?? null,
+        piiSessionBump,
+    );
+
+    // When the last message just finished streaming and there's no
+    // session yet, kick the resolver — the backend may have just
+    // created the session row.
+    useEffect(() => {
+        if (!chatId) return;
+        if (isResponseLoading) return;
+        if (piiSessionId) return;
+        const last = messages[messages.length - 1];
+        if (!last || last.role !== "assistant") return;
+        piiSessionBumpRef.current += 1;
+        setPiiSessionBump(piiSessionBumpRef.current);
+        // No-op deps lint — refresh is stable per chatId via useCallback
+        // inside the hook, but we don't want it to retrigger this effect.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isResponseLoading, chatId, messages.length, piiSessionId]);
 
     const showPanel = useCallback(() => {
-        if (panelCloseTimerRef.current !== null) {
-            window.clearTimeout(panelCloseTimerRef.current);
-            panelCloseTimerRef.current = null;
-        }
-        flushSync(() => {
-            setSidebarOpen(false);
-        });
-
-        if (panelMounted) {
-            setPanelVisible(true);
-            return;
-        }
-
-        setPanelVisible(false);
         setPanelMounted(true);
+        setSidebarOpen(false);
         requestAnimationFrame(() =>
             requestAnimationFrame(() => setPanelVisible(true)),
         );
-    }, [panelMounted, setSidebarOpen]);
-
-    const restoreSidebarAfterPanelClose = useCallback(() => {
-        if (!isSmallScreen()) setSidebarOpen(true);
     }, [setSidebarOpen]);
 
-    useEffect(
-        () => () => {
-            if (panelCloseTimerRef.current !== null) {
-                window.clearTimeout(panelCloseTimerRef.current);
-            }
-        },
-        [],
-    );
-
-    const hidePanel = useCallback(
-        (afterHidden: () => void) => {
-            if (panelCloseTimerRef.current !== null) {
-                window.clearTimeout(panelCloseTimerRef.current);
-            }
-            setPanelVisible(false);
-            panelCloseTimerRef.current = window.setTimeout(() => {
-                panelCloseTimerRef.current = null;
-                afterHidden();
-            }, ASSISTANT_PANEL_TRANSITION_MS);
-        },
-        [],
-    );
-
-    const unmountPanel = useCallback(
-        (afterUnmount?: () => void) => {
-            setPanelMounted(false);
-            restoreSidebarAfterPanelClose();
-            afterUnmount?.();
-        },
-        [restoreSidebarAfterPanelClose],
-    );
-
     const closeAllTabs = useCallback(() => {
-        hidePanel(() =>
-            unmountPanel(() => {
-                setTabs([]);
-                setActiveTabId(null);
-            }),
-        );
-    }, [hidePanel, unmountPanel]);
+        setPanelVisible(false);
+        setTimeout(() => {
+            setTabs([]);
+            setActiveTabId(null);
+            setPanelMounted(false);
+            setSidebarOpen(true);
+        }, 300);
+    }, [setSidebarOpen]);
 
     const closeTab = useCallback(
         (id: string) => {
             setTabs((prev) => {
                 const next = prev.filter((t) => t.id !== id);
                 if (next.length === 0) {
-                    hidePanel(() =>
-                        unmountPanel(() => {
-                            setActiveTabId(null);
-                            setTabs([]);
-                        }),
-                    );
-                    return prev;
+                    setPanelVisible(false);
+                    setTimeout(() => {
+                        setActiveTabId(null);
+                        setPanelMounted(false);
+                        setSidebarOpen(true);
+                    }, 300);
+                    return next;
                 }
                 if (activeTabId === id) {
                     const idx = prev.findIndex((t) => t.id === id);
@@ -153,8 +150,55 @@ export function ChatView({
                 return next;
             });
         },
-        [activeTabId, hidePanel, unmountPanel],
+        [activeTabId, setSidebarOpen],
     );
+
+    // ─── Faza 2.2: streaming tracked changes u SuperDoc (standalone chat) ─
+    //
+    // Kad Mike završi `edit_document` tool poziv, backend već INSERT-a redove
+    // u `document_edits` prije SSE emit-a `doc_edited`. Ako je odgovarajući
+    // dokument otvoren u side-panelu, ažuriramo tab-ovu `versionId` na
+    // novu verziju i evictamo bytes cache; DocPanel → DocxViewer →
+    // SuperDocView prosljeđuju novi versionId, useFetchDocxBytes refetcha
+    // svježe bytes (već uključuje w:ins/w:del), a SuperDocView's
+    // `handleReady` automatski poziva `refreshDbEdits()` koji pulsira novi
+    // bubble panel s prijedlozima — sve bez korisničke interakcije.
+    //
+    // Bez `consumedEditEventsRef` set-a, dodavanje novog message-a u listu
+    // re-okinulo bi cijelu iteraciju i bumpalo versionId u petlji.
+    const consumedEditEventsRef = useRef<Set<string>>(new Set());
+    useEffect(() => {
+        for (const msg of messages) {
+            for (const ev of msg.events ?? []) {
+                if (ev.type !== "doc_edited") continue;
+                if ("isStreaming" in ev && ev.isStreaming) continue;
+                if (ev.error) continue;
+                if (!ev.document_id || !ev.version_id) continue;
+                const key = `${ev.document_id}:${ev.version_id}`;
+                if (consumedEditEventsRef.current.has(key)) continue;
+                consumedEditEventsRef.current.add(key);
+                // Bytes cache je keyed po (docId, versionId, refetchKey) —
+                // ovdje se versionId mijenja, pa novi key neće biti hit;
+                // ali ako tab već bio na novoj versionId-u (npr. preko
+                // accept/reject), evict osigurava svježi GET.
+                invalidateDocxBytes(ev.document_id);
+                setTabs((prev) =>
+                    prev.map((t) =>
+                        t.documentId === ev.document_id
+                            ? {
+                                  ...t,
+                                  versionId: ev.version_id,
+                                  versionNumber:
+                                      ev.version_number ??
+                                      t.versionNumber ??
+                                      null,
+                              }
+                            : t,
+                    ),
+                );
+            }
+        }
+    }, [messages]);
 
     /**
      * One tab per document. If a tab for `tab.documentId` already exists,
@@ -167,23 +211,18 @@ export function ChatView({
     const upsertTab = useCallback(
         (tab: AssistantSidePanelTab) => {
             setTabs((prev) => {
-                const idx = prev.findIndex((t) =>
-                    tab.kind === "case"
-                        ? t.kind === "case" && t.id === tab.id
-                        : t.kind !== "case" && t.documentId === tab.documentId,
+                const idx = prev.findIndex(
+                    (t) => t.documentId === tab.documentId,
                 );
                 if (idx >= 0) {
                     const existing = prev[idx];
                     const copy = prev.slice();
-                    copy[idx] =
-                        tab.kind === "case" || existing.kind === "case"
-                            ? tab
-                            : {
-                                  ...tab,
-                                  id: existing.id,
-                                  warning: existing.warning,
-                                  initialScrollTop: existing.initialScrollTop,
-                              };
+                    copy[idx] = {
+                        ...tab,
+                        id: existing.id,
+                        warning: existing.warning,
+                        initialScrollTop: existing.initialScrollTop,
+                    };
                     return copy;
                 }
                 return [...prev, tab];
@@ -199,37 +238,7 @@ export function ChatView({
      * AssistantMessage when the user clicks a numbered citation pill.
      */
     const openCitation = useCallback(
-        (citation: CitationAnnotation, options?: { showQuotes?: boolean }) => {
-            const showQuotes = options?.showQuotes ?? true;
-            if (citation.kind === "case") {
-                if (!chatId) return;
-                upsertTab({
-                    kind: "case",
-                    id: `case:${citation.cluster_id}`,
-                    chatId,
-                    clusterId: citation.cluster_id,
-                    citationRef: citation.ref,
-                    caseName: citation.case_name ?? null,
-                    citation: citation.citation ?? null,
-                    url: citation.url ?? null,
-                    dateFiled: citation.dateFiled ?? null,
-                    pdfUrl: citation.pdfUrl ?? null,
-                    quotes: showQuotes ? citation.quotes : undefined,
-                    opinions: undefined,
-                });
-                return;
-            }
-            if (!showQuotes) {
-                upsertTab({
-                    kind: "document",
-                    id: citation.document_id,
-                    documentId: citation.document_id,
-                    filename: citation.filename,
-                    versionId: citation.version_id ?? null,
-                    versionNumber: citation.version_number ?? null,
-                });
-                return;
-            }
+        (citation: MikeCitationAnnotation) => {
             upsertTab({
                 kind: "citation",
                 id: citation.document_id,
@@ -240,29 +249,35 @@ export function ChatView({
                 citation,
             });
         },
-        [chatId, upsertTab],
+        [upsertTab],
     );
 
-    const openCase = useCallback(
-        (citation: Extract<AssistantEvent, { type: "case_citation" }>) => {
-            if (!citation.cluster_id) return;
-            if (!chatId) return;
+    /**
+     * Open a tab showing a legal source (EU/HR/FR) document. Called from
+     * AssistantMessage when the user clicks a black citation pill or an
+     * "Izvori" chip. Deduped by source id via `upsertTab`.
+     */
+    const openLegalSource = useCallback(
+        (ann: MikeLegalSourceAnnotation, citedArticleNumbers?: string[]) => {
             upsertTab({
-                kind: "case",
-                id: `case:${citation.cluster_id}`,
-                chatId,
-                clusterId: citation.cluster_id,
-                citationRef: undefined,
-                caseName: citation.case_name,
-                citation: citation.citation,
-                url: citation.url,
-                dateFiled: citation.dateFiled ?? null,
-                pdfUrl: citation.pdfUrl ?? null,
-                quotes: undefined,
-                opinions: citation.case?.opinions,
+                kind: "legal-source",
+                id: ann.source.id,
+                documentId: ann.source.id,
+                filename: ann.source.title,
+                versionId: null,
+                versionNumber: null,
+                source: ann.source,
+                quote: ann.quote,
+                citedArticleNumbers,
+                // Stavak/točka parsed from the clicked reference's prose —
+                // drives the magenta pinpoint highlight in the panel.
+                pinpoint: ann.pinpoint ?? null,
+                // Bump on every click so an already-open tab re-scrolls to the
+                // clicked article instead of staying where the user left off.
+                focusNonce: ++legalFocusNonceRef.current,
             });
         },
-        [chatId, upsertTab],
+        [upsertTab],
     );
 
     /**
@@ -270,7 +285,7 @@ export function ChatView({
      * AssistantMessage when the user clicks an EditCard's View button.
      */
     const openEditor = useCallback(
-        (ann: EditAnnotation, filename: string) => {
+        (ann: MikeEditAnnotation, filename: string) => {
             upsertTab({
                 kind: "edit",
                 id: ann.document_id,
@@ -357,25 +372,66 @@ export function ChatView({
                 next.delete(args.editId);
                 return next;
             });
-            // Propagate the new status onto any open edit-tab for this
-            // edit so DocPanel's Accept/Reject buttons flip and disable
-            // (their sync effect keys off edit.status). Without this, a
-            // resolve triggered from the inline EditCard or BulkEditActions
-            // leaves the panel buttons looking live.
-            setTabs((prev) =>
-                prev.map((t) =>
-                    t.kind === "edit" && t.edit.edit_id === args.editId
-                        ? {
-                              ...t,
-                              edit: { ...t.edit, status: args.status },
-                          }
-                        : t,
-                ),
-            );
             // Accept/reject mutates bytes for this document's current
             // version; drop the cache so the next DocxView render (or an
             // explicit re-open) fetches the fresh file.
             invalidateDocxBytes(args.documentId);
+            // Two updates on the matching tabs:
+            //  1) Repoint `versionId` (the backend returns the new version
+            //     after accept/reject) on EVERY tab for this document — that
+            //     changes DocxViewer's remount key (documentId:versionId:…),
+            //     forcing SuperDoc to reload the resolved bytes instead of
+            //     showing the stale pre-accept render. Same mechanism as the
+            //     `doc_edited` SSE handler above. Without this, a resolve from
+            //     the inline EditCard/BulkEditActions evicts the cache but the
+            //     already-mounted editor never remounts.
+            //  2) Propagate the new status onto the open edit-tab for this
+            //     edit so DocPanel's Accept/Reject buttons flip and disable
+            //     (their sync effect keys off edit.status).
+            setTabs((prev) =>
+                prev.map((t) => {
+                    const isSameDoc = t.documentId === args.documentId;
+                    const isSameEdit =
+                        t.kind === "edit" && t.edit.edit_id === args.editId;
+                    if (!isSameDoc && !isSameEdit) return t;
+                    return {
+                        ...t,
+                        ...(isSameDoc && args.versionId
+                            ? { versionId: args.versionId }
+                            : {}),
+                        ...(isSameEdit
+                            ? { edit: { ...t.edit, status: args.status } }
+                            : {}),
+                    };
+                }),
+            );
+        },
+        [],
+    );
+
+
+    // Bug 1 fix: kad SuperDoc spremi novu verziju, prebacimo tab na nju i
+    // evictamo byte cache da reload prikaže SPREMLJENI sadržaj umjesto
+    // stare prikvačene verzije. Isti mehanizam kao za Mike `doc_edited`.
+    const handleDocSaved = useCallback(
+        (args: {
+            documentId: string;
+            versionId: string;
+            versionNumber: number | null;
+        }) => {
+            invalidateDocxBytes(args.documentId);
+            setTabs((prev) =>
+                prev.map((t) =>
+                    t.documentId === args.documentId
+                        ? {
+                              ...t,
+                              versionId: args.versionId,
+                              versionNumber:
+                                  args.versionNumber ?? t.versionNumber ?? null,
+                          }
+                        : t,
+                ),
+            );
         },
         [],
     );
@@ -383,15 +439,11 @@ export function ChatView({
     const patchTab = useCallback(
         (
             tabId: string,
-            patch: {
-                warning?: string | null;
-                initialScrollTop?: number | null;
-            },
+            patch: Partial<Pick<AssistantSidePanelTab, "warning" | "initialScrollTop">>,
         ) => {
             setTabs((prev) => {
                 const idx = prev.findIndex((t) => t.id === tabId);
                 if (idx < 0) return prev;
-                if (prev[idx].kind === "case") return prev;
                 const copy = prev.slice();
                 copy[idx] = { ...copy[idx], ...patch };
                 return copy;
@@ -410,7 +462,7 @@ export function ChatView({
             // Surface the warning on every tab tied to this document.
             setTabs((prev) =>
                 prev.map((t) =>
-                    t.kind !== "case" && t.documentId === args.documentId
+                    t.documentId === args.documentId
                         ? { ...t, warning: args.message }
                         : t,
                 ),
@@ -451,15 +503,8 @@ export function ChatView({
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const latestUserMessageRef = useRef<HTMLDivElement>(null);
     const chatInputRef = useRef<HTMLDivElement>(null);
-    // Seed "already in place" when messages exist at mount (a freshly created
-    // chat arrives with its first message in hand). Otherwise the skeleton +
-    // opacity-0 gate would flash the message out and fade it back in on every
-    // remount. Existing chats mount with messages === [] and fetch async, so
-    // they still start hidden and reveal once loaded.
-    const hasScrolledRef = useRef(messages.length > 0);
-    const [messagesVisible, setMessagesVisible] = useState(
-        () => messages.length > 0,
-    );
+    const hasScrolledRef = useRef(false);
+    const [messagesVisible, setMessagesVisible] = useState(false);
     const [showScrollButton, setShowScrollButton] = useState(false);
     const [inputHeight, setInputHeight] = useState(0);
     const [minHeight, setMinHeight] = useState("0px");
@@ -479,14 +524,17 @@ export function ChatView({
         if (latestUserMessageRef.current) {
             const headerHeight = window.innerWidth < 768 ? 56 : 0;
             const gap = window.innerWidth < 768 ? 16 : 24;
-            const paddingBottom = 128;
+            // Mirror the dynamic paddingBottom applied to the messages wrapper
+            // so the "scroll latest user message to top" math stays correct as
+            // the input grows.
+            const paddingBottom = (inputHeight || 104) + 24;
             const marginBottom = 48;
             const userMessageHeight = latestUserMessageRef.current.offsetHeight;
             setMinHeight(
                 `calc(100dvh - ${headerHeight + gap + userMessageHeight + paddingBottom + marginBottom}px)`,
             );
         }
-    }, [messages.length, latestUserMessageRef.current]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [messages.length, inputHeight, latestUserMessageRef.current]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const updateScrollButton = useCallback(() => {
         const c = messagesContainerRef.current;
@@ -576,26 +624,34 @@ export function ChatView({
     return (
         <div className="h-full w-full flex relative">
             {/* Chat column */}
-            <div className="flex min-w-0 flex-col h-full flex-1 relative">
+            <div className="flex flex-col h-full flex-1 relative">
                 {/* Scrollable messages */}
                 <div
                     ref={messagesContainerRef}
                     className="flex-1 w-full overflow-y-auto"
                     style={{ scrollbarGutter: "stable both-edges" }}
                 >
-                    <div className="w-full max-w-4xl mx-auto pb-32 px-6 md:px-8 pt-4 md:pt-6 min-h-full flex flex-col relative">
+                    {/* paddingBottom tracks the live input height (the input is
+                        absolutely positioned and grows upward as the textarea /
+                        inline suggestion expand). Without this, a tall input
+                        covered the last message and toolbar icons. +24px breathing
+                        room. Falls back to 128px before the first measure. */}
+                    <div
+                        className="w-full max-w-4xl mx-auto px-6 md:px-8 pt-4 md:pt-6 min-h-full flex flex-col relative"
+                        style={{ paddingBottom: (inputHeight || 104) + 24 }}
+                    >
                         {!messagesVisible && (
                             <div className="space-y-6 w-full">
                                 <div className="flex justify-end">
-                                    <div className="bg-gray-100 rounded-2xl p-4 w-2/5">
-                                        <div className="h-4 bg-gradient-to-r from-gray-200 via-gray-300 to-gray-200 bg-[length:200%_100%] animate-[shimmer_2s_ease-in-out_infinite] rounded w-full" />
+                                    <div className="bg-muted rounded-2xl p-4 w-2/5">
+                                        <div className="h-4 bg-gradient-to-r from-secondary via-border to-secondary bg-[length:200%_100%] animate-[shimmer_2s_ease-in-out_infinite] rounded w-full" />
                                     </div>
                                 </div>
                                 <div className="space-y-3">
                                     {[1, 2, 3, 4].map((i) => (
                                         <div
                                             key={i}
-                                            className={`h-4 bg-gradient-to-r from-gray-200 via-gray-300 to-gray-200 bg-[length:200%_100%] animate-[shimmer_2s_ease-in-out_infinite] rounded ${i === 3 ? "w-5/6" : i === 4 ? "w-4/6" : "w-full"}`}
+                                            className={`h-4 bg-gradient-to-r from-secondary via-border to-secondary bg-[length:200%_100%] animate-[shimmer_2s_ease-in-out_infinite] rounded ${i === 3 ? "w-5/6" : i === 4 ? "w-4/6" : "w-full"}`}
                                         />
                                     ))}
                                 </div>
@@ -637,27 +693,18 @@ export function ChatView({
                                                 }
                                                 isError={!!(msg as any).error}
                                                 errorMessage={
-                                                    typeof (msg as any)
-                                                        .error === "string"
+                                                    typeof (msg as any).error ===
+                                                    "string"
                                                         ? (msg as any).error
                                                         : undefined
                                                 }
+                                                rateLimited={
+                                                    !!(msg as any).rateLimited
+                                                }
                                                 annotations={msg.annotations}
-                                                citationStatus={
-                                                    msg.citationStatus
-                                                }
-                                                onCitationClick={(citation) =>
-                                                    openCitation(citation)
-                                                }
-                                                onOpenCitationSource={(
-                                                    citation,
-                                                ) =>
-                                                    openCitation(citation, {
-                                                        showQuotes: false,
-                                                    })
-                                                }
-                                                onCaseClick={(citation) =>
-                                                    openCase(citation)
+                                                onCitationClick={openCitation}
+                                                onLegalSourceClick={
+                                                    openLegalSource
                                                 }
                                                 minHeight={
                                                     i === lastAssistantIndex
@@ -688,6 +735,24 @@ export function ChatView({
                                                 resolvedEditStatuses={
                                                     resolvedEditStatuses
                                                 }
+                                                isLast={
+                                                    i === lastAssistantIndex
+                                                }
+                                                onShareClick={
+                                                    chatId
+                                                        ? () =>
+                                                              setShareOpen(true)
+                                                        : undefined
+                                                }
+                                                onSaveAsContext={
+                                                    contextsServiceEnabled()
+                                                        ? setSaveCtxSources
+                                                        : undefined
+                                                }
+                                                messageId={msg.id}
+                                                flagged={!!msg.flagged}
+                                                onFlagChange={onFlagChange}
+                                                piiSessionId={piiSessionId}
                                             />
                                         )}
                                     </div>
@@ -706,12 +771,9 @@ export function ChatView({
                     >
                         <button
                             onClick={scrollToBottom}
-                            className={cn(
-                                "rounded-full p-2 cursor-pointer transition-all",
-                                "bg-white/30 shadow-[0_5px_16px_rgba(15,23,42,0.13),inset_0_1px_0_rgba(255,255,255,0.75),inset_0_-8px_18px_rgba(255,255,255,0.26)] backdrop-blur-xl hover:bg-white/45 hover:shadow-[0_7px_20px_rgba(15,23,42,0.16),inset_0_1px_0_rgba(255,255,255,0.85),inset_0_-8px_18px_rgba(255,255,255,0.32)]",
-                            )}
+                            className="p-2 rounded-full bg-background/70 backdrop-blur-xs cursor-pointer border border-border"
                         >
-                            <ArrowDown className="h-6 w-6 text-gray-500" />
+                            <ArrowDown className="h-6 w-6 text-muted-foreground" />
                         </button>
                     </div>
                 )}
@@ -721,28 +783,17 @@ export function ChatView({
                     ref={chatInputRef}
                     className="absolute bottom-0 left-0 right-0 w-full z-30"
                 >
-                    <div
-                        className={cn(
-                            "pointer-events-none absolute bottom-0 left-0 z-0",
-                            "right-4 h-28 bg-gradient-to-t from-white/50 via-white/25 to-transparent backdrop-blur-[1px]",
-                        )}
-                    />
-                    <div className="relative z-20 w-full max-w-4xl mx-auto px-4 md:px-6">
-                        <div
-                            className={cn(
-                                "w-full rounded-t-[20px]",
-                                "bg-transparent",
-                            )}
-                        >
+                    <div className="w-full max-w-4xl mx-auto px-4 md:px-6">
+                        <div className="w-full rounded-t-xl bg-background">
                             <ChatInput
                                 onSubmit={handleChat}
                                 onCancel={cancel}
                                 isLoading={isResponseLoading}
+                                chatId={chatId ?? null}
                             />
                             <div className="py-3 text-center">
-                                <p className="text-xs text-gray-500">
-                                    AI can make mistakes. Answers are not legal
-                                    advice.
+                                <p className="text-xs text-muted-foreground">
+                                    {t("disclaimer")}
                                 </p>
                             </div>
                         </div>
@@ -757,9 +808,25 @@ export function ChatView({
                 initialWorkflowId={workflowModalInitialId}
             />
 
+            {shareOpen && chatId && (
+                <ShareChatModal
+                    chatId={chatId}
+                    chatTitle={chatTitle ?? null}
+                    onClose={() => setShareOpen(false)}
+                />
+            )}
+
+            {saveCtxSources && (
+                <SaveAsContextModal
+                    sources={saveCtxSources}
+                    messages={messages}
+                    onClose={() => setSaveCtxSources(null)}
+                />
+            )}
+
             {panelMounted && (
                 <div
-                    className={`fixed inset-0 z-40 flex justify-center p-3 transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] md:relative md:inset-auto md:z-auto md:block md:h-full md:min-w-0 md:flex-shrink-0 md:p-0 ${panelVisible ? "translate-x-0" : "translate-x-full"}`}
+                    className={`fixed md:relative inset-0 md:inset-auto md:h-full md:flex-shrink-0 z-40 md:z-auto transition-transform duration-300 ease-in-out ${panelVisible ? "translate-x-0" : "translate-x-full"}`}
                 >
                     <AssistantSidePanel
                         tabs={tabs}
@@ -778,6 +845,8 @@ export function ChatView({
                         onEditError={handleEditError}
                         onWarningDismiss={handleWarningDismiss}
                         onScrollChange={handleScrollChange}
+                        onSaved={handleDocSaved}
+                        onDraftEditApplied={handleDocSaved}
                     />
                 </div>
             )}

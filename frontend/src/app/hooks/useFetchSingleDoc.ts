@@ -44,7 +44,7 @@ export function useFetchSingleDoc(
                 if (cancelled) return;
 
                 const apiBase =
-                    process.env.NEXT_PUBLIC_API_BASE_URL ??
+                    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ||
                     "http://localhost:3001";
                 const qs = versionId
                     ? `?version_id=${encodeURIComponent(versionId)}`

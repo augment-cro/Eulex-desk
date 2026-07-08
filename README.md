@@ -1,152 +1,165 @@
-# Mike
+# Eulex Desk
 
-Mike is a legal document assistant with a Next.js frontend, an Express backend, Supabase Auth/Postgres, and Cloudflare R2-compatible object storage.
+Eulex Desk is an AI legal assistant for lawyers and legal professionals: document
+analysis, legal Q&A with citations, document drafting, tabular document
+review, and a Microsoft Word add-in. It is a substantially modified fork of
+[Mike](https://github.com/willchen96/mike) — see [NOTICE](NOTICE).
 
-Website: [mikeoss.com](https://mikeoss.com)
+## What Eulex Desk adds on top of Mike
 
-## Contents
+- **In-browser DOCX editing (SuperDoc)** — uploaded and generated documents
+  open in an embedded [SuperDoc](https://superdoc.dev) editor for review and
+  editing without leaving the app.
+- **Integrated MCP framework** — server-side always-on MCP connectors
+  (`mike/mcp.json`) plus per-user connectors managed in the UI, with
+  localized tool labels in the chat timeline.
+- **Tabular document review** — multi-document × multi-column analysis
+  matrix with per-cell extraction and export.
+- **Microsoft Word add-in** — Office.js taskpane paired to the user account.
+- **Legal-source citations** — inline citations resolved against EU (CELEX)
+  and Croatian legal sources, with a dedicated source panel.
+- **Multi-provider LLM orchestration** — Anthropic, Google Gemini, OpenAI,
+  OpenRouter, and self-hosted vLLM, with per-tier model selection.
+- **Multi-provider web search** — Tavily, Exa, Parallel, You.com.
+- **Workflow packs** — declarative YAML workflow/prompt definitions,
+  JSON-schema validated.
+- **Croatian + English UI** — full i18n, Croatian default.
+- **Open service seams** — `contracts/` documents optional external
+  services (contexts, governance, PII, audit); the core runs standalone.
 
-- `frontend/` - Next.js application
-- `backend/` - Express API, Supabase access, document processing, and database schema
-- `backend/schema.sql` - Supabase schema for fresh databases
-- `backend/migrations/` - dated, incremental schema migrations; on an existing database, apply the files dated after the Mike version you deployed
+## Repository layout
 
-## Prerequisites
+| Package | What it is |
+|---|---|
+| `frontend/` | Next.js (App Router) web app |
+| `backend/` | Express API server — LLM orchestration, MCP, workflows, billing |
+| `word-addin/` | Office.js Word taskpane add-in |
+| `contracts/` | Open interface contracts for optional external services |
+| `schemas/`, `workflow-packs/` | Workflow-pack schema + examples |
 
-- Node.js 20 or newer
-- npm
-- git
-- A Supabase project
-- A Cloudflare R2 bucket, MinIO bucket, or another S3-compatible bucket
-- At least one supported model provider API key: Anthropic, Google Gemini, or OpenAI
-- Optional: a CourtListener API token for case law lookup and citation verification
-- LibreOffice installed locally if you need DOC/DOCX to PDF conversion
+## Requirements
 
-## Database Setup
+- Node.js 22+, npm
+- PostgreSQL (backend persistence)
+- LLM provider API key(s): Anthropic, Google Gemini, OpenAI, and/or Mistral
 
-For a new Supabase database, open the Supabase SQL editor and run:
+## Build & run
 
-```sql
--- copy and run the contents of:
--- backend/schema.sql
-```
+Environment templates: `backend/.env.example` and
+`frontend/.env.local.example` — copy to `backend/.env` /
+`frontend/.env.local` and fill in your credentials.
 
-The schema file is for fresh deployments and already includes the latest database shape.
+### Backend
 
-For an existing database, do not run the full schema file over production data. Instead, apply the incremental files in `backend/migrations/`: run the migrations dated **after** the version of Mike you currently have deployed, in filename order. Each file is named `YYYYMMDD_<name>.sql` (the date is also recorded in a comment at the top of the file) and is written to be safe to re-run, so when unsure you can re-apply the most recent migrations without harm.
+    cd backend
+    npm install
+    # configure env: DATABASE_URL, provider API keys (see backend/src/lib/llm/),
+    # PORT (default 3001)
+    npm run dev        # development (tsx watch)
+    npm run build && npm start   # production
 
-## Environment
+### Database
 
-Create local env files:
+For a fresh database run the one-shot schema:
 
-```bash
-touch backend/.env
-touch frontend/.env.local
-```
+    psql -h 127.0.0.1 -U <user> -d max -f backend/migrations/000_one_shot_schema.sql
 
-Create `backend/.env`:
+For an existing database apply the numbered migrations in
+`backend/migrations/` in order.
 
-```bash
-PORT=3001
-FRONTEND_URL=http://localhost:3000
-DOWNLOAD_SIGNING_SECRET=replace-with-a-random-32-byte-hex-string
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SECRET_KEY=your-supabase-service-role-key
+### Frontend
 
-R2_ENDPOINT_URL=https://your-account-id.r2.cloudflarestorage.com
-R2_ACCESS_KEY_ID=your-r2-access-key
-R2_SECRET_ACCESS_KEY=your-r2-secret-key
-R2_BUCKET_NAME=mike
+    cd frontend
+    npm install
+    # NEXT_PUBLIC_BACKEND_URL must point at the backend (baked at build time)
+    npm run dev        # development on :3000
+    npm run build      # production build (build:with-addin includes the add-in)
 
-GEMINI_API_KEY=your-gemini-key
-ANTHROPIC_API_KEY=your-anthropic-key
-OPENAI_API_KEY=your-openai-key
-RESEND_API_KEY=your-resend-key
-USER_API_KEYS_ENCRYPTION_SECRET=your-long-random-secret
+### Word add-in
 
-# Optional: enables CourtListener case law and citation tools.
-COURTLISTENER_API_TOKEN=your-courtlistener-token
+    cd word-addin
+    npm install
+    npm run build      # emits into frontend/public/word-addin/
+    npm test
 
-# Optional: use locally imported CourtListener bulk data for faster case reads.
-COURTLISTENER_BULK_DATA_ENABLED=false
-```
+For local development against Word:
 
-Create `frontend/.env.local`:
+    npm run install-certs   # one-time, self-signed Office certificate
+    npm run dev             # task pane at https://localhost:3002
 
-```bash
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY=your-supabase-anon-key
-NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
-```
+Sideload `word-addin/manifest.xml` in Microsoft Word, then pair from
+**Account → Word add-in** (6-digit code, 5-minute TTL).
 
-Supabase values come from the project dashboard. Use the project URL for `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL`, the service role key for the backend `SUPABASE_SECRET_KEY`, and the anon/public key for `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`. If your Supabase project shows multiple key formats, use the legacy JWT-style anon and service role keys expected by the Supabase client libraries.
+### PII anonymization (optional)
 
-Provider keys are only needed for the models, legal research, and email features you plan to use. Model provider keys and the CourtListener token can be configured in `backend/.env` for the whole instance, or per user in **Account > Models & API Keys**. If a provider key is present in `backend/.env`, that provider is available by default and the matching browser API key field is read-only.
+PII anonymization is provided by an external service configured via
+`PII_SHIELD_URL` (not included in this repository). The backend runs fully
+without it — `PII_SHIELD_URL` unset = feature off.
 
-## CourtListener Integration
+## LLM configuration
 
-Mike can use CourtListener for US case law citation verification, case fetching, targeted opinion search, and case-law panels in assistant responses.
+The backend reads provider keys from `backend/.env`:
 
-To enable live CourtListener access, set `COURTLISTENER_API_TOKEN` in `backend/.env` and restart the backend. Users can also add their own CourtListener token from **Account > Models & API Keys** when the instance does not provide one globally.
+| Variable | Provider |
+|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic Claude |
+| `GEMINI_API_KEY` | Google Gemini |
+| `OPENAI_API_KEY` | OpenAI |
+| `OPENROUTER_API_KEY` | OpenRouter (multi-provider) |
+| `VLLM_BASE_URL` + `VLLM_API_KEY` + `VLLM_MAIN_MODEL` | Self-hosted vLLM |
 
-Fresh databases created from `backend/schema.sql` already include the CourtListener support tables. Existing deployments should apply the matching dated migration in `backend/migrations/` before enabling the feature.
+At least one provider must be configured. The application selects models based
+on the keys present.
 
-Bulk data is optional. When `COURTLISTENER_BULK_DATA_ENABLED=true`, Mike first tries local Supabase/R2 data before falling back to CourtListener's API:
+## Web search (optional)
 
-- citation metadata is read from `public.courtlistener_citation_index`
-- case cluster metadata is read from `public.courtlistener_opinion_cluster_index`
-- cached opinion JSON is read from the R2 prefix `courtlistener/opinions/by-cluster/{clusterId}/{opinionId}.json`
+The `web_search` LLM tool (and the `/search` HTTP route) call any of four
+optional search providers. Set whichever keys you want active in `backend/.env`:
 
-If you do not import bulk data, leave `COURTLISTENER_BULK_DATA_ENABLED=false`; live CourtListener tools still work with a valid token, subject to CourtListener rate limits.
+| Variable | Provider |
+|---|---|
+| `TAVILY_API_KEY` | [Tavily](https://app.tavily.com) |
+| `EXA_API_KEY` | [Exa](https://dashboard.exa.ai/api-keys) |
+| `PARALLEL_API_KEY` | [Parallel](https://platform.parallel.ai) |
+| `YOU_API_KEY` | [You.com](https://api.you.com) |
 
-## Install
+Auto-pick priority when no specific provider is requested:
+`tavily → exa → parallel → you`. If no key is set, the `web_search` tool
+returns a clear error and the LLM continues without it.
 
-Install each app package:
+## Workflow packs
 
-```bash
-npm install --prefix backend
-npm install --prefix frontend
-```
+Eulex Desk supports declarative workflow/prompt-pack definitions in YAML format,
+validated against `schemas/workflow.schema.json`. Example layouts ship in
+`workflow-packs/examples/`.
 
-## Run Locally
+## MCP connectors
 
-Start the backend:
+Server-side ("always-on") MCP connectors are declared in `mike/mcp.json`
+(gitignored — copy from `mike/mcp.json.example`). Servers listed there are
+loaded on every chat request and never appear in the per-user connectors UI.
+Environment variables referenced as `${VAR_NAME}` in the file are expanded at
+runtime. See [`mike/README.md`](mike/README.md) for the full format.
 
-```bash
-npm run dev --prefix backend
-```
+When adding or exposing a new MCP tool, give it a friendly display label in
+**both** locales: map the `(server, tool)` pair to an i18n key in
+`frontend/src/app/lib/mcpToolLabels.ts` and add the key under
+`streaming.toolLabels` in both `frontend/messages/hr.json` and
+`frontend/messages/en.json`. The chat timeline falls back to the raw tool
+name only when a label is missing.
 
-Start the main app:
+## Optional external services
 
-```bash
-npm run dev --prefix frontend
-```
+The core runs standalone. `contracts/` documents optional network seams
+(`CONTEXTS_URL`, `GOVERNANCE_URL`, `AUDIT_SINK_URL`) — each is inert when
+unset; any third party may implement them.
 
-Open `http://localhost:3000`.
+## License
 
-## First Run
+AGPL-3.0-only — see [LICENSE](LICENSE) and [NOTICE](NOTICE). This is a
+modified version of Mike; if you run a modified version as a network
+service, AGPL §13 applies to you too.
 
-1. Sign up in the app.
-2. If you did not set provider keys in `backend/.env`, open **Account > Models & API Keys** and add an Anthropic, Gemini, or OpenAI API key.
-3. To use legal research tools, add a CourtListener token in `backend/.env` or **Account > Models & API Keys**.
-4. Create or open a project and start chatting with documents.
+## Contributing
 
-## Troubleshooting
-
-**Sign-up confirmation email never arrives.** Confirmation emails are sent by Supabase Auth, not by Mike. For local development, the simplest fix is to disable email confirmation in **Supabase > Authentication > Providers > Email**. For production, configure custom SMTP in Supabase; the built-in mailer is heavily rate-limited and may be restricted on newer projects.
-
-**The model picker shows a missing-key warning.** Add a key for that provider in **Account > Models & API Keys**, or configure the provider key in `backend/.env` and restart the backend.
-
-**CourtListener tools say the API token is missing.** Set `COURTLISTENER_API_TOKEN` in `backend/.env`, or add a CourtListener token in **Account > Models & API Keys** for the signed-in user. Restart the backend after changing `.env`.
-
-**CourtListener bulk lookup is not returning local results.** Confirm `COURTLISTENER_BULK_DATA_ENABLED=true`, the two CourtListener tables have been populated, and opinion JSON exists in R2 under `courtlistener/opinions/by-cluster/`. If bulk data is unavailable, Mike falls back to the live API when a token is configured.
-
-**DOC or DOCX conversion fails.** Install LibreOffice locally and restart the backend so document conversion commands are available on the process path.
-
-## Useful Checks
-
-```bash
-npm run build --prefix backend
-npm run build --prefix frontend
-npm run lint --prefix frontend
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md).

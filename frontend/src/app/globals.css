@@ -1,58 +1,428 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+/* ════════════════ BEGIN SHARED THEME ════════════════
+   This section is common to eulex-www (src/styles/global.css)
+   and the Eulex Desk app (mike: frontend/src/app/globals.css).
+   Keep the fenced sections TEXTUALLY IDENTICAL — edit both
+   repos in the same change. No automated sync, by decision
+   (2026-06-12). Host-specific CSS belongs OUTSIDE the fence.
+   Canonical font URL (both hosts load it host-side):
+   https://api.fontshare.com/v2/css?f[]=sentient@1,2&f[]=azeret-mono@5&display=swap
+   ═════════════════════════════════════════════════════ */
 
-@theme inline {
-    --color-background: var(--background);
-    --color-foreground: var(--foreground);
-    --font-sans: var(--font-inter);
-    --font-serif: var(--font-eb-garamond);
-    --color-blue: rgb(0, 136, 255);
-    --color-blue-50: rgba(0, 136, 255, 0.05);
-    --color-blue-100: rgba(0, 136, 255, 0.1);
-    --color-blue-200: rgba(0, 136, 255, 0.3);
-    --color-blue-600: rgb(0, 136, 255);
-    --color-blue-700: rgb(0, 120, 230);
-    --color-sidebar-ring: var(--sidebar-ring);
-    --color-sidebar-border: var(--sidebar-border);
-    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-    --color-sidebar-accent: var(--sidebar-accent);
-    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-    --color-sidebar-primary: var(--sidebar-primary);
-    --color-sidebar-foreground: var(--sidebar-foreground);
-    --color-sidebar: var(--sidebar);
-    --color-chart-5: var(--chart-5);
-    --color-chart-4: var(--chart-4);
-    --color-chart-3: var(--chart-3);
-    --color-chart-2: var(--chart-2);
-    --color-chart-1: var(--chart-1);
-    --color-ring: var(--ring);
-    --color-input: var(--input);
-    --color-border: var(--border);
-    --color-destructive: var(--destructive);
-    --color-accent-foreground: var(--accent-foreground);
-    --color-accent: var(--accent);
-    --color-muted-foreground: var(--muted-foreground);
-    --color-muted: var(--muted);
-    --color-secondary-foreground: var(--secondary-foreground);
-    --color-secondary: var(--secondary);
-    --color-primary-foreground: var(--primary-foreground);
-    --color-primary: var(--primary);
-    --color-popover-foreground: var(--popover-foreground);
-    --color-popover: var(--popover);
-    --color-card-foreground: var(--card-foreground);
-    --color-card: var(--card);
-    --radius-sm: calc(var(--radius) - 4px);
-    --radius-md: calc(var(--radius) - 2px);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) + 4px);
-}
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 :root {
+  --background: #FFFCF5;
+  --foreground: #32270D;
+  --card: #F7F3E9;
+  --card-foreground: #32270D;
+  --popover: #FFFCF5;
+  --popover-foreground: #32270D;
+  --primary: #32270D;
+  --primary-foreground: #FFFCF5;
+  --secondary: #F7F3E9;
+  --secondary-foreground: #32270D;
+  --muted: #F7F3E9;
+  --muted-foreground: #6F6249; /* real muted step (ink-family mid-tone, ≥4.5:1 on paper) */
+  --accent: #F7F3E9; /* hover tint (shadcn accent role); CTA cyan lives in --action */
+  --accent-foreground: #32270D;
+  --action: #65ECFF; /* Andrej's Action cyan — true CTAs only, one per page */
+  --action-foreground: #32270D;
+  --destructive: #D34300;
+  --destructive-foreground: #FFFCF5;
+  --success: #4D7C0F; /* approved 2026-06-12 — tracked-changes ins, positive statuses */
+  --success-foreground: #FFFCF5;
+  --warning: #B45309; /* approved 2026-06-12 — credit/status warnings */
+  --warning-foreground: #FFFCF5;
+  --border: #DDD6C6;
+  --input: #978D7D; /* WCAG 1.4.11: 3.19:1 vs --background #FFFCF5; warm ink-tinted border for form fields */
+  --ring: #32270D;
+  --chart-1: #BDFF32;
+  --chart-2: #FF96FF;
+  --chart-3: #65ECFF;
+  --chart-4: #32270D;
+  --chart-5: #DDD6C6;
+  --sidebar: #FFFCF5;
+  --sidebar-foreground: #32270D;
+  --sidebar-primary: #32270D;
+  --sidebar-primary-foreground: #FFFCF5;
+  --sidebar-accent: #F7F3E9;
+  --sidebar-accent-foreground: #32270D;
+  --sidebar-border: #DDD6C6;
+  --sidebar-ring: #32270D;
+  --radius: 0.375rem;
+  --shadow-2xs: none;
+  --shadow-xs: none;
+  --shadow-sm: none;
+  --shadow: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-xl: none;
+  --shadow-2xl: none;
+  --brand: #BDFF32;
+  --highlight: #FF96FF;
+  --surface-elevated: #FFFFFF;
+  --surface-elevated-foreground: #32270D;
+}
+
+/* Dark theme — warm ink-browns, paper text, accents unchanged.
+   Values approved 2026-06-12; exercised only where a host sets
+   data-theme="dark" (the Eulex Desk app switcher — www ships paper only). */
+[data-theme="dark"] {
+  --background: #211A0D;
+  --foreground: #FFFCF5;
+  --card: #2C2310;
+  --card-foreground: #FFFCF5;
+  --popover: #2C2310;
+  --popover-foreground: #FFFCF5;
+  --primary: #FFFCF5;
+  --primary-foreground: #211A0D;
+  --secondary: #3A2F16;
+  --secondary-foreground: #FFFCF5;
+  --muted: #2C2310;
+  --muted-foreground: #C9BFA8;
+  --accent: #2C2310;
+  --accent-foreground: #FFFCF5;
+  --action: #65ECFF;
+  --action-foreground: #211A0D;
+  --destructive: #FF7A45;
+  --destructive-foreground: #211A0D;
+  --success: #A3D977;
+  --success-foreground: #211A0D;
+  --warning: #E8A33D;
+  --warning-foreground: #211A0D;
+  --border: #4A3D1F;
+  --input: #6B5C36;
+  --ring: #FFFCF5;
+  --chart-1: #BDFF32;
+  --chart-2: #FF96FF;
+  --chart-3: #65ECFF;
+  --chart-4: #FFFCF5;
+  --chart-5: #4A3D1F;
+  --sidebar: #211A0D;
+  --sidebar-foreground: #FFFCF5;
+  --sidebar-primary: #FFFCF5;
+  --sidebar-primary-foreground: #211A0D;
+  --sidebar-accent: #2C2310;
+  --sidebar-accent-foreground: #FFFCF5;
+  --sidebar-border: #4A3D1F;
+  --sidebar-ring: #FFFCF5;
+  --radius: 0.375rem;
+  --shadow-2xs: none;
+  --shadow-xs: none;
+  --shadow-sm: none;
+  --shadow: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-xl: none;
+  --shadow-2xl: none;
+  --brand: #BDFF32;
+  --highlight: #FF96FF;
+  --surface-elevated: #382F18;
+  --surface-elevated-foreground: #FFFCF5;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-action: var(--action);
+  --color-action-foreground: var(--action-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-brand: var(--brand);
+  --color-highlight: var(--highlight);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-elevated-foreground: var(--surface-elevated-foreground);
+
+  /* EULEX www palette — landing / login / signup / auth pages only (explicit
+     classes). Re-added after the paper/ink reskin merge dropped them; the
+     Supabase auth pages (login, signup, forgot/reset-password, callback) style
+     against text-ink / bg-surface / bg-divider etc. Fixed hex by design — these
+     screens use the constant paper/ink look, not the dark-adaptive shell. */
+  --color-paper: #fffcf5;
+  --color-ink: #32270d;
+  --color-ink-60: #32270d99;
+  --color-ink-40: #32270d66;
+  --color-ink-12: #32270d1f;
+  --color-surface: #f7f3e9;
+  --color-card-muted: #ddd6c6;
+  --color-divider: #ddd6c6;
+  --color-on-ink: #fffcf5;
+
+  /* Brand blue accent + azure triplet — the reskin moved the shell to the
+     `action`/semantic accent, but these stay for the auth pages and the few
+     components still on the blue ramp (text-blue-600, bg-blue-50, …). */
+  --color-blue: rgb(0, 136, 255);
+  --color-blue-50: rgba(0, 136, 255, 0.05);
+  --color-blue-100: rgba(0, 136, 255, 0.1);
+  --color-blue-200: rgba(0, 136, 255, 0.3);
+  --color-blue-600: rgb(0, 136, 255);
+  --color-blue-700: rgb(0, 120, 230);
+  --color-azure: 0, 136, 255;
+
+  /* Andrej's xs/s/m/l radius scale (distinct from the sm/md/lg/xl below) —
+     re-added after the reskin merge dropped it; rounded-s / rounded-m used by
+     the auth cards. */
+  --radius-xs: 6px;
+  --radius-s: 8px;
+  --radius-m: 16px;
+  --radius-l: 24px;
+
+  --radius-sm: 0.375rem;   /* 6px — spec sm, buttons */
+  --radius-md: 0.5rem;     /* 8px — spec md, inputs */
+  --radius-lg: 0.75rem;    /* 12px */
+  --radius-xl: 1rem;       /* 16px */
+
+  --shadow-2xs: var(--shadow-2xs);
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow: var(--shadow);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+  --shadow-2xl: var(--shadow-2xl);
+
+  --font-sans: "Sentient", ui-serif, Georgia, serif;
+  --font-mono: "Azeret Mono", ui-monospace, "SF Mono", monospace;
+}
+
+/* Andrej's value-bearing type tiers as Tailwind v4 paired font-size tokens.
+   Plain @theme (NOT @theme inline) so the --text-* customs are emitted on :root
+   and can be referenced via var(--text-*) by the [data-slot] correctives below.
+   The generated text-* utilities live in the utility layer, so a call-site
+   `class="text-headline-lg"` beats a block's shipped heading utilities exactly
+   as the former @utility blocks did. Values are copied verbatim from those
+   @utility tiers — the rename is a visual no-op. */
+@theme {
+  --text-headline-lg: 1.75rem;
+  --text-headline-lg--line-height: 1.1;
+  --text-headline-lg--letter-spacing: 0;
+  --text-headline-lg--font-weight: 400;
+
+  --text-headline-md: 1.4375rem;
+  --text-headline-md--line-height: 1.1;
+  --text-headline-md--letter-spacing: 0;
+  --text-headline-md--font-weight: 400;
+
+  --text-body-lg: 1.3125rem;
+  --text-body-lg--line-height: 1.4;
+  --text-body-lg--letter-spacing: 0;
+  --text-body-lg--font-weight: 400;
+
+  --text-body-md: 1.125rem;
+  --text-body-md--line-height: 1.4;
+  --text-body-md--letter-spacing: 0;
+  --text-body-md--font-weight: 400;
+
+  --text-body-sm: 0.875rem;     /* inferred tier — not in DESIGN.md; see ISSUE-TRACKER.
+                                   No-op today: only live use (pricing-tabbed footnotes)
+                                   already inherits text-sm (14px). */
+  --text-body-sm--line-height: 1.4;
+  --text-body-sm--letter-spacing: 0;
+  --text-body-sm--font-weight: 400;
+}
+
+/* Semantic typography — Andrej's tiers from the design spec.
+   The value-bearing tiers (headline-lg/md, body-lg/md/sm) are the Tailwind v4
+   font-size tokens in the @theme block above; use them inline as text-*
+   utilities (e.g. class="text-headline-lg"). Only tiers that cannot be a
+   single font-size token remain @utility here: headline-xl (responsive
+   step-down), label (mono + uppercase), and the draft-* tiers (mono
+   font-family; used by the Eulex Desk app for draft/technical artifacts). Vendored
+   primitives in src/components/ui/ are styled via the selector rules below. */
+
+@utility headline-xl {
+  font-family: var(--font-sans);
+  font-size: 2rem;          /* mobile step-down so long hero headlines don't
+                               push the primary CTA below the fold (#21a) */
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: 0;
+  @media (width >= 40rem) {
+    font-size: 2.875rem;    /* DESIGN.md headline-xl — canonical desktop value */
+  }
+}
+
+@utility label {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+@utility draft-headline-lg {
+  font-family: var(--font-mono);
+  font-size: 1.3125rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+@utility draft-headline-md {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+@utility draft-body {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+
+/* Andrej typography overrides — kept unlayered so they win against
+   block utility classes (font-semibold, tracking-tight, etc.) without
+   needing !important on every declaration. Unlayered CSS beats all
+   cascade layers regardless of source order. */
+button, [data-slot="button"], [data-slot="navigation-menu-link"],
+header a, nav a, footer a {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 0.75rem;
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* Body copy inside nav-menu link cards (descriptions, helper text)
+   stays Sentient per Andrej: Azeret Mono is for labels, not body copy. */
+[data-slot="navigation-menu-link"] .text-muted-foreground {
+  font-family: var(--font-sans);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* Card primitive root carries text-sm, which cascades to title/description/price
+   and any other text without an explicit size. Restore Andrej's tiers on the
+   vendored slots. DESIGN.md "Cards": single Sentient heading per card. */
+[data-slot="card-title"] {              /* size = headline-md tier; weight is the
+                                           bold-heading gap — see DESIGN.md (T1-12) */
+  font-family: var(--font-sans);
+  font-size: var(--text-headline-md);   /* was 1.4375rem */
+  font-weight: 700;                     /* KEEP — flagged bold-heading gap (T1-12) */
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+[data-slot="card-description"] {        /* = body-md tier */
+  font-family: var(--font-sans);
+  font-size: var(--text-body-md);       /* was 1.125rem */
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+/* Lucide icons ship stroke-width="2" baked into every SVG; Andrej spec is
+   1.25 (DESIGN.md §Icons). Anchored on the Lucide stroke-attribute signature
+   (linecap+linejoin=round, fill=none) — the `lucide` class baked into the
+   source SVG is stripped by Astro's class-prop replacement on the Icon
+   primitive, so it's unavailable as an anchor. Simple Icons brand glyphs use
+   fill="currentColor" without these stroke attrs, so they're not matched.
+   Size question (spec 20×20 default vs primitive's text-relative size-[1em])
+   is deferred — see ISSUE-TRACKER #15. */
+svg[stroke-linejoin="round"][fill="none"] {
+  stroke-width: 1.25;
+}
+
+/* Sidebar group labels — Azeret Mono label treatment at full ink.
+   The component ships text-xs + text-sidebar-foreground/70: smaller than
+   the nav items beneath them and visually muted. Override: full foreground
+   color, mono font, slightly larger than text-xs (12px → 13px). */
+[data-slot="sidebar-group-label"] {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--sidebar-foreground);
+}
+
+/* ════════════════ END SHARED THEME ══════════════════ */
+
+@theme inline {
+    /* mike-only font roles (the fence owns --font-sans / --font-mono).
+       NOTE: do NOT redefine --font-mono here — the fence already maps it to
+       the Fontshare "Azeret Mono" family. A prior override pointed it at the
+       removed next/font `--font-azeret-mono` var, which silently broke every
+       `font-family: var(--font-mono)` rule (buttons fell back to Sentient). */
+    /* Serif role is indirected through --app-font-serif so it varies per theme:
+       EULEX paper/dark = Sentient (Andrej round-1 reskin); classic mike/mike-dark
+       = EB Garamond (original pre-reskin look). Default at :root below; classic
+       overrides under [data-theme="mike*"]. @theme inline keeps this a var()-based
+       utility so the cascade CAN override it. Host-only (outside the fence). */
+    --font-serif: var(--app-font-serif);
+    --font-display: "Sentient", Georgia, serif;
+    /* EULEX brand magenta (document highlighter accent) — aliased to the
+       shared --highlight token so it tracks the theme. Used for inline
+       citation underlines in answer prose. */
+    --color-magenta: var(--highlight);
+    --color-magenta-600: var(--highlight);
+    /* literal-ok: theme-invariant ink for text on the constant lime --brand
+       (—brand is the same #BDFF32 in paper + dark, so its on-color must not
+       flip with --foreground; fixes white-on-lime in dark mode). */
+    --color-brand-foreground: #32270D;
+}
+
+/* Serif-role default (host-only, outside the fence): EULEX paper/dark = Sentient.
+   A real CSS custom property (not in @theme) so [data-theme="mike*"] can override
+   it; the .font-serif / .font-display / .font-eb-garamond utilities resolve it at
+   cascade time. */
+:root {
+    --app-font-serif: "Sentient", Georgia, serif;
+}
+
+/* ─── Classic "Mike" theme (host-only, OUTSIDE the fence) ─────────────
+   The pre-reskin stock-shadcn neutral palette, offered as switchable
+   themes alongside EULEX paper/dark. Only roles that differ from paper
+   are listed; brand/highlight/fonts inherit the fence. The `dark`
+   variant is re-anchored below so vendored `dark:` utilities also flip
+   under mike-dark. Selector overrides at the end restore the original
+   typography (no uppercase-mono labels, default Lucide stroke). */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *, [data-theme=mike-dark], [data-theme=mike-dark] *));
+
+[data-theme="mike"] {
     --radius: 0.625rem;
-    --color-azure: 0, 136, 255;
-    --background: oklch(0.985 0 0);
+    --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
     --card-foreground: oklch(0.145 0 0);
@@ -67,6 +437,7 @@
     --accent: oklch(0.97 0 0);
     --accent-foreground: oklch(0.205 0 0);
     --destructive: oklch(0.577 0.245 27.325);
+    --destructive-foreground: oklch(0.985 0 0);
     --border: oklch(0.922 0 0);
     --input: oklch(0.922 0 0);
     --ring: oklch(0.708 0 0);
@@ -83,9 +454,21 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+    /* EULEX-only roles the migrated components use → classic-Mike values */
+    --action: oklch(0.62 0.19 255); /* old Mike brand blue ≈ #0088ff */
+    --action-foreground: oklch(0.985 0 0);
+    --success: oklch(0.62 0.17 145);
+    --success-foreground: oklch(0.985 0 0);
+    --warning: oklch(0.70 0.16 70);
+    --warning-foreground: oklch(0.205 0 0);
+    --surface-elevated: oklch(1 0 0);
+    --surface-elevated-foreground: oklch(0.145 0 0);
+    /* classic serif = EB Garamond (original pre-reskin look) */
+    --app-font-serif: var(--font-eb-garamond);
 }
 
-.dark {
+[data-theme="mike-dark"] {
+    --radius: 0.625rem;
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
     --card: oklch(0.205 0 0);
@@ -101,6 +484,7 @@
     --accent: oklch(0.269 0 0);
     --accent-foreground: oklch(0.985 0 0);
     --destructive: oklch(0.704 0.191 22.216);
+    --destructive-foreground: oklch(0.985 0 0);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
@@ -117,11 +501,79 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
+    --action: oklch(0.62 0.19 255);
+    --action-foreground: oklch(0.985 0 0);
+    --success: oklch(0.65 0.17 145);
+    --success-foreground: oklch(0.205 0 0);
+    --warning: oklch(0.75 0.15 70);
+    --warning-foreground: oklch(0.205 0 0);
+    --surface-elevated: oklch(0.269 0 0);
+    --surface-elevated-foreground: oklch(0.985 0 0);
+    /* classic serif = EB Garamond (original pre-reskin look) */
+    --app-font-serif: var(--font-eb-garamond);
+}
+
+/* Classic themes: nav, buttons and links render in Sentient (sans),
+   sentence-case — NOT the EULEX uppercase-mono label treatment. Also drop the
+   thin Lucide stroke. Scoped to mike/mike-dark so EULEX paper/dark keep their
+   look; outranks the fence rules via the [data-theme] ancestor regardless of
+   source order. (User decision 2026-06-16: classic chrome = Sentient.) */
+[data-theme="mike"] :is(button, [data-slot="button"], [data-slot="navigation-menu-link"], header a, nav a, footer a, [data-slot="sidebar-group-label"]),
+[data-theme="mike-dark"] :is(button, [data-slot="button"], [data-slot="navigation-menu-link"], header a, nav a, footer a, [data-slot="sidebar-group-label"]) {
+    font-family: var(--font-sans);
+    text-transform: none;
+    letter-spacing: normal;
+}
+[data-theme="mike"] svg[stroke-linejoin="round"][fill="none"],
+[data-theme="mike-dark"] svg[stroke-linejoin="round"][fill="none"] {
+    stroke-width: 2;
+}
+
+/* Andrej round-1 reskin: a few <button>s are body/navigation text, not labels,
+   so they should NOT inherit the global Azeret-Mono uppercase button treatment
+   (fence rule on `button`). These overrides are unlayered + use class
+   specificity (0,1,0) to beat the unlayered `button` element rule (0,0,1).
+   Host-only (outside the shared fence). */
+.reasoning-toggle {
+    font-family: var(--font-sans);
+    font-weight: 500;
+    font-size: 0.875rem;      /* text-sm — the trace toggle's intended size */
+    line-height: 1.25rem;
+    letter-spacing: normal;
+    text-transform: none;
+}
+.reasoning-toggle--compact {
+    font-size: 0.75rem;       /* text-xs — narrow side panels (TR chat) */
+}
+.sidebar-chat-title {
+    font-family: var(--font-sans);
+    font-weight: 400;
+    font-size: 0.75rem;       /* text-xs — conversation titles in Sentient */
+    line-height: 1rem;
+    letter-spacing: normal;
+    text-transform: none;
+}
+/* Account-menu rows (account settings, language switch, light/dark switch) are
+   body menu items, not labels — render them in Sentient sentence-case at
+   text-sm, not the global Azeret-Mono uppercase button treatment. */
+.account-menu :is(button, [data-slot="button"]) {
+    font-family: var(--font-sans);
+    font-weight: 400;
+    font-size: 0.875rem;      /* text-sm */
+    line-height: 1.25rem;
+    letter-spacing: normal;
+    text-transform: none;
 }
 
 @layer base {
     * {
         @apply border-border outline-ring/50;
+    }
+
+    html {
+        /* Host-level knob (spec §6.4): the app renders at 17px root;
+           www stays at 16px. Deliberately NOT part of the fence. */
+        font-size: 17px;
     }
 
     body {
@@ -170,15 +622,15 @@
 /* Inline cross-reference links within section text */
 .usc-xref,
 .usc-section a {
-    color: rgb(var(--color-azure));
+    color: var(--foreground);
     text-decoration: none;
-    border-bottom: 1px dotted rgba(var(--color-azure), 0.4);
+    border-bottom: 1px dotted var(--border);
     transition: border-bottom-color 0.2s;
 }
 
 .usc-xref:hover,
 .usc-section a:hover {
-    border-bottom-color: rgb(var(--color-azure));
+    border-bottom-color: var(--foreground);
 }
 
 /* Remove automatic list styling for USC section content */
@@ -238,14 +690,14 @@
 }
 
 .cfr-section a {
-    color: rgb(var(--color-azure));
+    color: var(--foreground);
     text-decoration: none;
-    border-bottom: 1px dotted rgba(var(--color-azure), 0.4);
+    border-bottom: 1px dotted var(--border);
     transition: border-bottom-color 0.2s;
 }
 
 .cfr-section a:hover {
-    border-bottom-color: rgb(var(--color-azure));
+    border-bottom-color: var(--foreground);
 }
 
 .cfr-section table {
@@ -257,28 +709,129 @@
 
 .cfr-section th,
 .cfr-section td {
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--border);
     padding: 0.5em 0.75em;
     text-align: left;
 }
 
 .cfr-section th {
-    background: #f8fafc;
+    background: var(--muted);
     font-weight: 600;
 }
 
 .cfr-section .authority-section,
 .cfr-section .source-section {
     font-size: 0.875em;
-    color: #64748b;
+    color: var(--muted-foreground);
     margin: 1em 0;
     padding: 0.75em;
-    border-left: 3px solid #e2e8f0;
+    border-left: 3px solid var(--border);
 }
 
 @layer utilities {
+    .font-display {
+        font-family: var(--font-display);
+    }
+
     .font-eb-garamond {
-        font-family: var(--font-eb-garamond);
+        /* Follows the per-theme serif role: Sentient under EULEX, EB Garamond
+           under classic mike/mike-dark. */
+        font-family: var(--app-font-serif);
+    }
+
+    /* ─── EULEX www (landing / login / signup) ───────────────────
+       TEMP — superseded by the fence's `label` utility + Button
+       variants. DELETE (with the compat alias block above) in
+       migration batch B8. ──────────────────────────────────────── */
+    .eu-label {
+        font-family: var(--font-mono);
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 1;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+    }
+
+    .eu-label--s {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 500;
+        line-height: 1;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+    }
+
+    .h-display-2xl {
+        font-family: var(--font-display);
+        font-size: clamp(2.5rem, 2.5rem + 1.5vw, 4rem);
+        font-weight: 400;
+        line-height: 1.02;
+        letter-spacing: -0.01em;
+    }
+
+    .h-display-l {
+        font-family: var(--font-display);
+        font-size: clamp(1.5rem, 1.5rem + 0.25vw, 1.75rem);
+        font-weight: 400;
+        line-height: 1.1;
+    }
+
+    .t-body-l {
+        font-family: var(--font-display);
+        font-size: clamp(1.125rem, 1.125rem + 0.2vw, 1.3125rem);
+        font-weight: 400;
+        line-height: 1.35;
+    }
+
+    /* App-component utilities (kept). Built on shared fence tokens — NOT the
+       retired compat aliases — so they retheme + flip with the theme. */
+    .eu-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        height: 40px;
+        padding-inline: 22px;
+        border-radius: 8px;
+        font-family: var(--font-mono);
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 1;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        transition: all 120ms cubic-bezier(0.2, 0.7, 0.1, 1);
+    }
+
+    .eu-btn-brand {
+        background-color: var(--brand);
+        color: var(--color-brand-foreground);
+    }
+
+    .eu-btn-brand:hover:not(:disabled) {
+        filter: brightness(0.95);
+    }
+
+    .eu-btn-ink {
+        background-color: var(--primary);
+        color: var(--primary-foreground);
+    }
+
+    .eu-btn-ink:hover:not(:disabled) {
+        filter: brightness(0.95);
+    }
+
+    .eu-btn-surface {
+        background-color: var(--card);
+        color: var(--foreground);
+    }
+
+    .eu-btn-surface:hover:not(:disabled) {
+        background-color: var(--border);
+    }
+
+    .eu-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
     }
 
     .sidebar-fade-in {
@@ -329,6 +882,26 @@
     .animate-shimmer {
         animation: shimmer 8s linear infinite;
     }
+
+    @keyframes mikeCompassIntro {
+        0% {
+            transform: rotate(-540deg) scale(0.35);
+            opacity: 0;
+        }
+        40% {
+            opacity: 1;
+        }
+        100% {
+            transform: rotate(0deg) scale(1);
+            opacity: 1;
+        }
+    }
+
+    .mike-compass-intro {
+        animation: mikeCompassIntro 1200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        transform-origin: center;
+        will-change: transform, opacity;
+    }
 }
 
 /* ─── Tiptap WYSIWYG workflow editor ────────────────────────────── */
@@ -337,7 +910,7 @@
     padding: 1rem 1.25rem;
     outline: none;
     font-size: 0.875rem;
-    color: #374151;
+    color: var(--foreground);
     line-height: 1.65;
     font-family: var(--font-serif);
 }
@@ -345,7 +918,7 @@
 .workflow-editor-content h1 {
     font-size: 1rem;
     font-weight: 600;
-    color: #111827;
+    color: var(--foreground);
     margin-top: 1.25rem;
     margin-bottom: 0.375rem;
 }
@@ -353,7 +926,7 @@
 .workflow-editor-content h2 {
     font-size: 0.875rem;
     font-weight: 600;
-    color: #111827;
+    color: var(--foreground);
     margin-top: 0.875rem;
     margin-bottom: 0.25rem;
 }
@@ -361,7 +934,7 @@
 .workflow-editor-content h3 {
     font-size: 0.8125rem;
     font-weight: 600;
-    color: #111827;
+    color: var(--foreground);
     margin-top: 0.625rem;
     margin-bottom: 0.125rem;
 }
@@ -402,7 +975,7 @@
 
 .workflow-editor-content strong {
     font-weight: 600;
-    color: #1f2937;
+    color: var(--foreground);
 }
 
 .workflow-editor-content em {
@@ -429,38 +1002,41 @@
 }
 
 .pdf-text-layer .pdf-text-highlight {
-    background-color: rgba(37, 99, 235, 0.2);
+    background-color: color-mix(in oklch, var(--action) 20%, transparent);
     border-radius: 2px;
     position: static;
 }
 
 .docx-view-container span.docx-text-highlight,
 .docx-view-container .docx-text-highlight {
-    background-color: rgba(37, 99, 235, 0.35) !important;
+    background-color: color-mix(in oklch, var(--action) 35%, transparent) !important;
     border-radius: 2px;
     padding: 0 1px;
     color: inherit !important;
 }
 
-.case-opinion-content span.docx-text-highlight,
-.case-opinion-content .docx-text-highlight {
-    background-color: rgba(96, 165, 250, 0.55) !important;
+/* Legal-source panel: highlight the cited passage inside the source text.
+   Amber so the cited sentence pops against the legal prose. Reuses the
+   same `.docx-text-highlight` span emitted by highlightDocxQuote(). */
+.legal-source-body span.docx-text-highlight,
+.legal-source-body .docx-text-highlight {
+    background-color: color-mix(in oklch, var(--warning) 35%, transparent);
     border-radius: 2px;
     padding: 0 1px;
-    color: inherit !important;
+    color: inherit;
 }
 
 /* docx-preview tracked-change styling */
 .docx-view-container ins {
-    color: #16a34a;
+    color: var(--success);
     text-decoration: none;
-    background-color: rgba(22, 163, 74, 0.08);
+    background-color: color-mix(in oklch, var(--success) 8%, transparent);
 }
 
 .docx-view-container del {
-    color: #dc2626;
+    color: var(--destructive);
     text-decoration: line-through;
-    background-color: rgba(220, 38, 38, 0.08);
+    background-color: color-mix(in oklch, var(--destructive) 8%, transparent);
 }
 
 /* Kill docx-preview's default dark-gray wrapper chrome — let the scroll
@@ -472,7 +1048,7 @@
 
 .docx-view-container .docx-wrapper > section.docx {
     margin: 0 auto 16px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    border: 1px solid var(--border);
 }
 
 .docx-view-container .docx-edit-flash {
@@ -495,11 +1071,105 @@
 
 @keyframes docxEditFlash {
     0%, 20% {
-        background-color: rgba(59, 130, 246, 0.45);
-        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.45);
+        background-color: color-mix(in oklch, var(--action) 45%, transparent);
+        box-shadow: 0 0 0 2px color-mix(in oklch, var(--action) 45%, transparent);
     }
     100% {
-        background-color: rgba(59, 130, 246, 0);
-        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0);
+        background-color: transparent;
+        box-shadow: 0 0 0 2px transparent;
     }
+}
+
+/* ─── SuperDoc override-i ────────────────────────────────────────────
+ *
+ * SuperDoc dolazi sa scoped Vue styles (`[data-v-…]` selektorima) pa
+ * direktni override-i moraju biti barem jednake specifičnosti +
+ * `!important` — inače Vue stylesheet pobjeđuje.
+ *
+ * Tri stvari:
+ *   1. native toolbar u 2 reda — flex-wrap umjesto overflow menu-a,
+ *      tako da svi gumbi ostanu vidljivi i u uskom side-panelu.
+ *   2. sakrij desni sidebar (`.superdoc__right-sidebar` + parent
+ *      `.right-sidebar` container) — generira prazan sivi bar uz
+ *      scroller jer mi imamo `modules.comments: false` pa unutra
+ *      ionako nema ničeg za prikazati.
+ *   3. ukloni gornji bijeli padding ispod toolbar-a kad sidebar
+ *      nestane (parent `.superdoc__editor` ima margin koji bi
+ *      vizualno ostao kao gap).
+ *
+ * Sve preko `.superdoc-view-scroll` parent-a kako bismo izbjegli
+ * utjecaj na drugu SuperDoc instancu (npr. landing demo).
+ */
+.superdoc-view-scroll .superdoc-toolbar {
+    flex-wrap: wrap !important;
+    height: auto !important;
+    row-gap: 4px;
+}
+
+/* Toolbar se u Pregled modu skriva CSS-om umjesto `hideToolbar` propom:
+   promjena tog propa (kao i `role`/`user`/`modules`) tjera React wrapper
+   na potpuni rebuild SuperDoc instance — re-parse cijelog DOCX-a pri
+   svakom prebacivanju moda. Klasu postavlja SuperDocView na wrapper.
+   Gađamo `.superdoc-toolbar-container` (vanjski div React wrappera u
+   koji SuperDoc mounta `.superdoc-toolbar`) da ne ostane prazan bar. */
+.superdoc-view-scroll.superdoc-toolbar-hidden .superdoc-toolbar-container {
+    display: none !important;
+}
+
+.superdoc-view-scroll .superdoc__right-sidebar,
+.superdoc-view-scroll .right-sidebar {
+    display: none !important;
+}
+
+/* Kad sidebar nestane, glavna page-container kolona zauzme cijeli
+   prostor — SuperDoc sam ne re-flow-uje grid, pa silimo full width. */
+.superdoc-view-scroll .superdoc__editor,
+.superdoc-view-scroll .superdoc__main {
+    width: 100% !important;
+    min-width: 0 !important;
+}
+
+/* ─── Typewriter cursor blink (EnrichmentPanel streaming) ────────── */
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+}
+
+/* ─── SuperDoc citation highlight color. The document viewer highlights cited
+   passages via SuperDoc's native search, whose match decorations read these
+   CSS variables. We theme them to the EULEX magenta highlighter (the brand
+   document-highlight motif) — change these two values to recolor. */
+.superdoc {
+    --sd-ui-search-match-bg: color-mix(in oklch, var(--highlight) 36%, transparent);
+    --sd-ui-search-match-active-bg: color-mix(in oklch, var(--highlight) 70%, transparent);
+}
+
+/* ─── Inline legal-source citation: underline the reference text in the
+   prose (brand-blue gradient underline, animated reveal) instead of a
+   numbered pill. Rendered by the `a` / `code` handlers in AssistantMessage. */
+.legal-cite-link {
+    color: inherit;
+    font: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    background-image: linear-gradient(
+        var(--color-magenta),
+        var(--color-magenta)
+    );
+    background-position: 0 100%;
+    background-repeat: no-repeat;
+    background-size: 100% 2.5px;
+    padding-bottom: 1px;
+    transition: background-size 0.15s ease, background-color 0.15s ease;
+    animation: legalCiteUnderline 0.5s ease-out forwards;
+}
+/* Hover grows the magenta into a full highlighter swash, echoing the EULEX
+   document-highlight motif. */
+.legal-cite-link:hover {
+    background-size: 100% 100%;
+    border-radius: 2px;
+}
+@keyframes legalCiteUnderline {
+    from { background-size: 0% 2.5px; }
+    to   { background-size: 100% 2.5px; }
 }

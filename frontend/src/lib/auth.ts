@@ -1,9 +1,9 @@
 import { NextRequest } from 'next/server';
 
 /**
- * Extract and validate user from Supabase JWT token
- * Returns user info if valid, null if invalid or missing
- * 
+ * Extract and validate user from OAuth JWT token.
+ * Performs a lightweight decode (claims are verified by the backend).
+ *
  * @param request NextRequest with Authorization header
  * @returns User object with email and id, or null
  */
@@ -13,39 +13,42 @@ export async function getUserFromRequest(request: NextRequest): Promise<{
 } | null> {
   try {
     const authHeader = request.headers.get('Authorization');
-    
+
     if (!authHeader?.startsWith('Bearer ')) {
       return null;
     }
 
     const token = authHeader.substring(7);
-    
+
     if (!token) {
       return null;
     }
-    
-    // Validate with Supabase
-    const { createClient } = await import('@supabase/supabase-js');
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY!
+
+    // Decode JWT payload (signature verified by backend)
+    const parts = token.split('.');
+    if (parts.length !== 3) {
+      return null;
+    }
+
+    const payload = JSON.parse(
+      Buffer.from(parts[1], 'base64url').toString('utf-8')
     );
 
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    
-    if (error || !user) {
-      console.warn('[Auth] Invalid or expired token:', error?.message);
+    if (!payload.email || !payload.sub) {
+      console.warn('[Auth] JWT missing email or sub');
       return null;
     }
 
-    if (!user.email) {
-      console.warn('[Auth] User has no email');
+    // Check expiry
+    if (payload.exp && Date.now() / 1000 > payload.exp) {
+      console.warn('[Auth] JWT expired');
       return null;
     }
 
+    console.log(`[Auth] User authenticated: ${payload.email}`);
     return {
-      email: user.email,
-      id: user.id
+      email: payload.email,
+      id: String(payload.sub),
     };
   } catch (error) {
     console.error('[Auth] Error validating token:', error);

@@ -1,0 +1,53 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Audit Sink",
+        "version": "1.0.0",
+        "description": "Optional fire-and-forget post-turn dispatch when AUDIT_SINK_URL is set. Never blocks the response stream. The sink owns its own audit storage; the core stores nothing. The annotations return channel (late SSE relay + stored-annotation fetch) is specified for v1.1 and implemented when a consumer service exists — v1 dispatch responses are ignored."
+    },
+    "paths": {
+        "/audit": {
+            "post": {
+                "summary": "Receive one completed turn for validation/audit",
+                "security": [{ "serviceIdentity": [] }],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["request", "output"],
+                                "properties": {
+                                    "request": {
+                                        "type": "object",
+                                        "required": ["query", "user_id"],
+                                        "properties": {
+                                            "query": { "type": "string" },
+                                            "chat_id": { "type": ["string", "null"] },
+                                            "user_id": { "type": "string" },
+                                            "locale": { "type": "string" }
+                                        }
+                                    },
+                                    "output": { "type": "string" },
+                                    "classification": {
+                                        "description": "Opaque JSON from the pre-inference hook, relayed verbatim (null when absent)"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": { "202": { "description": "Accepted" } }
+            }
+        }
+    },
+    "components": {
+        "securitySchemes": {
+            "serviceIdentity": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT — see service-identity.md"
+            }
+        }
+    }
+}

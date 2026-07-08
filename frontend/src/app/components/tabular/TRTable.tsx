@@ -1,30 +1,22 @@
 "use client";
 
 import { forwardRef, useImperativeHandle, useRef } from "react";
-import { Loader2, Plus, Table2, Upload } from "lucide-react";
-import type {
-    ColumnConfig,
-    Document,
-    TabularCell,
-} from "../shared/types";
+import { Plus, Table2 } from "lucide-react";
+import type { ColumnConfig, MikeDocument, TabularCell } from "../shared/types";
 import { TabularCell as TabularCellComponent } from "./TabularCell";
 import { TREditColumnMenu } from "./TREditColumnMenu";
-import {
-    TABLE_CHECKBOX_CLASS,
-    SkeletonDot,
-    SkeletonLine,
-} from "../shared/TablePrimitive";
 
 const SKELETON_COLS = 4;
 const SKELETON_ROWS = 5;
 
 const COL_W = "w-[300px] shrink-0";
-const DOC_COL_W = "w-[332px] shrink-0";
+const CHECK_W = "w-8 shrink-0";
 
 // Pixel widths matching the CSS constants above
-const DOC_COL_W_PX = 332;
+const CHECK_W_PX = 32; // w-8 = 2rem = 32px
+const DOC_COL_W_PX = 300;
 const DATA_COL_W_PX = 300;
-const STICKY_LEFT_PX = DOC_COL_W_PX;
+const STICKY_LEFT_PX = CHECK_W_PX + DOC_COL_W_PX; // 332px
 
 export interface TRTableHandle {
     scrollToCell: (colIdx: number, rowIdx: number) => void;
@@ -33,14 +25,14 @@ export interface TRTableHandle {
 interface Props {
     loading: boolean;
     columns: ColumnConfig[];
-    documents: Document[];
+    documents: MikeDocument[];
     cells: TabularCell[];
     savingColumn: boolean;
     savingColumnsConfig: boolean;
     selectedDocIds: string[];
-    uploadingFilenames?: string[];
-    dragOverFiles?: boolean;
     highlightedCell?: { colIdx: number; rowIdx: number } | null;
+    /** column_index of the column whose cell is open in the side panel */
+    activeColumnIndex?: number | null;
     onSelectionChange: (ids: string[]) => void;
     onExpand: (cell: TabularCell) => void;
     onCitationClick: (cell: TabularCell, page: number, quote: string) => void;
@@ -59,8 +51,6 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
         savingColumn,
         savingColumnsConfig,
         selectedDocIds,
-        uploadingFilenames = [],
-        dragOverFiles = false,
         highlightedCell,
         onSelectionChange,
         onExpand,
@@ -72,13 +62,10 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
     },
     ref,
 ) {
-    const stickyCellBg = "bg-[#fafbfc]";
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const sortedColumns = [...columns].sort((a, b) => a.index - b.index);
     const totalContentWidth =
-        DOC_COL_W_PX + sortedColumns.length * DATA_COL_W_PX + 32;
-    const skeletonContentWidth =
-        DOC_COL_W_PX + SKELETON_COLS * DATA_COL_W_PX + 32;
+        CHECK_W_PX + DOC_COL_W_PX + sortedColumns.length * DATA_COL_W_PX + 32;
 
     useImperativeHandle(ref, () => ({
         scrollToCell(colIdx: number, rowIdx: number) {
@@ -137,96 +124,83 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
 
     if (loading) {
         return (
-            <div className="flex flex-1 flex-col overflow-hidden">
+            <div className="flex-1 overflow-hidden">
                 {/* Header */}
-                <div
-                    className={`flex h-8 ${stickyCellBg}`}
-                    style={{ minWidth: skeletonContentWidth }}
-                >
+                <div className="flex border-b border-border">
                     <div
-                        className={`${DOC_COL_W} flex items-center gap-4 border-b border-r border-gray-200 py-2 pl-4 pr-2 text-xs font-medium text-gray-500`}
+                        className={`${CHECK_W} border-r border-border p-2`}
+                    />
+                    <div
+                        className={`${COL_W} border-r border-border p-2 text-xs font-medium text-muted-foreground`}
                     >
-                        <SkeletonDot />
-                        <span>Document</span>
+                        Document
                     </div>
                     {Array.from({ length: SKELETON_COLS }).map((_, i) => (
                         <div
                             key={i}
-                            className={`${COL_W} flex items-center border-b border-r border-gray-200 p-2`}
+                            className={`${COL_W} border-r border-border p-2`}
                         >
-                            <SkeletonLine className="h-4 w-28" />
+                            <div className="h-4 w-28 rounded bg-muted animate-pulse" />
                         </div>
                     ))}
-                    <div className="flex-1 border-b border-gray-200 min-w-8" />
+                    <div className="flex-1" />
                 </div>
                 {/* Rows */}
                 {Array.from({ length: SKELETON_ROWS }).map((_, row) => (
                     <div
                         key={row}
-                        className={`flex h-10 ${row % 2 === 0 ? stickyCellBg : "bg-gray-50"}`}
-                        style={{ minWidth: skeletonContentWidth }}
+                        className={`flex border-b border-border ${row % 2 === 0 ? "bg-background" : "bg-muted/50"}`}
                     >
-                        <div className={`${DOC_COL_W} flex items-center gap-4 border-b border-r border-gray-200 py-2 pl-4 pr-2`}>
-                            <SkeletonDot />
-                            <SkeletonLine className="h-4 w-32" />
+                        <div className={`${CHECK_W} p-2`} />
+                        <div className={`${COL_W} p-2`}>
+                            <div className="h-4 w-32 rounded bg-muted animate-pulse" />
                         </div>
                         {Array.from({ length: SKELETON_COLS }).map((_, col) => (
-                            <div
-                                key={col}
-                                className={`${COL_W} flex items-center border-b border-r border-gray-200 p-2`}
-                            >
-                                <SkeletonLine className="h-4" />
+                            <div key={col} className={`${COL_W} p-2`}>
+                                <div className="h-4 rounded bg-muted animate-pulse" />
                             </div>
                         ))}
-                        <div className="flex-1 border-b border-gray-200 min-w-8" />
+                        <div className="flex-1" />
                     </div>
                 ))}
             </div>
         );
     }
 
-    if (
-        columns.length === 0 &&
-        documents.length === 0 &&
-        uploadingFilenames.length === 0
-    ) {
+    if (columns.length === 0 && documents.length === 0) {
         return (
             <div className="flex flex-1 flex-col overflow-hidden">
-                <div className="flex items-center border-b border-gray-200">
+                <div className="flex items-center border-b border-border">
+                    <div className={`${CHECK_W} border-r border-border`} />
                     <div
-                        className={`${DOC_COL_W} border-r border-gray-200 py-2 pl-4 pr-2 text-xs font-medium text-gray-500 select-none`}
+                        className={`${COL_W} border-r border-border p-2 text-xs font-medium text-muted-foreground select-none`}
                     >
                         Document
                     </div>
                     <div className="flex-1" />
                 </div>
-                <div className="relative flex min-h-0 flex-1">
-                    {dragOverFiles && (
-                        <div className="absolute inset-0 z-[90] border-2 border-blue-400 bg-blue-50/40 pointer-events-none" />
-                    )}
-                    <div className="flex flex-1 flex-col items-start justify-center w-full max-w-xs mx-auto">
-                        <Table2 className="h-8 w-8 text-gray-300 mb-4" />
-                        <p className="text-2xl font-medium font-serif text-gray-900">
-                            Tabular Review
-                        </p>
-                        <p className="mt-1 text-xs text-gray-400 text-left">
-                            Add columns and documents to get started.
-                        </p>
-                        <div className="mt-4 flex items-center gap-2">
-                            <button
-                                onClick={onAddColumn}
-                                className="inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-gray-700 shadow-md"
-                            >
-                                + Add Columns
-                            </button>
-                            <button
-                                onClick={onAddDocuments}
-                                className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors shadow-sm"
-                            >
-                                <Upload className="h-3.5 w-3.5" />
-                                Add Documents
-                            </button>
-                        </div>
+                <div className="flex flex-1 flex-col items-start justify-center w-full max-w-xs mx-auto">
+                    <Table2 className="h-8 w-8 text-muted-foreground/70 mb-4" />
+                    <p className="text-2xl font-medium font-serif text-foreground">
+                        Tabular Review
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground/70 text-left">
+                        Add columns and documents to get started.
+                    </p>
+                    <div className="mt-4 flex items-center gap-2">
+                        <button
+                            onClick={onAddColumn}
+                            className="inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                        >
+                            + Add Columns
+                        </button>
+                        <button
+                            onClick={onAddDocuments}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-accent transition-colors"
+                        >
+                            <Plus className="h-3.5 w-3.5" />
+                            Add Documents
+                        </button>
                     </div>
                 </div>
             </div>
@@ -234,17 +208,14 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
     }
 
     return (
-        <div
-            className="flex flex-1 flex-col overflow-auto"
-            ref={scrollContainerRef}
-        >
+        <div className="flex-1 overflow-auto" ref={scrollContainerRef}>
             {/* Header */}
             <div
-                className={`sticky top-0 z-20 flex h-8 ${stickyCellBg}`}
+                className="sticky top-0 z-20 flex bg-background h-8"
                 style={{ minWidth: totalContentWidth }}
             >
                 <div
-                    className={`sticky left-0 z-30 ${DOC_COL_W} ${stickyCellBg} border-b border-r border-gray-200 flex items-center gap-4 py-2 pl-4 pr-2 text-left text-xs font-medium text-gray-500 select-none`}
+                    className={`sticky left-0 z-30 ${CHECK_W} bg-background border-b border-r border-border flex justify-center items-center select-none`}
                 >
                     <input
                         type="checkbox"
@@ -253,14 +224,18 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                             if (el) el.indeterminate = someSelected;
                         }}
                         onChange={toggleAll}
-                        className={TABLE_CHECKBOX_CLASS}
+                        className="h-2.5 w-2.5 rounded border-border cursor-pointer accent-primary"
                     />
-                    <span>Document</span>
+                </div>
+                <div
+                    className={`sticky left-8 z-30 ${COL_W} bg-background border-b border-r border-border p-2 text-left text-xs font-medium text-muted-foreground select-none`}
+                >
+                    Document
                 </div>
                 {columns.map((col) => (
                     <div
                         key={col.index}
-                        className={`${COL_W} border-b border-r border-gray-200 p-2 text-left text-xs font-medium text-gray-500 select-none`}
+                        className={`${COL_W} border-b border-r border-border p-2 text-left text-xs font-medium text-muted-foreground select-none`}
                     >
                         <div className="flex items-center justify-between gap-3">
                             <span className="truncate">{col.name}</span>
@@ -273,11 +248,11 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                         </div>
                     </div>
                 ))}
-                <div className="flex-1 border-b border-gray-200 flex items-center justify-start p-2 min-w-8">
+                <div className="flex-1 border-b border-border flex items-center justify-start p-2 min-w-8">
                     <button
                         onClick={onAddColumn}
                         disabled={savingColumn || savingColumnsConfig}
-                        className="flex items-center justify-center text-gray-400 hover:text-gray-700 transition-colors disabled:text-gray-200"
+                        className="flex items-center justify-center text-muted-foreground/70 hover:text-foreground transition-colors disabled:text-muted-foreground/70"
                     >
                         <Plus className="h-4 w-4" />
                     </button>
@@ -285,106 +260,69 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
             </div>
 
             {/* Rows */}
-            <div className="relative min-h-0 flex-1">
-                {dragOverFiles && (
-                    <div className="absolute inset-0 z-[90] border-2 border-blue-400 bg-blue-50/40 pointer-events-none" />
-                )}
-                {uploadingFilenames.map((filename) => (
+            {documents.map((doc, docIdx) => {
+                const rowBg = selectedDocIds.includes(doc.id)
+                    ? "bg-secondary"
+                    : docIdx % 2 === 0
+                      ? "bg-background"
+                      : "bg-muted";
+                return (
                     <div
-                        key={`uploading-${filename}`}
-                        className="flex h-10"
+                        key={doc.id}
+                        className={`flex ${rowBg}`}
                         style={{ minWidth: totalContentWidth }}
                     >
                         <div
-                            className={`sticky left-0 z-[60] ${DOC_COL_W} ${stickyCellBg} border-b border-r border-gray-200 py-2 pl-4 pr-2 text-xs text-gray-400 flex items-center gap-4`}
+                            className={`sticky left-0 z-[60] ${CHECK_W} border-b border-r border-border p-2 flex items-center justify-center ${rowBg}`}
                         >
                             <input
                                 type="checkbox"
-                                disabled
-                                className="h-2.5 w-2.5 shrink-0 rounded border-gray-200 cursor-default accent-black disabled:opacity-100"
+                                checked={selectedDocIds.includes(doc.id)}
+                                onChange={() => toggleDoc(doc.id)}
+                                className="h-2.5 w-2.5 shrink-0 rounded border-border cursor-pointer accent-primary"
                             />
-                            <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-                            <span className="line-clamp-1" title={filename}>
-                                {filename}
+                        </div>
+                        <div
+                            className={`sticky left-8 z-[60] ${COL_W} border-b border-r border-border p-2 text-xs text-foreground flex items-center ${rowBg}`}
+                        >
+                            <span className="line-clamp-1" title={doc.filename}>
+                                {doc.filename}
                             </span>
                         </div>
-                        {sortedColumns.map((col) => (
-                            <div
-                                key={col.index}
-                                className={`${COL_W} border-b border-r border-gray-200 p-2`}
-                            >
-                                <SkeletonLine className="h-4 w-20" />
-                            </div>
-                        ))}
-                        <div className="flex-1 border-b border-gray-200 min-h-8 min-w-8" />
-                    </div>
-                ))}
-                {documents.map((doc, docIdx) => {
-                    const baseRowBg =
-                        docIdx % 2 === 0 ? stickyCellBg : "bg-gray-50";
-                    const rowBg = selectedDocIds.includes(doc.id)
-                        ? "bg-gray-100"
-                        : baseRowBg;
-                    return (
-                        <div
-                            key={doc.id}
-                            className={`flex ${rowBg}`}
-                            style={{ minWidth: totalContentWidth }}
-                        >
-                            <div
-                                className={`sticky left-0 z-[60] ${DOC_COL_W} border-b border-r border-gray-200 py-2 pl-4 pr-2 text-xs text-gray-800 flex items-center gap-4 ${rowBg}`}
-                            >
-                                <input
-                                    type="checkbox"
-                                    checked={selectedDocIds.includes(doc.id)}
-                                    onChange={() => toggleDoc(doc.id)}
-                                    className={TABLE_CHECKBOX_CLASS}
-                                />
-                                <span
-                                    className="line-clamp-1"
-                                    title={doc.filename}
+                        {columns.map((col) => {
+                            const cell = getCell(doc.id, col.index);
+                            const colPos = sortedColumns.findIndex(
+                                (c) => c.index === col.index,
+                            );
+                            const isHighlighted =
+                                highlightedCell?.colIdx === colPos &&
+                                highlightedCell?.rowIdx === docIdx;
+                            return (
+                                <div
+                                    key={col.index}
+                                    className={`${COL_W} border-b border-r border-border transition-colors ${isHighlighted ? "bg-action/35" : ""}`}
                                 >
-                                    {doc.filename}
-                                </span>
-                            </div>
-                            {columns.map((col) => {
-                                const cell = getCell(doc.id, col.index);
-                                const colPos = sortedColumns.findIndex(
-                                    (c) => c.index === col.index,
-                                );
-                                const isHighlighted =
-                                    highlightedCell?.colIdx === colPos &&
-                                    highlightedCell?.rowIdx === docIdx;
-                                return (
-                                    <div
-                                        key={col.index}
-                                        className={`${COL_W} border-b border-r border-gray-200 transition-colors ${isHighlighted ? "bg-blue-200" : ""}`}
-                                    >
-                                        {cell && (
-                                            <TabularCellComponent
-                                                cell={cell}
-                                                column={col}
-                                                onExpand={() => onExpand(cell)}
-                                                onCitationClick={(
+                                    {cell && (
+                                        <TabularCellComponent
+                                            cell={cell}
+                                            column={col}
+                                            onExpand={() => onExpand(cell)}
+                                            onCitationClick={(page, quote) =>
+                                                onCitationClick(
+                                                    cell,
                                                     page,
                                                     quote,
-                                                ) =>
-                                                    onCitationClick(
-                                                        cell,
-                                                        page,
-                                                        quote,
-                                                    )
-                                                }
-                                            />
-                                        )}
-                                    </div>
-                                );
-                            })}
-                            <div className="flex-1 border-b border-gray-200 min-h-8 min-w-8" />
-                        </div>
-                    );
-                })}
-            </div>
+                                                )
+                                            }
+                                        />
+                                    )}
+                                </div>
+                            );
+                        })}
+                        <div className="flex-1 border-b border-border min-h-8 min-w-8" />
+                    </div>
+                );
+            })}
         </div>
     );
 });

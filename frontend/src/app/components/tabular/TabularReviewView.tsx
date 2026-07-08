@@ -2,49 +2,32 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-    Plus,
-    Loader2,
-    Play,
-    ChevronDown,
-    MessageSquare,
-    Download,
-    Users,
-    Upload,
-    X,
-    Pencil,
-    Trash2,
-    WandSparkles,
-} from "lucide-react";
+import { Plus, Loader2, Play, ChevronDown, MessageSquare, Download, Users } from "lucide-react";
+import { HeaderSearchBtn } from "../shared/HeaderSearchBtn";
 
 import {
     clearTabularCells,
-    deleteTabularReview,
     getTabularReview,
     getProject,
     getTabularReviewPeople,
     regenerateTabularCell,
     streamTabularGeneration,
     updateTabularReview,
-    uploadReviewDocument,
 } from "@/app/lib/mikeApi";
 import type {
     ColumnConfig,
-    Document,
-    Project,
+    MikeDocument,
+    MikeProject,
     TabularCell,
     TabularReview,
-    Workflow,
 } from "../shared/types";
 import { AddColumnModal } from "./AddColumnModal";
-import { TRWorkflowModal } from "./TRWorkflowModal";
 import { AddDocumentsModal } from "../shared/AddDocumentsModal";
 import { AddProjectDocsModal } from "../shared/AddProjectDocsModal";
 import { PeopleModal } from "../shared/PeopleModal";
 import { OwnerOnlyModal } from "../shared/OwnerOnlyModal";
 import { ApiKeyMissingModal } from "../shared/ApiKeyMissingModal";
-import { ConfirmPopup } from "../shared/ConfirmPopup";
-import { HeaderActionsMenu } from "../shared/HeaderActionsMenu";
+import { RenameableTitle } from "../shared/RenameableTitle";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
@@ -54,12 +37,14 @@ import {
 } from "@/app/lib/modelAvailability";
 import { TRSidePanel } from "./TRSidePanel";
 import { TRTable } from "./TRTable";
+import { useTranslations } from "next-intl";
 import type { TRTableHandle } from "./TRTable";
 import { TRChatPanel } from "./TRChatPanel";
+import { TRRunProgressModal } from "./TRRunProgressModal";
 import { exportTabularReviewToExcel } from "./exportToExcel";
 import { useSidebar } from "@/app/contexts/SidebarContext";
-import { PageHeader } from "../shared/PageHeader";
-import { TableToolbar } from "../shared/TableToolbar";
+import { FloatingAiPrompt } from "@/app/components/shared/FloatingAiPrompt";
+import { track } from "@/app/lib/analytics";
 
 interface Props {
     reviewId: string;
@@ -68,38 +53,33 @@ interface Props {
 
 export function TRView({ reviewId, projectId }: Props) {
     const { setSidebarOpen } = useSidebar();
+    const tTR = useTranslations("tabularReview");
     const [review, setReview] = useState<TabularReview | null>(null);
-    const [project, setProject] = useState<Project | null>(null);
+    const [project, setProject] = useState<MikeProject | null>(null);
     const [cells, setCells] = useState<TabularCell[]>([]);
-    const [documents, setDocuments] = useState<Document[]>([]);
+    const [documents, setDocuments] = useState<MikeDocument[]>([]);
     const [columns, setColumns] = useState<ColumnConfig[]>([]);
     const [loading, setLoading] = useState(true);
     const [generating, setGenerating] = useState(false);
+    const [runModalOpen, setRunModalOpen] = useState(false);
     const [savingColumn, setSavingColumn] = useState(false);
     const [savingColumnsConfig, setSavingColumnsConfig] = useState(false);
     const [addColOpen, setAddColOpen] = useState(false);
     const [addDocsOpen, setAddDocsOpen] = useState(false);
     const [peopleModalOpen, setPeopleModalOpen] = useState(false);
-    const [workflowModalOpen, setWorkflowModalOpen] = useState(false);
-    const [applyingWorkflow, setApplyingWorkflow] = useState(false);
-    const [deleteReviewConfirmOpen, setDeleteReviewConfirmOpen] =
-        useState(false);
-    const [deleteReviewStatus, setDeleteReviewStatus] = useState<
-        "idle" | "deleting" | "deleted"
-    >("idle");
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
     const { user } = useAuth();
     const [expandedCell, setExpandedCell] = useState<TabularCell | null>(null);
     const [expandedCellCitation, setExpandedCellCitation] = useState<
         { quote: string; page: number } | undefined
     >(undefined);
+    // Bumped on every citation click so the side panel remounts (via `key`)
+    // and re-opens the document preview even when the SAME citation is clicked
+    // again after its preview was closed. See TRSidePanel `key` below.
+    const [citationNonce, setCitationNonce] = useState(0);
     const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
     const [actionsOpen, setActionsOpen] = useState(false);
     const [search, setSearch] = useState("");
-    const [dragOverReviewFiles, setDragOverReviewFiles] = useState(false);
-    const [uploadingDroppedFilenames, setUploadingDroppedFilenames] = useState<
-        string[]
-    >([]);
     const searchParams = useSearchParams();
     const initialChatParamRef = useRef<string | null>(
         searchParams.get("chat"),
@@ -117,8 +97,14 @@ export function TRView({ reviewId, projectId }: Props) {
     const tableRef = useRef<TRTableHandle>(null);
     const router = useRouter();
     const { profile } = useUserProfile();
-    const apiKeys = profile?.apiKeys;
-    const tabularModel = profile?.tabularModel ?? "gemini-3-flash-preview";
+    const apiKeys = {
+        claudeApiKey: profile?.claudeApiKey ?? null,
+        geminiApiKey: profile?.geminiApiKey ?? null,
+        openaiApiKey: profile?.openaiApiKey ?? null,
+        mistralApiKey: profile?.mistralApiKey ?? null,
+        serverKeys: profile?.serverKeys,
+    };
+    const tabularModel = profile?.tabularModel ?? "claude-sonnet-5";
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
@@ -185,7 +171,7 @@ export function TRView({ reviewId, projectId }: Props) {
         }
     }
 
-    async function handleAddDocuments(newDocs: Document[]) {
+    async function handleAddDocuments(newDocs: MikeDocument[]) {
         const toAdd = newDocs.filter(
             (d) => !documents.some((existing) => existing.id === d.id),
         );
@@ -218,39 +204,7 @@ export function TRView({ reviewId, projectId }: Props) {
         }
     }
 
-    function hasFilePayload(dt: DataTransfer): boolean {
-        return Array.from(dt.types).includes("Files");
-    }
-
-    async function handleDropReviewFiles(files: File[]) {
-        if (files.length === 0) return;
-        setUploadingDroppedFilenames(files.map((file) => file.name));
-        try {
-            const uploaded: Document[] = [];
-            const documentIds = documents.map((document) => document.id);
-            for (const file of files) {
-                const document = await uploadReviewDocument(reviewId, file, {
-                    projectId,
-                    documentIds,
-                    columnsConfig: columns,
-                });
-                uploaded.push(document);
-                documentIds.push(document.id);
-            }
-            await handleAddDocuments(uploaded);
-        } catch (err) {
-            console.error("Tabular review document drop upload failed", err);
-        } finally {
-            setUploadingDroppedFilenames([]);
-        }
-    }
-
     async function handleRegenerateCell(docId: string, colIndex: number) {
-        if (apiKeys && !isModelAvailable(tabularModel, apiKeys)) {
-            setApiKeyModalProvider(getModelProvider(tabularModel));
-            return;
-        }
-
         setCells((prev) =>
             prev.map((c) =>
                 c.document_id === docId && c.column_index === colIndex
@@ -302,67 +256,56 @@ export function TRView({ reviewId, projectId }: Props) {
         // If columns changed since last save, update the review first
         if (columns.length === 0) return;
 
-        if (apiKeys && !isModelAvailable(tabularModel, apiKeys)) {
+        if (!isModelAvailable(tabularModel, apiKeys)) {
             setApiKeyModalProvider(getModelProvider(tabularModel));
             return;
         }
 
         setGenerating(true);
+        setRunModalOpen(true);
+
+        // Optimistically set empty/pending/error cells to generating (skip done cells)
+        setCells((prev) =>
+            documents.flatMap((doc) =>
+                columns.map((col) => {
+                    const existing = prev.find(
+                        (c) =>
+                            c.document_id === doc.id &&
+                            c.column_index === col.index,
+                    );
+                    if (existing?.status === "done" && existing?.content) {
+                        return existing;
+                    }
+                    return existing
+                        ? {
+                              ...existing,
+                              status: "generating" as const,
+                              content: null,
+                          }
+                        : {
+                              id: `${doc.id}-${col.index}`,
+                              review_id: reviewId,
+                              document_id: doc.id,
+                              column_index: col.index,
+                              content: null,
+                              status: "generating" as const,
+                              created_at: new Date().toISOString(),
+                          };
+                }),
+            ),
+        );
 
         try {
+            track("tabular_review_run", { column_count: columns.length });
             const response = await streamTabularGeneration(reviewId);
-            if (!response.ok) {
-                const payload = await response.json().catch(() => null);
-                const provider =
-                    payload &&
-                    ["claude", "gemini", "openai"].includes(payload.provider)
-                        ? (payload.provider as ModelProvider)
-                        : getModelProvider(tabularModel);
-                if (payload?.code === "missing_api_key" && provider) {
-                    setApiKeyModalProvider(provider);
-                }
-                throw new Error(
-                    payload?.detail ?? `Generation failed: ${response.status}`,
-                );
-            }
             if (!response.body) throw new Error("No body");
-
-            // Optimistically set empty/pending/error cells to generating (skip done cells)
-            setCells((prev) =>
-                documents.flatMap((doc) =>
-                    columns.map((col) => {
-                        const existing = prev.find(
-                            (c) =>
-                                c.document_id === doc.id &&
-                                c.column_index === col.index,
-                        );
-                        if (existing?.status === "done" && existing?.content) {
-                            return existing;
-                        }
-                        return existing
-                            ? {
-                                  ...existing,
-                                  status: "generating" as const,
-                                  content: null,
-                              }
-                            : {
-                                  id: `${doc.id}-${col.index}`,
-                                  review_id: reviewId,
-                                  document_id: doc.id,
-                                  column_index: col.index,
-                                  content: null,
-                                  status: "generating" as const,
-                                  created_at: new Date().toISOString(),
-                              };
-                    }),
-                ),
-            );
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = "";
+            let streamDone = false;
 
-            while (true) {
+            while (!streamDone) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 buffer += decoder.decode(value, { stream: true });
@@ -372,7 +315,10 @@ export function TRView({ reviewId, projectId }: Props) {
                 for (const line of lines) {
                     if (!line.startsWith("data:")) continue;
                     const dataStr = line.slice(5).trim();
-                    if (dataStr === "[DONE]") break;
+                    if (dataStr === "[DONE]") {
+                        streamDone = true;
+                        break;
+                    }
                     try {
                         const data = JSON.parse(dataStr);
                         if (data.type === "cell_update") {
@@ -395,6 +341,16 @@ export function TRView({ reviewId, projectId }: Props) {
         } catch (err) {
             console.error("Generation failed", err);
         } finally {
+            // The SSE stream can be cut mid-run (Cloud Run request timeout,
+            // network drop) while the backend keeps writing results to the
+            // DB. Re-sync cells from the API so none stay stuck on
+            // "generating" with stale content.
+            try {
+                const { cells: freshCells } = await getTabularReview(reviewId);
+                setCells(freshCells);
+            } catch {
+                /* offline — keep whatever streamed in */
+            }
             setGenerating(false);
         }
     }
@@ -461,15 +417,41 @@ export function TRView({ reviewId, projectId }: Props) {
     }
 
     async function handleUpdateColumn(nextColumn: ColumnConfig) {
+        // If the column's *definition* changed (prompt/name/format/tags), its
+        // existing cells were produced by the OLD prompt — the server drops
+        // them in PATCH reconciliation, but the PATCH response carries only the
+        // review, so mirror that here: clear the affected cells to "pending" so
+        // the table doesn't show stale answers (or a free-text value rendered
+        // as the wrong format) under the new definition.
+        const prev = columns.find((c) => c.index === nextColumn.index);
+        const identityChanged =
+            !!prev &&
+            (prev.prompt !== nextColumn.prompt ||
+                prev.name !== nextColumn.name ||
+                (prev.format ?? "text") !== (nextColumn.format ?? "text") ||
+                JSON.stringify(prev.tags ?? []) !==
+                    JSON.stringify(nextColumn.tags ?? []));
+
         const nextColumns = columns.map((column) =>
             column.index === nextColumn.index ? nextColumn : column,
         );
         const previousColumns = columns;
+        const previousCells = cells;
         setColumns(nextColumns);
+        if (identityChanged) {
+            setCells((cs) =>
+                cs.map((c) =>
+                    c.column_index === nextColumn.index
+                        ? { ...c, content: null, status: "pending" as const }
+                        : c,
+                ),
+            );
+        }
         try {
             await saveColumnsConfig(nextColumns);
         } catch (err) {
             setColumns(previousColumns);
+            if (identityChanged) setCells(previousCells);
             console.error("Failed to update column", err);
         }
     }
@@ -498,33 +480,23 @@ export function TRView({ reviewId, projectId }: Props) {
     }
 
     async function handleDeleteDocuments() {
-        const idsToDelete = [...selectedDocIds];
-        if (idsToDelete.length === 0) return;
-        const previousDocuments = documents;
-        const previousCells = cells;
         const remaining = documents.filter(
-            (d) => !idsToDelete.includes(d.id),
+            (d) => !selectedDocIds.includes(d.id),
         );
         setDocuments(remaining);
         setCells((prev) =>
-            prev.filter((c) => !idsToDelete.includes(c.document_id)),
+            prev.filter((c) => !selectedDocIds.includes(c.document_id)),
         );
         setSelectedDocIds([]);
         setActionsOpen(false);
-        try {
-            await updateTabularReview(reviewId, {
-                document_ids: remaining.map((d) => d.id),
-                columns_config: columns,
-            });
-        } catch (err) {
-            setDocuments(previousDocuments);
-            setCells(previousCells);
-            setSelectedDocIds(idsToDelete);
-            console.error("Failed to delete tabular review documents", err);
-        }
+        await updateTabularReview(reviewId, {
+            document_ids: remaining.map((d) => d.id),
+            columns_config: columns,
+        });
     }
 
-    async function clearResultsForDocuments(docIds: string[]) {
+    async function handleClearResults() {
+        const docIds = [...selectedDocIds];
         if (docIds.length === 0) return;
         setCells((prev) =>
             prev.map((c) =>
@@ -538,105 +510,10 @@ export function TRView({ reviewId, projectId }: Props) {
         await clearTabularCells(reviewId, docIds);
     }
 
-    async function handleClearResults() {
-        await clearResultsForDocuments([...selectedDocIds]);
-    }
-
-    async function handleClearAllResults() {
-        await clearResultsForDocuments(documents.map((document) => document.id));
-    }
-
     async function handleTitleCommit(newTitle: string) {
         if (!newTitle || newTitle === review?.title) return;
-        if (review?.is_owner === false) {
-            setOwnerOnlyAction("rename this tabular review");
-            return;
-        }
         setReview((prev) => (prev ? { ...prev, title: newTitle } : prev));
         await updateTabularReview(reviewId, { title: newTitle });
-    }
-
-    function requestReviewRename() {
-        if (review?.is_owner === false) {
-            setOwnerOnlyAction("rename this tabular review");
-            return;
-        }
-        const nextTitle = window.prompt(
-            "Rename tabular review",
-            review?.title ?? "Untitled Review",
-        );
-        const trimmed = nextTitle?.trim();
-        if (!trimmed) return;
-        void handleTitleCommit(trimmed);
-    }
-
-    function requestReviewDelete() {
-        if (review?.is_owner === false) {
-            setOwnerOnlyAction("delete this tabular review");
-            return;
-        }
-        setDeleteReviewStatus("idle");
-        setDeleteReviewConfirmOpen(true);
-    }
-
-    async function confirmReviewDelete() {
-        if (deleteReviewStatus === "deleting") return;
-        setDeleteReviewStatus("deleting");
-        try {
-            await deleteTabularReview(reviewId);
-            setDeleteReviewStatus("deleted");
-            setTimeout(() => {
-                router.push(
-                    projectId
-                        ? `/projects/${projectId}/tabular-reviews`
-                        : "/tabular-reviews",
-                );
-            }, 250);
-        } catch (err) {
-            setDeleteReviewStatus("idle");
-            console.error("Failed to delete tabular review", err);
-        }
-    }
-
-    function requestWorkflow() {
-        if (review?.is_owner === false) {
-            setOwnerOnlyAction("apply a workflow");
-            return;
-        }
-        setWorkflowModalOpen(true);
-    }
-
-    async function handleApplyWorkflow(workflow: Workflow) {
-        if (!workflow.columns_config?.length) return;
-        const nextColumns = workflow.columns_config.map((column, index) => ({
-            ...column,
-            index,
-        }));
-        const previousColumns = columns;
-        const previousCells = cells;
-        setApplyingWorkflow(true);
-        setColumns(nextColumns);
-        setCells([]);
-        try {
-            await saveColumnsConfig(nextColumns);
-            if (documents.length > 0) {
-                try {
-                    await clearTabularCells(
-                        reviewId,
-                        documents.map((document) => document.id),
-                    );
-                } catch (err) {
-                    console.error("Failed to clear old tabular cells", err);
-                }
-            }
-            setWorkflowModalOpen(false);
-        } catch (err) {
-            setColumns(previousColumns);
-            setCells(previousCells);
-            console.error("Failed to apply workflow", err);
-        } finally {
-            setApplyingWorkflow(false);
-        }
     }
 
     const q = search.toLowerCase();
@@ -645,244 +522,210 @@ export function TRView({ reviewId, projectId }: Props) {
         : documents;
 
     return (
-        <div className="flex h-full overflow-hidden">
+        <div className="flex h-full overflow-hidden bg-background">
             <div className="flex flex-1 flex-col overflow-hidden">
                 {/* Header */}
-                <PageHeader
-                    shrink
-                    className="gap-4"
-                    breadcrumbs={[
-                        ...(projectId
-                            ? [
-                                  {
-                                      label: "Projects",
-                                      onClick: () => router.push("/projects"),
-                                  },
-                                  loading
-                                      ? {
-                                            loading: true,
-                                            skeletonClassName: "w-32",
-                                            onClick: () =>
-                                                router.push(
-                                                    `/projects/${projectId}/tabular-reviews`,
-                                                ),
-                                            title: "Back to project",
-                                        }
-                                      : {
-                                            label: project?.name ?? "",
-                                            onClick: () =>
-                                                router.push(
-                                                    `/projects/${projectId}/tabular-reviews`,
-                                                ),
-                                            title: "Back to project",
-                                        },
-                              ]
-                            : [
-                                  {
-                                      label: "Tabular Reviews",
-                                      onClick: () => router.push("/tabular-reviews"),
-                                      title: "Back to Tabular Reviews",
-                                  },
-                              ]),
-                        loading
-                            ? {
-                                  loading: true,
-                                  skeletonClassName: "w-40",
-                              }
-                            : {
-                                  label: review?.title || "Untitled Review",
-                              },
-                    ]}
-                    actionGroups={[
-                        [
-                            {
-                                type: "search",
-                                value: search,
-                                onChange: setSearch,
-                                placeholder: "Search documents…",
-                            },
-                            !projectId
-                                ? {
-                                      onClick: () => setPeopleModalOpen(true),
-                                      disabled: loading,
-                                      iconOnly: true,
-                                      title: "People with access",
-                                      icon: <Users className="h-4 w-4" />,
-                                  }
-                                : null,
-                            {
-                                type: "custom",
-                                render: (
-                                    <HeaderActionsMenu
-                                        items={[
-                                            {
-                                                label: "Rename",
-                                                icon: Pencil,
-                                                onSelect: requestReviewRename,
-                                            },
-                                            {
-                                                label: "Apply workflow",
-                                                icon: WandSparkles,
-                                                onSelect: requestWorkflow,
-                                            },
-                                            {
-                                                label: "Export",
-                                                icon: Download,
-                                                onSelect: () =>
-                                                    exportTabularReviewToExcel({
-                                                        reviewTitle:
-                                                            review?.title ||
-                                                            "Tabular Review",
-                                                        columns,
-                                                        documents,
-                                                        cells,
-                                                    }),
-                                                disabled:
-                                                    columns.length === 0 ||
-                                                    documents.length === 0,
-                                            },
-                                            {
-                                                label: "Clear results",
-                                                icon: X,
-                                                onSelect: handleClearAllResults,
-                                                disabled:
-                                                    documents.length === 0,
-                                            },
-                                            {
-                                                label: "Delete",
-                                                icon: Trash2,
-                                                onSelect: requestReviewDelete,
-                                                variant: "danger",
-                                            },
-                                        ]}
-                                    />
-                                ),
-                            },
-                        ],
-                        {
-                            actions: [
-                                {
-                                    onClick: () => {
-                                        if (!chatOpen) setSidebarOpen(false);
-                                        if (chatOpen) setSelectedChatId(null);
-                                        setChatOpen((v) => !v);
-                                    },
-                                    disabled:
-                                        loading ||
-                                        columns.length === 0 ||
-                                        documents.length === 0,
-                                    title: chatOpen
-                                        ? "Close assistant"
-                                        : "Open assistant",
-                                    icon: chatOpen ? (
-                                        <X className="h-4 w-4" />
+                <div className="bg-background px-8 py-4 flex items-start justify-between shrink-0 gap-4">
+                    <div className="flex items-center gap-1.5 text-2xl font-medium font-serif">
+                        {projectId && (
+                            <>
+                                <button
+                                    onClick={() => router.push("/projects")}
+                                    className="text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                    {tTR("projects")}
+                                </button>
+                                <span className="text-muted-foreground/70">›</span>
+                                <button
+                                    onClick={() =>
+                                        router.push(`/projects/${projectId}`)
+                                    }
+                                    className="text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                    {loading ? (
+                                        <div className="h-6 w-32 rounded bg-muted animate-pulse" />
                                     ) : (
-                                        <MessageSquare className="h-4 w-4" />
-                                    ),
-                                    label: (
-                                        <span className="hidden sm:inline">
-                                            Assistant
-                                        </span>
-                                    ),
-                                },
-                                {
-                                    onClick: handleGenerate,
-                                    disabled:
-                                        generating ||
-                                        columns.length === 0 ||
-                                        documents.length === 0 ||
-                                        savingColumnsConfig,
-                                    icon: generating ? (
-                                        <Loader2 className="h-4 w-4 animate-spin" />
-                                    ) : (
-                                        <Play className="h-4 w-4" />
-                                    ),
-                                    label: (
-                                        <span className="hidden sm:inline">
-                                            {generating ? "Running…" : "Run"}
-                                        </span>
-                                    ),
-                                },
-                            ],
-                        },
-                    ]}
-                />
+                                        <>
+                                            {project?.name ?? ""}
+                                            {project?.cm_number && (
+                                                <span className="ml-1 text-muted-foreground/70">
+                                                    (#{project.cm_number})
+                                                </span>
+                                            )}
+                                        </>
+                                    )}
+                                </button>
+                                <span className="text-muted-foreground/70">›</span>
+                                <button
+                                    onClick={() =>
+                                        router.push(
+                                            `/projects/${projectId}?tab=reviews`,
+                                        )
+                                    }
+                                    className="text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                    {tTR("tabularReviews")}
+                                </button>
+                            </>
+                        )}
+                        {!projectId && (
+                            <button
+                                onClick={() => router.push("/tabular-reviews")}
+                                className="text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                                {tTR("tabularReviews")}
+                            </button>
+                        )}
+                        <span className="text-muted-foreground/70">›</span>
+                        {loading ? (
+                            <div className="h-6 w-40 rounded bg-muted animate-pulse" />
+                        ) : (
+                            <RenameableTitle
+                                value={review?.title || tTR("untitledReview")}
+                                onCommit={handleTitleCommit}
+                            />
+                        )}
+                    </div>
+                    {!loading && (
+                        <div className="flex items-center gap-2">
+                            <HeaderSearchBtn value={search} onChange={setSearch} placeholder={tTR("searchDocuments")} />
+                            {!projectId && (
+                                <button
+                                    onClick={() => setPeopleModalOpen(true)}
+                                    disabled={loading}
+                                    className={`flex h-8 w-8 items-center justify-center text-sm transition-colors ${
+                                        loading
+                                            ? "text-muted-foreground/70 cursor-default"
+                                            : "text-muted-foreground hover:text-foreground cursor-pointer"
+                                    }`}
+                                    title={tTR("peopleWithAccess")}
+                                    aria-label={tTR("peopleWithAccess")}
+                                >
+                                    <Users className="h-4 w-4" />
+                                </button>
+                            )}
+                            <button
+                                onClick={() =>
+                                    exportTabularReviewToExcel({
+                                        reviewTitle: review?.title || tTR("tabularReview"),
+                                        columns,
+                                        documents,
+                                        cells,
+                                    })
+                                }
+                                disabled={columns.length === 0 || documents.length === 0}
+                                title={tTR("exportToExcel")}
+                                className={`flex h-8 items-center justify-center gap-1.5 px-3 text-sm transition-colors ${
+                                    columns.length === 0 || documents.length === 0
+                                        ? "text-muted-foreground/70 cursor-default"
+                                        : "text-foreground hover:text-foreground cursor-pointer"
+                                }`}
+                            >
+                                <Download className="h-4 w-4" />
+                                {tTR("export")}
+                            </button>
+                            <button
+                                onClick={handleGenerate}
+                                disabled={
+                                    generating ||
+                                    columns.length === 0 ||
+                                    documents.length === 0 ||
+                                    savingColumnsConfig
+                                }
+                                className={`flex h-8 items-center justify-center gap-1.5 px-3 text-sm transition-colors ${
+                                    generating ||
+                                    columns.length === 0 ||
+                                    documents.length === 0 ||
+                                    savingColumnsConfig
+                                        ? "text-muted-foreground/70 cursor-default"
+                                        : "text-foreground hover:text-foreground cursor-pointer"
+                                }`}
+                            >
+                                {generating ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                    <Play className="h-4 w-4" />
+                                )}
+                                {generating ? tTR("running") : tTR("run")}
+                            </button>
+                        </div>
+                    )}
+                </div>
 
                 {/* Toolbar */}
-                <TableToolbar
-                    items={[]}
-                    active="table"
-                    onChange={() => undefined}
-                    actions={
-                        <div className="ml-auto flex items-center gap-5">
-                            {loading ? (
-                                <>
-                                    <div className="h-3 w-24 rounded bg-gray-100 animate-pulse" />
-                                    <div className="h-3 w-20 rounded bg-gray-100 animate-pulse" />
-                                </>
-                            ) : null}
-                            {!loading && selectedDocIds.length > 0 && (
-                                <div ref={actionsRef} className="relative">
-                                    <button
-                                        onClick={() =>
-                                            setActionsOpen((v) => !v)
-                                        }
-                                        className="flex items-center gap-1 text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors"
-                                    >
-                                        Actions
-                                        <ChevronDown className="h-3.5 w-3.5" />
-                                    </button>
-                                    {actionsOpen && (
-                                        <div className="absolute top-full right-0 mt-1 w-36 rounded-lg border border-gray-100 bg-white shadow-lg z-50 overflow-hidden">
-                                            <button
-                                                onClick={handleClearResults}
-                                                className="w-full px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50 transition-colors"
-                                            >
-                                                Clear results
-                                            </button>
-                                            <button
-                                                onClick={handleDeleteDocuments}
-                                                className="w-full px-3 py-1.5 text-left text-xs text-red-600 hover:bg-red-50 transition-colors"
-                                            >
-                                                Delete
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                            {!loading && (
-                                <>
-                                    <button
-                                        onClick={() => setAddDocsOpen(true)}
-                                        disabled={savingColumnsConfig}
-                                        className={`flex items-center gap-1 text-xs font-medium transition-colors ${
-                                            savingColumnsConfig
-                                                ? "text-gray-300 cursor-default"
-                                                : "text-gray-700 hover:text-gray-900"
-                                        }`}
-                                    >
-                                        <Upload className="h-3.5 w-3.5" />
-                                        Add Documents
-                                    </button>
-                                    <button
-                                        onClick={() => setAddColOpen(true)}
-                                        disabled={
-                                            savingColumn || savingColumnsConfig
-                                        }
-                                        className={`flex items-center gap-1 text-xs font-medium transition-colors ${
-                                            savingColumn || savingColumnsConfig
-                                                ? "text-gray-300 cursor-default"
-                                                : "text-gray-700 hover:text-gray-900"
-                                        }`}
-                                    >
-                                        <Plus className="h-3.5 w-3.5" />
-                                        Add Columns
-                                    </button>
-                                </>
-                            )}
-                        </div>
-                    }
-                />
+                <div className="flex items-center h-10 px-8 border-b border-border gap-4">
+                    <button
+                        onClick={() => {
+                            if (!chatOpen) setSidebarOpen(false);
+                            if (chatOpen) setSelectedChatId(null);
+                            setChatOpen((v) => !v);
+                        }}
+                        disabled={loading || columns.length === 0 || documents.length === 0}
+                        className={`flex items-center gap-1 text-xs font-medium transition-colors ${
+                            loading || columns.length === 0 || documents.length === 0
+                                ? "text-muted-foreground/70 cursor-default"
+                                : "text-foreground hover:text-foreground"
+                        }`}
+                    >
+                        <MessageSquare className="h-3.5 w-3.5" />
+                        {tTR("assistantInReview")}
+                    </button>
+                    <div className="ml-auto flex items-center gap-4">
+                        {selectedDocIds.length > 0 && (
+                            <div ref={actionsRef} className="relative">
+                                <button
+                                    onClick={() => setActionsOpen((v) => !v)}
+                                    className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                    {tTR("actions")}
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                </button>
+                                {actionsOpen && (
+                                    <div className="absolute top-full right-0 mt-1 w-36 rounded-lg border border-border bg-surface-elevated z-50 overflow-hidden">
+                                        <button
+                                            onClick={handleClearResults}
+                                            className="w-full px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent transition-colors"
+                                        >
+                                            {tTR("clearResults")}
+                                        </button>
+                                        <button
+                                            onClick={handleDeleteDocuments}
+                                            className="w-full px-3 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                                        >
+                                            {tTR("delete")}
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        <button
+                            onClick={() => setAddDocsOpen(true)}
+                            disabled={loading || savingColumnsConfig}
+                            className={`flex items-center gap-1 text-xs font-medium transition-colors ${
+                                loading || savingColumnsConfig
+                                    ? "text-muted-foreground/70 cursor-default"
+                                    : "text-foreground hover:text-foreground"
+                            }`}
+                        >
+                            <Plus className="h-3.5 w-3.5" />
+                            {tTR("addDocuments")}
+                        </button>
+                        <button
+                            onClick={() => setAddColOpen(true)}
+                            disabled={
+                                loading || savingColumn || savingColumnsConfig
+                            }
+                            className={`flex items-center gap-1 text-xs font-medium transition-colors ${
+                                loading || savingColumn || savingColumnsConfig
+                                    ? "text-muted-foreground/70 cursor-default"
+                                    : "text-foreground hover:text-foreground"
+                            }`}
+                        >
+                            <Plus className="h-3.5 w-3.5" />
+                            {tTR("addColumns")}
+                        </button>
+                    </div>
+                </div>
 
                 {/* Table area */}
                 <div className="flex flex-1 overflow-hidden">
@@ -902,60 +745,32 @@ export function TRView({ reviewId, projectId }: Props) {
                             onChatIdChange={setSelectedChatId}
                         />
                     )}
-                    <div
-                        className="relative flex flex-1 overflow-hidden"
-                        onDragOver={(e) => {
-                            if (!hasFilePayload(e.dataTransfer)) return;
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = "copy";
-                            setDragOverReviewFiles(true);
+                    <TRTable
+                        ref={tableRef}
+                        loading={loading}
+                        columns={columns}
+                        documents={filteredDocuments}
+                        cells={cells}
+                        highlightedCell={highlightedCell}
+                        savingColumn={savingColumn}
+                        savingColumnsConfig={savingColumnsConfig}
+                        selectedDocIds={selectedDocIds}
+                        onSelectionChange={setSelectedDocIds}
+                        onExpand={(cell) => {
+                            setExpandedCell(cell);
+                            setExpandedCellCitation(undefined);
                         }}
-                        onDragLeave={(e) => {
-                            if (
-                                !e.currentTarget.contains(
-                                    e.relatedTarget as Node,
-                                )
-                            ) {
-                                setDragOverReviewFiles(false);
-                            }
+                        onCitationClick={(cell, page, quote) => {
+                            setExpandedCell(cell);
+                            setExpandedCellCitation({ quote, page });
+                            setCitationNonce((n) => n + 1);
                         }}
-                        onDrop={(e) => {
-                            if (!hasFilePayload(e.dataTransfer)) return;
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setDragOverReviewFiles(false);
-                            void handleDropReviewFiles(
-                                Array.from(e.dataTransfer.files),
-                            );
-                        }}
-                    >
-                        <TRTable
-                            ref={tableRef}
-                            loading={loading}
-                            columns={columns}
-                            documents={filteredDocuments}
-                            cells={cells}
-                            highlightedCell={highlightedCell}
-                            savingColumn={savingColumn}
-                            savingColumnsConfig={savingColumnsConfig}
-                            selectedDocIds={selectedDocIds}
-                            uploadingFilenames={uploadingDroppedFilenames}
-                            dragOverFiles={dragOverReviewFiles}
-                            onSelectionChange={setSelectedDocIds}
-                            onExpand={(cell) => {
-                                setExpandedCell(cell);
-                                setExpandedCellCitation(undefined);
-                            }}
-                            onCitationClick={(cell, page, quote) => {
-                                setExpandedCell(cell);
-                                setExpandedCellCitation({ quote, page });
-                            }}
-                            onUpdateColumn={handleUpdateColumn}
-                            onDeleteColumn={handleDeleteColumn}
-                            onAddColumn={() => setAddColOpen(true)}
-                            onAddDocuments={() => setAddDocsOpen(true)}
-                        />
-                    </div>
+                        activeColumnIndex={expandedCell?.column_index ?? null}
+                        onUpdateColumn={handleUpdateColumn}
+                        onDeleteColumn={handleDeleteColumn}
+                        onAddColumn={() => setAddColOpen(true)}
+                        onAddDocuments={() => setAddDocsOpen(true)}
+                    />
                 </div>
             </div>
 
@@ -971,6 +786,7 @@ export function TRView({ reviewId, projectId }: Props) {
                     if (!expandedDoc || !expandedCol) return null;
                     return (
                         <TRSidePanel
+                            key={`${expandedCell.id}-${citationNonce}`}
                             cell={expandedCell}
                             document={expandedDoc}
                             column={expandedCol}
@@ -1015,18 +831,18 @@ export function TRView({ reviewId, projectId }: Props) {
                 <AddProjectDocsModal
                     open={addDocsOpen}
                     onClose={() => setAddDocsOpen(false)}
-                    onSelect={(docs: Document[]) =>
+                    onSelect={(docs: MikeDocument[]) =>
                         handleAddDocuments(docs)
                     }
                     breadcrumb={[
-                        "Projects",
+                        tTR("projects"),
                         project.name +
                             (project.cm_number
                                 ? ` (#${project.cm_number})`
                                 : ""),
-                        "Tabular Reviews",
-                        ...(review ? [review.title || "Untitled Review"] : []),
-                        "Add Documents",
+                        tTR("tabularReviews"),
+                        ...(review ? [review.title || tTR("untitledReview")] : []),
+                        tTR("addDocuments"),
                     ]}
                     projectId={project.id}
                     excludeDocIds={new Set(documents.map((d) => d.id))}
@@ -1035,13 +851,13 @@ export function TRView({ reviewId, projectId }: Props) {
                 <AddDocumentsModal
                     open={addDocsOpen}
                     onClose={() => setAddDocsOpen(false)}
-                    onSelect={(docs: Document[]) =>
+                    onSelect={(docs: MikeDocument[]) =>
                         handleAddDocuments(docs)
                     }
                     breadcrumb={[
-                        "Tabular Reviews",
-                        ...(review ? [review.title || "Untitled Review"] : []),
-                        "Add Documents",
+                        tTR("tabularReviews"),
+                        ...(review ? [review.title || tTR("untitledReview")] : []),
+                        tTR("addDocuments"),
                     ]}
                 />
             )}
@@ -1053,9 +869,9 @@ export function TRView({ reviewId, projectId }: Props) {
                 fetchPeople={getTabularReviewPeople}
                 currentUserEmail={user?.email ?? null}
                 breadcrumb={[
-                    "Tabular Reviews",
-                    review?.title || "Untitled Review",
-                    "People",
+                    tTR("tabularReviews"),
+                    review?.title || tTR("untitledReview"),
+                    tTR("people"),
                 ]}
                 // Only the review owner may modify the member list. PeopleModal
                 // hides the add/remove controls when this prop is undefined.
@@ -1079,51 +895,6 @@ export function TRView({ reviewId, projectId }: Props) {
                 }
             />
 
-            <TRWorkflowModal
-                open={workflowModalOpen}
-                onClose={() => {
-                    if (applyingWorkflow) return;
-                    setWorkflowModalOpen(false);
-                }}
-                onApply={handleApplyWorkflow}
-                breadcrumbs={[
-                    ...(project
-                        ? [
-                              "Projects",
-                              project.name +
-                                  (project.cm_number
-                                      ? ` (#${project.cm_number})`
-                                      : ""),
-                          ]
-                        : []),
-                    "Tabular Reviews",
-                    review?.title || "Untitled Review",
-                    "Add workflow",
-                ]}
-                applying={applyingWorkflow}
-            />
-
-            <ConfirmPopup
-                open={deleteReviewConfirmOpen}
-                title="Delete tabular review?"
-                message="This will permanently delete the tabular review and its generated cells."
-                confirmLabel="Delete"
-                confirmStatus={
-                    deleteReviewStatus === "deleting"
-                        ? "loading"
-                        : deleteReviewStatus === "deleted"
-                          ? "complete"
-                          : "idle"
-                }
-                cancelLabel="Cancel"
-                onCancel={() => {
-                    if (deleteReviewStatus === "deleting") return;
-                    setDeleteReviewConfirmOpen(false);
-                    setDeleteReviewStatus("idle");
-                }}
-                onConfirm={() => void confirmReviewDelete()}
-            />
-
             <OwnerOnlyModal
                 open={!!ownerOnlyAction}
                 action={ownerOnlyAction ?? undefined}
@@ -1135,6 +906,29 @@ export function TRView({ reviewId, projectId }: Props) {
                 provider={apiKeyModalProvider}
                 onClose={() => setApiKeyModalProvider(null)}
             />
+
+            <TRRunProgressModal
+                open={runModalOpen}
+                generating={generating}
+                documents={documents}
+                columns={columns}
+                cells={cells}
+                onClose={() => setRunModalOpen(false)}
+            />
+
+            {review && (
+                <FloatingAiPrompt
+                    variant="tabular"
+                    reviewId={reviewId}
+                    columns={columns}
+                    onApplied={(next) => {
+                        setColumns(next);
+                        setReview((prev) =>
+                            prev ? { ...prev, columns_config: next } : prev,
+                        );
+                    }}
+                />
+            )}
         </div>
     );
 }

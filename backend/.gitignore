@@ -3,6 +3,4 @@ dist
 .env*
 !.env.example
 *.log
-*.raw-llm-stream.json
-logs/
 .DS_Store

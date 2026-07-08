@@ -1,25 +1,32 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
+import { enforceRateLimit } from "../lib/rateLimit";
 import { createServerSupabase } from "../lib/supabase";
 import {
     buildProjectDocContext,
     buildMessages,
     buildWorkflowStore,
     enrichWithPriorEvents,
-    AssistantStreamError,
-    buildCancelledAssistantMessage,
     extractAnnotations,
-    isAbortError,
     runLLMStream,
-    stripTransientAssistantEvents,
     PROJECT_EXTRA_TOOLS,
     type ChatMessage,
 } from "../lib/chatTools";
-import {
-    getUserModelSettings,
-} from "../lib/userSettings";
+import { getUserApiKeys } from "../lib/userSettings";
+import { recordLlmUsage } from "../lib/llmUsage";
 import { checkProjectAccess } from "../lib/access";
-import { safeErrorLog, safeErrorMessage } from "../lib/safeError";
+import {
+    closeMcpServers,
+    loadEnabledMcpServersForUser,
+} from "../lib/mcp/servers";
+import { loadBuiltinMcpServers } from "../lib/mcp/builtin";
+import { localeContextForLlm, parseUiLocale, referenceTimeContext } from "../lib/uiLocale";
+import { loadContextsForTurn } from "../lib/seams/contextsRuntime";
+import {
+    detectPromptInjection,
+    logInjectionFinding,
+    writeSseRefusal,
+} from "../lib/promptSecurity";
 
 const PROJECT_SYSTEM_PROMPT_EXTRA = `PROJECT CONTEXT:
 You are operating within a project folder that contains a collection of legal documents the user has organised for a single matter. The user's questions will usually refer to one or more documents in this project — your job is to find the relevant files to work on. Use list_documents to see what is available and fetch_documents / read_document to pull in any documents you need before answering.
@@ -32,18 +39,43 @@ When the user wants to use an existing project document as a starting point for 
 export const projectChatRouter = Router({ mergeParams: true });
 
 // POST /projects/:projectId/chat — streaming
-projectChatRouter.post("/", requireAuth, async (req, res) => {
+projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { projectId } = req.params;
-    const { messages, chat_id, model, displayed_doc, attached_documents } =
-        req.body as {
-            messages: ChatMessage[];
-            chat_id?: string;
-            model?: string;
-            displayed_doc?: { filename: string; document_id: string };
-            attached_documents?: { filename: string; document_id: string }[];
-        };
+    const {
+        messages,
+        chat_id,
+        model,
+        effort,
+        displayed_doc,
+        attached_documents,
+        client,
+        editMode,
+        web_search,
+    } = req.body as {
+        messages: ChatMessage[];
+        chat_id?: string;
+        model?: string;
+        // Composer web-search toggle (globe icon). See chat.ts — defaults
+        // to on when omitted; `false` drops the search tools this turn.
+        web_search?: boolean;
+        // See chat.ts for `effort` — validated to "low" | "medium" |
+        // "high" before forwarding so a malformed client can't crash
+        // the provider.
+        effort?: string;
+        displayed_doc?: { filename: string; document_id: string };
+        attached_documents?: { filename: string; document_id: string }[];
+        // See chat.ts for `client` / `editMode` semantics — same fields,
+        // forwarded so per-project chats from the Word add-in get the
+        // same Office.js-friendly tool-use guidance.
+        client?: "web" | "word";
+        editMode?: "track" | "comments";
+    };
+    const reasoningEffort: "low" | "medium" | "high" | undefined =
+        effort === "low" || effort === "medium" || effort === "high"
+            ? effort
+            : undefined;
 
     const db = createServerSupabase();
 
@@ -90,10 +122,48 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         await db.from("chat_messages").insert({
             chat_id: chatId,
             role: "user",
-            content: lastUser.content,
+            // See chat.ts — jsonb column needs JSON literals; wrap the
+            // user's plain string so pg can parse it as a JSON string.
+            content: JSON.stringify(lastUser.content ?? ""),
             files: lastUser.files ?? null,
             workflow: lastUser.workflow ?? null,
         });
+    }
+
+    // SECURITY: same pre-LLM injection check as /chat — see chat.ts for
+    // the rationale.
+    const uiLocale = parseUiLocale(req);
+    const lastUserContent =
+        typeof lastUser?.content === "string" ? lastUser.content : "";
+    const injectionFinding = detectPromptInjection(lastUserContent);
+    logInjectionFinding("/projects/chat", userId, injectionFinding);
+    if (injectionFinding.severity === "critical") {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no");
+        res.setHeader("Alt-Svc", "clear");
+        res.flushHeaders();
+
+        const write = (line: string) => res.write(line);
+        write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
+        const { events: refusalEvents } = writeSseRefusal(write, uiLocale);
+
+        try {
+            await db.from("chat_messages").insert({
+                chat_id: chatId,
+                role: "assistant",
+                content: refusalEvents,
+                annotations: null,
+            });
+        } catch (err) {
+            console.error(
+                "[project-chat/stream] failed to persist safety refusal",
+                err,
+            );
+        }
+        res.end();
+        return;
     }
 
     const { docIndex, docStore, folderPaths } = await buildProjectDocContext(
@@ -143,16 +213,17 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         systemPromptExtra += `\n\nUSER-ATTACHED DOCUMENTS FOR THIS TURN:\nThe user has attached the following document(s) directly to their latest message. Treat these as the primary focus of the request unless their message clearly says otherwise.\n${lines.join("\n")}`;
     }
 
-    const {
-        api_keys: apiKeys,
-        legal_research_us: legalResearchUs,
-    } = await getUserModelSettings(userId, db);
     const apiMessages = buildMessages(
         messagesForLLM,
         docAvailability,
-        systemPromptExtra,
-        undefined,
-        legalResearchUs,
+        // Timestamp is omitted from the cached static prefix and re-injected
+        // below via the dynamic suffix — a ticking clock in the static block
+        // busts the Anthropic prompt cache. Hour-truncated (see
+        // referenceTimeContext) so the suffix — and with it the rolling
+        // conversation-history cache — stays byte-stable across turns too.
+        `${systemPromptExtra}\n\n${localeContextForLlm(uiLocale, { omitReferenceTime: true })}`,
+        docIndex,
+        referenceTimeContext(uiLocale),
     );
 
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
@@ -161,19 +232,105 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
+    // Force HTTP/2 over TCP for this SSE stream — see chat.ts for the full
+    // rationale (Chrome QUIC drops mid-stream when middleboxes cut UDP/443).
+    res.setHeader("Alt-Svc", "clear");
     res.flushHeaders();
 
+    // Disable Node's default 2-min request socket timeout — extended-thinking
+    // chats with multiple MCP rounds routinely exceed it. The Cloud Run
+    // service-level --timeout=3600 still bounds the overall lifetime.
+    if (typeof req.setTimeout === "function") req.setTimeout(0);
+    if (typeof res.setTimeout === "function") res.setTimeout(0);
+
     const write = (line: string) => res.write(line);
-    const streamAbort = new AbortController();
-    let streamFinished = false;
-    res.on("close", () => {
-        if (!streamFinished) streamAbort.abort();
+
+    // SSE keep-alive heartbeat — see /chat/stream for the rationale.
+    const heartbeat = setInterval(() => {
+        try {
+            res.write(`: keepalive ${Date.now()}\n\n`);
+        } catch {
+            /* socket closed; cleared in finally */
+        }
+    }, 15_000);
+    req.on("close", () => clearInterval(heartbeat));
+
+    const apiKeys = await getUserApiKeys(userId, db);
+    // Per-user connectors come first so they win any slug collision in
+    // findMcpServerForTool; built-in (system-side) MCPs follow.
+    const [userMcpServers, builtinMcpServers] = await Promise.all([
+        loadEnabledMcpServersForUser(userId, db),
+        loadBuiltinMcpServers(userId, db),
+    ]);
+    const mcpServers = [...userMcpServers, ...builtinMcpServers];
+
+    // Contexts active for this project chat: globally-toggled ∪ contexts
+    // attached to this project, resolved by the configured context
+    // provider. The provider re-checks access per requester, so a private
+    // context attached to a shared project never leaks to other members;
+    // each part fails soft on its own — see loadContextsForTurn. Never
+    // breaks chat, and does nothing at all when no provider is configured.
+    const activeContexts = await loadContextsForTurn({
+        userId,
+        email: userEmail ?? null,
+        query: lastUserContent,
+        projectId,
     });
+
+    const turnStartedAt = Date.now();
+    let usageRecorded = false;
 
     try {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
 
-        const { events, annotations } = await runLLMStream({
+        // ---- PII Shield context resolution (parity with chat.ts) -----
+        const piiContext: import("../lib/chatTools").PiiToolContext | null =
+            await (async () => {
+                try {
+                    const { effectiveMode, piiActive, getChatPiiMode } =
+                        await import("../lib/pii");
+                    const { getUserModelSettings } = await import("../lib/userSettings");
+                    const userSettings = await getUserModelSettings(userId, db);
+                    const chatMode = chatId ? await getChatPiiMode(chatId) : null;
+                    const mode = effectiveMode(chatMode, userSettings);
+                    if (!piiActive(mode) || !chatId) return null;
+                    return {
+                        userId,
+                        chatId,
+                        mode,
+                        language: uiLocale,
+                    };
+                } catch (err) {
+                    console.warn(
+                        "[projectChat/stream] PII context resolution failed (non-fatal):",
+                        err instanceof Error ? err.message : err,
+                    );
+                    return null;
+                }
+            })();
+
+        // Word export (generate_docx) is a Plus+ entitlement. Fail open on
+        // a lookup error so a metering hiccup never breaks doc generation.
+        const canExportDocx = await (async (): Promise<boolean> => {
+            const tl = res.locals.tierLevelId as number | undefined;
+            if (typeof tl !== "number") return true;
+            try {
+                const { getEntitlements, can } = await import(
+                    "../lib/entitlements"
+                );
+                return can(await getEntitlements(tl), "exportWordMarkdown");
+            } catch {
+                return true;
+            }
+        })();
+
+        const {
+            fullText,
+            events,
+            usage,
+            selectedModel,
+            webSearchCostUsd,
+        } = await runLLMStream({
             apiMessages,
             docStore,
             docIndex,
@@ -182,20 +339,48 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
             write,
             extraTools: PROJECT_EXTRA_TOOLS,
             workflowStore,
-            includeResearchTools: legalResearchUs,
             model,
+            reasoningEffort,
             apiKeys,
-            signal: streamAbort.signal,
             projectId,
+            mcpServers,
+            client: client ?? "web",
+            editMode: editMode ?? "track",
+            piiContext,
+            canExportDocx,
+            webSearchEnabled: web_search,
+            activeContexts,
         });
 
-        const persistedEvents = stripTransientAssistantEvents(events);
-        await db.from("chat_messages").insert({
-            chat_id: chatId,
-            role: "assistant",
-            content: persistedEvents.length ? persistedEvents : null,
-            annotations: annotations.length ? annotations : null,
-        });
+        const annotations = extractAnnotations(fullText, docIndex, events);
+        const { data: insertedAssistant } = await db
+            .from("chat_messages")
+            .insert({
+                chat_id: chatId,
+                role: "assistant",
+                content: events.length ? events : null,
+                annotations: annotations.length ? annotations : null,
+            })
+            .select("id")
+            .single();
+
+        if (usage) {
+            usageRecorded = true;
+            await recordLlmUsage({
+                userId,
+                provider: "claude",
+                client: client ?? "web",
+                model: selectedModel,
+                chatId,
+                projectId,
+                projectChatMessageId: insertedAssistant?.id ?? null,
+                usage,
+                durationMs: Date.now() - turnStartedAt,
+                status: "ok",
+                // See chat.ts — search-provider USD folded into cost_usd.
+                extraCostUsd: webSearchCostUsd,
+            });
+        }
 
         if (!chatTitle && lastUser?.content) {
             await db
@@ -204,68 +389,43 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
                 .eq("id", chatId);
         }
     } catch (err) {
-        if (isAbortError(err)) {
-            console.log("[project-chat/stream] client aborted stream", {
-                chatId,
-            });
-            if (err instanceof AssistantStreamError) {
-                const partial = buildCancelledAssistantMessage({
-                    fullText: err.fullText,
-                    events: err.events,
-                    buildAnnotations: (fullText, events) =>
-                        extractAnnotations(fullText, docIndex, events),
+        console.error("[project-chat/stream] error:", err);
+        if (!usageRecorded) {
+            try {
+                await recordLlmUsage({
+                    userId,
+                    provider: "claude",
+                    client: client ?? "web",
+                    model: model ?? "unknown",
+                    chatId,
+                    projectId,
+                    usage: {
+                        inputTokens: 0,
+                        outputTokens: 0,
+                        cacheCreationInputTokens: 0,
+                        cacheReadInputTokens: 0,
+                        iterations: 0,
+                    },
+                    durationMs: Date.now() - turnStartedAt,
+                    status: "error",
+                    errorMessage:
+                        err instanceof Error ? err.message : String(err),
                 });
-                const { error: saveError } = await db.from("chat_messages").insert({
-                    chat_id: chatId,
-                    role: "assistant",
-                    content: partial.events.length ? partial.events : null,
-                    annotations: partial.annotations.length
-                        ? partial.annotations
-                        : null,
-                });
-                if (saveError) {
-                    console.error(
-                        "[project-chat/stream] failed to save aborted stream",
-                        saveError,
-                    );
-                }
+            } catch {
+                /* recordLlmUsage already logs its own failures */
             }
-            return;
-        }
-        console.error("[project-chat/stream] error:", safeErrorLog(err));
-        const message = safeErrorMessage(err, "Stream error");
-        const errorEvents = err instanceof AssistantStreamError
-            ? stripTransientAssistantEvents(err.events)
-            : [{ type: "error" as const, message }];
-        const errorFullText =
-            err instanceof AssistantStreamError ? err.fullText : "";
-        try {
-            const annotations = extractAnnotations(
-                errorFullText,
-                docIndex,
-                errorEvents,
-            );
-            const { error: saveError } = await db.from("chat_messages").insert({
-                chat_id: chatId,
-                role: "assistant",
-                content: errorEvents.length ? errorEvents : null,
-                annotations: annotations.length ? annotations : null,
-            });
-            if (saveError)
-                console.error("[project-chat/stream] failed to save error", saveError);
-        } catch (saveErr) {
-            console.error("[project-chat/stream] failed to save error", saveErr);
         }
         try {
             write(
-                `data: ${JSON.stringify({ type: "error", message })}\n\n`,
+                `data: ${JSON.stringify({ type: "error", message: "Stream error" })}\n\n`,
             );
             write("data: [DONE]\n\n");
         } catch {
             /* ignore */
         }
     } finally {
-        streamFinished = true;
+        clearInterval(heartbeat);
+        await closeMcpServers(mcpServers);
         res.end();
     }
 });

@@ -5,90 +5,150 @@ import React, {
     useContext,
     useEffect,
     useState,
+    useCallback,
     ReactNode,
 } from "react";
-import type { User as SupabaseUser } from "@supabase/supabase-js";
-import { supabase } from "@/lib/supabase";
+import {
+    getStoredTokens,
+    isAccessTokenExpired,
+    refreshAccessToken,
+    decodeJwtPayload,
+    signOut as oauthSignOut,
+    AUTH_TOKEN_EVENT,
+    type OAuthUser,
+} from "@/lib/oauth";
 
-interface User {
-    id: string;
-    email: string;
-    pendingEmail?: string | null;
+const API_BASE =
+    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
+
+// JWT `sub` is the WordPress user_id (numeric string). All app tables
+// (chats.user_id, documents.user_id, tabular_reviews.user_id, …) store
+// the *internal* users.id UUID instead. Owner-check UI compares
+// entity.user_id with user.id, so we must replace the WP id with the
+// internal UUID here. /user/profile returns it as `id`.
+async function fetchInternalUserId(accessToken: string): Promise<string | null> {
+    try {
+        const res = await fetch(`${API_BASE}/user/profile`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            cache: "no-store",
+        });
+        if (!res.ok) return null;
+        const json = (await res.json()) as { id?: string };
+        return typeof json.id === "string" && json.id.length > 0
+            ? json.id
+            : null;
+    } catch {
+        return null;
+    }
 }
 
 interface AuthContextType {
-    user: User | null;
+    user: OAuthUser | null;
     isAuthenticated: boolean;
     authLoading: boolean;
+    tier: "free" | "plus";
     signOut: () => Promise<void>;
-    updateEmail: (email: string) => Promise<User>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-function toUser(user: SupabaseUser): User {
-    return {
-        id: user.id,
-        email: user.email || "",
-        pendingEmail: user.new_email ?? null,
-    };
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
-    const [user, setUser] = useState<User | null>(null);
+    const [user, setUser] = useState<OAuthUser | null>(null);
     const [authLoading, setAuthLoading] = useState(true);
 
-    useEffect(() => {
-        const checkUser = async () => {
-            const {
-                data: { session },
-            } = await supabase.auth.getSession();
-
-            if (session?.user) {
-                setUser(toUser(session.user));
-            }
-            setAuthLoading(false);
-        };
-
-        checkUser();
-
-        const {
-            data: { subscription },
-        } = supabase.auth.onAuthStateChange(async (_event, session) => {
-            if (session?.user) {
-                setUser(toUser(session.user));
-            } else {
+    const applyDecoded = useCallback(
+        async (decoded: OAuthUser | null, accessToken: string | null) => {
+            if (!decoded) {
                 setUser(null);
+                setAuthLoading(false);
+                return;
             }
+            // Show the UI as soon as possible with the JWT-derived user.
+            setUser(decoded);
             setAuthLoading(false);
-        });
+            if (!accessToken) return;
+            // Then upgrade `id` to the internal UUID in the background so
+            // owner-check comparisons (chat/doc/review delete + rename)
+            // start matching. Without this every owned-resource action
+            // hits the "owner-only action" modal because the JWT sub is
+            // a WordPress integer, not the UUID stored in DB.
+            const internalId = await fetchInternalUserId(accessToken);
+            if (internalId) {
+                setUser((prev) =>
+                    prev ? { ...prev, id: internalId } : prev,
+                );
+            }
+        },
+        [],
+    );
 
-        return () => {
-            subscription.unsubscribe();
-        };
+    const loadUser = useCallback(async () => {
+        const tokens = getStoredTokens();
+        if (!tokens) {
+            setUser(null);
+            setAuthLoading(false);
+            return;
+        }
+
+        // If access token expired, try refresh
+        if (isAccessTokenExpired()) {
+            const refreshed = await refreshAccessToken();
+            if (!refreshed) {
+                setUser(null);
+                setAuthLoading(false);
+                return;
+            }
+
+            const decoded = decodeJwtPayload(refreshed.access_token);
+            await applyDecoded(decoded, refreshed.access_token);
+            return;
+        }
+
+        // Token is still valid — decode for user info
+        const decoded = decodeJwtPayload(tokens.access_token);
+        await applyDecoded(decoded, tokens.access_token);
+    }, [applyDecoded]);
+
+    // Keep the Supabase session mirrored into the legacy token store for
+    // the whole app lifetime (auto-refresh fires TOKEN_REFRESHED events
+    // that must land in mike_oauth_tokens). No-op when Supabase auth is
+    // not configured.
+    useEffect(() => {
+        import("@/lib/supabaseClient")
+            .then((m) => {
+                if (m.supabaseAuthEnabled) m.initSupabaseAuthMirror();
+            })
+            .catch(() => {
+                // Module load failure must never break legacy auth.
+            });
     }, []);
 
-    const signOut = async () => {
-        await supabase.auth.signOut({ scope: "local" });
+    useEffect(() => {
+        loadUser();
+
+        // Cross-tab: browser `storage` event fires only in OTHER tabs.
+        const onStorage = (e: StorageEvent) => {
+            if (e.key === "mike_oauth_tokens") {
+                loadUser();
+            }
+        };
+        // Same-tab: storeTokens()/clearTokens() dispatch this so the
+        // post-/auth/callback `router.replace("/assistant")` doesn't
+        // land in a layout that still thinks we're logged out.
+        const onTokenEvent = () => {
+            loadUser();
+        };
+        window.addEventListener("storage", onStorage);
+        window.addEventListener(AUTH_TOKEN_EVENT, onTokenEvent);
+        return () => {
+            window.removeEventListener("storage", onStorage);
+            window.removeEventListener(AUTH_TOKEN_EVENT, onTokenEvent);
+        };
+    }, [loadUser]);
+
+    const handleSignOut = async () => {
+        await oauthSignOut();
         setUser(null);
-    };
-
-    const updateEmail = async (email: string) => {
-        const redirectTo =
-            typeof window === "undefined"
-                ? undefined
-                : `${window.location.origin}/account`;
-        const { data, error } = await supabase.auth.updateUser(
-            { email },
-            redirectTo ? { emailRedirectTo: redirectTo } : undefined,
-        );
-
-        if (error) throw error;
-        if (!data.user) throw new Error("Unable to update email");
-
-        const nextUser = toUser(data.user);
-        setUser(nextUser);
-        return nextUser;
     };
 
     return (
@@ -97,8 +157,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 user,
                 isAuthenticated: !!user,
                 authLoading,
-                signOut,
-                updateEmail,
+                tier: user?.tier ?? "free",
+                signOut: handleSignOut,
             }}
         >
             {children}

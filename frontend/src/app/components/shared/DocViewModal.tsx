@@ -5,16 +5,16 @@ import { createPortal } from "react-dom";
 import { Download, Trash2, X } from "lucide-react";
 import { DocView } from "./DocView";
 import { getDocumentUrl } from "@/app/lib/mikeApi";
-import type { Document } from "./types";
+import type { MikeDocument } from "./types";
 
 interface Props {
-    doc: Document | null;
+    doc: MikeDocument | null;
     /** Optional specific version to display. Only honoured for DOCX. */
     versionId?: string | null;
     /** Optional label suffix for the header (e.g. "V3"). */
     versionLabel?: string | null;
     onClose: () => void;
-    onDelete?: (doc: Document) => void;
+    onDelete?: (doc: MikeDocument) => void;
 }
 
 export function DocViewModal({
@@ -40,19 +40,19 @@ export function DocViewModal({
 
     return createPortal(
         <div
-            className="fixed inset-0 z-100 flex items-center justify-center bg-black/40"
+            className="fixed inset-0 z-100 flex items-center justify-center bg-foreground/40"
             onClick={onClose}
         >
             <div
-                className="relative flex flex-col bg-white rounded-xl shadow-2xl w-[800px] max-w-[90vw] h-[90vh]"
+                className="relative flex flex-col bg-background rounded-xl border border-border w-[800px] max-w-[90vw] h-[90vh]"
                 onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}
                 <div className="flex items-center justify-between px-5 py-3 shrink-0">
-                    <span className="text-base font-medium font-serif text-gray-800 truncate pr-4">
+                    <span className="text-base font-medium font-serif text-foreground truncate pr-4">
                         {doc.filename}
                         {versionLabel && (
-                            <span className="ml-2 text-xs font-normal text-gray-500">
+                            <span className="ml-2 text-xs font-normal text-muted-foreground">
                                 {versionLabel}
                             </span>
                         )}
@@ -60,21 +60,21 @@ export function DocViewModal({
                     <div className="flex items-center gap-1 shrink-0">
                         <button
                             onClick={handleDownload}
-                            className="flex items-center justify-center w-6 h-6 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition-colors"
+                            className="flex items-center justify-center w-6 h-6 rounded hover:bg-accent text-muted-foreground/70 hover:text-foreground transition-colors"
                         >
                             <Download className="h-4 w-4" />
                         </button>
                         {onDelete && (
                             <button
                                 onClick={() => { onDelete(doc); onClose(); }}
-                                className="flex items-center justify-center w-6 h-6 rounded hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
+                                className="flex items-center justify-center w-6 h-6 rounded hover:bg-destructive/10 text-muted-foreground/70 hover:text-destructive transition-colors"
                             >
                                 <Trash2 className="h-4 w-4" />
                             </button>
                         )}
                         <button
                             onClick={onClose}
-                            className="flex items-center justify-center w-6 h-6 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition-colors"
+                            className="flex items-center justify-center w-6 h-6 rounded hover:bg-accent text-muted-foreground/70 hover:text-foreground transition-colors"
                         >
                             <X className="h-4 w-4" />
                         </button>

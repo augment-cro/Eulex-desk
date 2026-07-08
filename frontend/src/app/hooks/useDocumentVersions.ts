@@ -57,7 +57,7 @@ export function useDocumentVersions(
                 } = await supabase.auth.getSession();
                 const token = session?.access_token;
                 const apiBase =
-                    process.env.NEXT_PUBLIC_API_BASE_URL ??
+                    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ||
                     "http://localhost:3001";
                 const resp = await fetch(
                     `${apiBase}/single-documents/${documentId}/versions`,

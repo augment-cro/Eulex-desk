@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useTranslations } from "next-intl";
 import { MoreHorizontal, Pencil, Trash2, Check, X } from "lucide-react";
 import {
     DropdownMenu,
@@ -11,11 +12,11 @@ import {
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
-import type { Chat } from "@/app/components/shared/types";
-import { cn } from "@/lib/utils";
+import { useConfirmDialog } from "@/app/components/modals/confirm-dialog";
+import type { MikeChat } from "@/app/components/shared/types";
 
 interface Props {
-    chat: Chat;
+    chat: MikeChat;
     isActive: boolean;
     onSelect: () => void;
     projectName?: string;
@@ -24,8 +25,22 @@ interface Props {
 export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props) {
     const { renameChat, deleteChat } = useChatHistoryContext();
     const { user } = useAuth();
+    const t = useTranslations("chatItem");
+    const tc = useTranslations("common");
+    const tDelete = useTranslations("confirmDelete");
+    const { confirm: confirmDialog, dialog: confirmDialogEl } =
+        useConfirmDialog();
     const [isRenaming, setIsRenaming] = useState(false);
-    const [editTitle, setEditTitle] = useState(chat.title ?? "");
+    // Legacy chats created via the upstream `implement workflow`
+    // placeholder (and any other chats whose first message was too
+    // generic for the title model) ended up with the literal English
+    // title "New Chat". Treat that exact value as "no title" at the
+    // display layer so HR users see "Neimenovani razgovor" instead.
+    const displayTitle =
+        chat.title && chat.title.trim() !== "" && chat.title !== "New Chat"
+            ? chat.title
+            : null;
+    const [editTitle, setEditTitle] = useState(displayTitle ?? "");
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
     const editInputRef = useRef<HTMLInputElement>(null);
     // Sidebar can show collaborator chats from projects the user owns;
@@ -44,15 +59,14 @@ export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props
 
     const handleRenameCancel = () => {
         setIsRenaming(false);
-        setEditTitle(chat.title ?? "");
+        setEditTitle(displayTitle ?? "");
     };
 
     return (
         <div
-            className={cn(
-                "group relative flex items-center w-full h-9 rounded-md transition-colors",
-                isActive ? "bg-gray-200/60" : "hover:bg-gray-100",
-            )}
+            className={`group relative flex items-center w-full h-9 rounded-md transition-colors ${
+                isActive ? "bg-secondary" : "hover:bg-accent"
+            }`}
         >
             {isRenaming ? (
                 <div className="flex items-center w-full px-2 py-1">
@@ -65,17 +79,17 @@ export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props
                             if (e.key === "Enter") void handleRenameSave();
                             if (e.key === "Escape") handleRenameCancel();
                         }}
-                        className="flex-1 bg-white shadow-inner rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        className="flex-1 bg-surface-elevated rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                     <button
                         onClick={() => void handleRenameSave()}
-                        className="ml-1.5 py-2 hover:bg-gray-200 rounded text-green-600"
+                        className="ml-1.5 py-2 hover:bg-secondary rounded text-success"
                     >
                         <Check className="h-3 w-3" />
                     </button>
                     <button
                         onClick={handleRenameCancel}
-                        className="ml-1 py-2 hover:bg-gray-200 rounded text-red-600"
+                        className="ml-1 py-2 hover:bg-secondary rounded text-destructive"
                     >
                         <X className="h-3 w-3" />
                     </button>
@@ -92,21 +106,21 @@ export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props
                         onMouseLeave={(e) => {
                             e.currentTarget.scrollTo({ left: 0, behavior: "smooth" });
                         }}
-                        className={`flex-1 min-w-0 text-left px-3 py-2 text-xs overflow-x-hidden whitespace-nowrap scrollbar-none ${
-                            isActive ? "text-gray-900" : "text-gray-700"
+                        className={`sidebar-chat-title flex-1 min-w-0 text-left px-3 py-2 overflow-x-hidden whitespace-nowrap scrollbar-none ${
+                            isActive ? "text-foreground" : "text-foreground"
                         }`}
-                        title={projectName ? `${projectName}: ${chat.title ?? "Untitled chat"}` : (chat.title ?? "Untitled chat")}
+                        title={projectName ? `${projectName}: ${displayTitle ?? t("untitledChat")}` : (displayTitle ?? t("untitledChat"))}
                     >
                         {projectName && (
-                            <span className="text-gray-400 font-normal">{projectName}: </span>
+                            <span className="text-muted-foreground/70 font-normal">{projectName}: </span>
                         )}
-                        {chat.title ?? "Untitled chat"}
+                        {displayTitle ?? t("untitledChat")}
                     </button>
 
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <button
-                                className={`mr-1 rounded-md p-1 text-gray-500 transition-all hover:bg-gray-200 hover:text-gray-900 ${
+                                className={`p-1 mr-1 text-muted-foreground transition-opacity hover:text-foreground ${
                                     isActive
                                         ? "opacity-100"
                                         : "opacity-0 group-hover:opacity-100"
@@ -119,28 +133,41 @@ export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props
                             <DropdownMenuItem
                                 onClick={() => {
                                     if (!isChatOwner) {
-                                        setOwnerOnlyAction("rename this chat");
+                                        setOwnerOnlyAction(t("renameThisChat"));
                                         return;
                                     }
-                                    setEditTitle(chat.title ?? "");
+                                    setEditTitle(displayTitle ?? "");
                                     setIsRenaming(true);
                                 }}
                             >
                                 <Pencil className="mr-2 h-4 w-4" />
-                                Rename
+                                {tc("rename")}
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                                onClick={() => {
+                                onClick={async () => {
                                     if (!isChatOwner) {
-                                        setOwnerOnlyAction("delete this chat");
+                                        setOwnerOnlyAction(t("deleteThisChat"));
                                         return;
                                     }
+                                    const trimmed = chat.title?.trim();
+                                    const ok = await confirmDialog({
+                                        title: tDelete("chatTitle"),
+                                        message: trimmed
+                                            ? tDelete("chatBodyNamed", {
+                                                  title: trimmed,
+                                              })
+                                            : tDelete("chatBody"),
+                                        confirmLabel:
+                                            tDelete("deleteAction"),
+                                        destructive: true,
+                                    });
+                                    if (!ok) return;
                                     void deleteChat(chat.id);
                                 }}
-                                className="text-red-600 focus:text-red-600"
+                                className="text-destructive focus:text-destructive"
                             >
                                 <Trash2 className="mr-2 h-4 w-4" />
-                                Delete
+                                {tc("delete")}
                             </DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
@@ -151,6 +178,7 @@ export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props
                 action={ownerOnlyAction ?? undefined}
                 onClose={() => setOwnerOnlyAction(null)}
             />
+            {confirmDialogEl}
         </div>
     );
 }

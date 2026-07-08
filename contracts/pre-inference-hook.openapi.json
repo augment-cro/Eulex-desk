@@ -1,0 +1,89 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Pre-Inference Hook",
+        "version": "1.0.0",
+        "description": "Optional per-turn hook the Eulex Desk core calls before inference when GOVERNANCE_URL is set. The core merges prompt_blocks verbatim into the uncached dynamic system-prompt suffix, treats classification as opaque JSON, and honors the generic gate verdict. Failure posture: fail-open by default (GOVERNANCE_FAIL_MODE=closed refuses the turn)."
+    },
+    "paths": {
+        "/pre-inference": {
+            "post": {
+                "summary": "Classify/augment/gate one turn",
+                "security": [{ "serviceIdentity": [] }],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["query", "meta"],
+                                "properties": {
+                                    "query": { "type": "string" },
+                                    "meta": {
+                                        "type": "object",
+                                        "properties": {
+                                            "chat_id": { "type": ["string", "null"] },
+                                            "user_id": { "type": "string" },
+                                            "locale": { "type": "string" },
+                                            "client": { "type": "string" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Hook result",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/PreInferenceResult" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "securitySchemes": {
+            "serviceIdentity": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT — see service-identity.md"
+            }
+        },
+        "schemas": {
+            "PreInferenceResult": {
+                "type": "object",
+                "properties": {
+                    "prompt_blocks": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Opaque markdown blocks appended to the uncached dynamic suffix"
+                    },
+                    "classification": {
+                        "description": "Opaque JSON — the core never reads it, only relays it to the audit sink"
+                    },
+                    "gate": {
+                        "type": "object",
+                        "required": ["action"],
+                        "properties": {
+                            "action": { "type": "string", "enum": ["proceed", "block", "notify"] },
+                            "message_md": {
+                                "type": "string",
+                                "description": "block: shown instead of an answer (no inference). notify: emitted as a governance_notice SSE event before the answer."
+                            }
+                        }
+                    },
+                    "directives": {
+                        "type": "object",
+                        "description": "Reserved for future generic directives",
+                        "additionalProperties": true
+                    }
+                }
+            }
+        }
+    }
+}

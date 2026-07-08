@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, ChevronDown, Loader2 } from "lucide-react";
+import { useState } from "react";
+import {
+    AlertCircle,
+    Check,
+    ChevronDown,
+    ShieldCheck,
+} from "lucide-react";
+import { useTranslations } from "next-intl";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -11,171 +17,122 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useUserProfile } from "@/contexts/UserProfileContext";
-import type { ApiKeyState } from "@/app/lib/mikeApi";
-import {
-    MODELS,
-    SETTINGS_MODELS,
-    type ModelOption,
-} from "@/app/components/assistant/ModelToggle";
+import { MODELS } from "@/app/components/assistant/ModelToggle";
 import {
     isModelAvailable,
     modelGroupToProvider,
     providerLabel,
 } from "@/app/lib/modelAvailability";
-import {
-    accountGlassInputClassName,
-} from "../accountStyles";
-import { AccountSection } from "../AccountSection";
 
-type ModelPreferenceField = "titleModel" | "tabularModel";
-
-export default function ModelPreferencesPage() {
+// All providers (Claude, OpenAI, Google, Mistral) now run exclusively
+// through server-level API keys configured in Secret Manager. BYOK was
+// removed 2026-05 so the tier-based rate limiter and cost forensics
+// stay authoritative — see backend/src/lib/userSettings.ts:pickKey.
+export default function ModelsAndApiKeysPage() {
     const { profile, updateModelPreference } = useUserProfile();
-    const [savingField, setSavingField] = useState<ModelPreferenceField | null>(
-        null,
-    );
-    const [savedField, setSavedField] = useState<ModelPreferenceField | null>(
-        null,
-    );
-    const [optimisticValues, setOptimisticValues] = useState<
-        Partial<Record<ModelPreferenceField, string>>
-    >({});
-    const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    useEffect(() => {
-        return () => {
-            if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-        };
-    }, []);
-
-    const handleModelChange = async (
-        field: ModelPreferenceField,
-        id: string,
-    ) => {
-        setOptimisticValues((current) => ({ ...current, [field]: id }));
-        setSavedField(null);
-        setSavingField(field);
-        const ok = await updateModelPreference(field, id);
-        setSavingField((current) => (current === field ? null : current));
-        if (ok) {
-            setSavedField(field);
-            if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-            savedTimerRef.current = setTimeout(() => {
-                setSavedField((current) => (current === field ? null : current));
-            }, 1600);
-        } else {
-            setOptimisticValues((current) => {
-                const next = { ...current };
-                delete next[field];
-                return next;
-            });
-        }
-    };
+    const t = useTranslations("models");
 
     return (
-        <div>
-            <div className="flex items-center gap-2 mb-4">
-                <h2 className="text-2xl font-medium font-serif">
-                    Model Preferences
-                </h2>
+        <div className="space-y-4">
+            {/* Model Preferences */}
+            <div className="pb-6">
+                <div className="flex items-center gap-2 mb-4">
+                    <h2 className="text-2xl font-medium font-serif">
+                        {t("title")}
+                    </h2>
+                </div>
+                <div className="space-y-4 max-w-md">
+                    <div>
+                        <label className="text-sm text-muted-foreground block mb-2">
+                            {t("tabularModel")}
+                        </label>
+                        <TabularModelDropdown
+                            value={profile?.tabularModel ?? "claude-sonnet-5"}
+                            apiKeys={{
+                                claudeApiKey: null,
+                                geminiApiKey: null,
+                                openaiApiKey: null,
+                                mistralApiKey: null,
+                                serverKeys: profile?.serverKeys,
+                            }}
+                            onChange={(id) =>
+                                updateModelPreference("tabularModel", id)
+                            }
+                        />
+                        <p className="text-xs text-muted-foreground mt-2">
+                            {t("localLlmNote")}
+                        </p>
+                    </div>
+                </div>
             </div>
-            <AccountSection>
-                <div className="px-4 py-5">
-                    <label className="text-sm font-medium text-gray-700 block mb-2">
-                        Title generation model
-                    </label>
-                    <p className="text-xs text-gray-400 mb-2">
-                        Used for naming chats and other lightweight titles.
-                    </p>
-                    <ModelPreferenceDropdown
-                        value={
-                            optimisticValues.titleModel ??
-                            profile?.titleModel ??
-                            "gemini-3.1-flash-lite-preview"
-                        }
-                        options={SETTINGS_MODELS}
-                        apiKeys={profile?.apiKeys}
-                        isSaving={savingField === "titleModel"}
-                        isSaved={savedField === "titleModel"}
-                        onChange={(id) => handleModelChange("titleModel", id)}
-                    />
+
+            {/* Server-managed providers notice */}
+            <div className="py-6">
+                <div className="flex items-center gap-2 mb-3">
+                    <h2 className="text-2xl font-medium font-serif">
+                        {t("apiKeys.title")}
+                    </h2>
                 </div>
-                <div className="mx-4 h-px bg-gray-200" />
-                <div className="px-4 py-5">
-                    <label className="text-sm font-medium text-gray-700 block mb-2">
-                        Tabular review model
-                    </label>
-                    <p className="text-xs text-gray-400 mb-2">
-                        We recommend using a smaller model for tabular reviews
-                        to reduce token costs.
-                    </p>
-                    <ModelPreferenceDropdown
-                        value={
-                            optimisticValues.tabularModel ??
-                            profile?.tabularModel ??
-                            "gemini-3-flash-preview"
-                        }
-                        options={MODELS}
-                        apiKeys={profile?.apiKeys}
-                        isSaving={savingField === "tabularModel"}
-                        isSaved={savedField === "tabularModel"}
-                        onChange={(id) => handleModelChange("tabularModel", id)}
-                    />
+                <div className="max-w-xl rounded-lg border border-success/20 bg-success/10 p-4 flex items-start gap-3">
+                    <ShieldCheck className="h-5 w-5 text-success mt-0.5 shrink-0" />
+                    <div className="text-sm text-success space-y-1">
+                        <p className="font-medium">
+                            {t("apiKeys.serverManagedTitle")}
+                        </p>
+                        <p className="text-success/90">
+                            {t("apiKeys.serverManagedDescription")}
+                        </p>
+                    </div>
                 </div>
-            </AccountSection>
+            </div>
         </div>
     );
 }
 
-function ModelPreferenceDropdown({
+function TabularModelDropdown({
     value,
     onChange,
     apiKeys,
-    options,
-    isSaving,
-    isSaved,
 }: {
     value: string;
     onChange: (id: string) => void;
-    apiKeys?: ApiKeyState;
-    options: ModelOption[];
-    isSaving?: boolean;
-    isSaved?: boolean;
+    apiKeys: {
+        claudeApiKey: string | null;
+        geminiApiKey: string | null;
+        openaiApiKey: string | null;
+        mistralApiKey: string | null;
+        serverKeys?: {
+            claude?: boolean;
+            gemini?: boolean;
+            openai?: boolean;
+            mistral?: boolean;
+        };
+    };
 }) {
+    const t = useTranslations("models");
     const [isOpen, setIsOpen] = useState(false);
-    const selected = options.find((m) => m.id === value);
-    const selectedAvailable = apiKeys ? isModelAvailable(value, apiKeys) : true;
-    const groups: ("Anthropic" | "Google" | "OpenAI")[] = [
-        "Anthropic",
-        "Google",
-        "OpenAI",
-    ];
+    const selected = MODELS.find((m) => m.id === value);
+    const selectedAvailable = isModelAvailable(value, apiKeys);
+    const groups: ("LocalLLM" | "Anthropic" | "Google" | "OpenAI" | "Mistral")[] = ["LocalLLM", "Anthropic", "Google", "OpenAI", "Mistral"];
 
     return (
         <DropdownMenu onOpenChange={setIsOpen}>
             <DropdownMenuTrigger asChild>
                 <button
                     type="button"
-                    disabled={isSaving}
-                    className={`flex h-9 w-full items-center justify-between gap-2 px-3 text-sm hover:bg-white/78 ${accountGlassInputClassName}`}
+                    className="w-full h-9 rounded-md border border-input bg-surface-elevated px-3 text-sm flex items-center justify-between gap-2 hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring/10"
                 >
                     <span className="flex items-center gap-2 min-w-0">
                         {!selectedAvailable && (
-                            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
+                            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
                         )}
-                        <span className="truncate text-gray-900">
-                            {selected?.label ?? "Select a model"}
+                        <span className="truncate text-foreground">
+                            {selected?.label ?? t("selectModel")}
                         </span>
                     </span>
-                    {isSaving ? (
-                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-gray-500" />
-                    ) : isSaved ? (
-                        <Check className="h-3.5 w-3.5 shrink-0 text-green-600" />
-                    ) : (
-                        <ChevronDown
-                            className={`h-3.5 w-3.5 shrink-0 text-gray-500 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
-                        />
-                    )}
+                    <ChevronDown
+                        className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
+                    />
                 </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -184,40 +141,40 @@ function ModelPreferenceDropdown({
                 align="start"
             >
                 {groups.map((group, gi) => {
-                    const items = options.filter((m) => m.group === group);
+                    const items = MODELS.filter((m) => m.group === group);
                     if (items.length === 0) return null;
                     return (
                         <div key={group}>
                             {gi > 0 && <DropdownMenuSeparator />}
-                            <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-gray-400">
+                            <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
                                 {group}
                             </DropdownMenuLabel>
                             {items.map((m) => {
                                 const provider = modelGroupToProvider(m.group);
-                                const available = apiKeys
-                                    ? isModelAvailable(m.id, apiKeys)
-                                    : true;
+                                const available = isModelAvailable(
+                                    m.id,
+                                    apiKeys,
+                                );
+                                const tooltip = !available && m.group !== "LocalLLM"
+                                    ? t("apiKeys.addKeyTooltip", { provider: providerLabel(provider) })
+                                    : undefined;
                                 return (
                                     <DropdownMenuItem
                                         key={m.id}
                                         className="cursor-pointer"
                                         onSelect={() => onChange(m.id)}
-                                        title={
-                                            !available
-                                                ? `Add a ${providerLabel(provider)} API key to use this model`
-                                                : undefined
-                                        }
+                                        title={tooltip}
                                     >
                                         <span
-                                            className={`flex-1 ${available ? "" : "text-gray-400"}`}
+                                            className={`flex-1 ${available ? "" : m.group === "LocalLLM" ? "" : "text-muted-foreground/70"}`}
                                         >
                                             {m.label}
                                         </span>
-                                        {!available && (
-                                            <AlertCircle className="h-3.5 w-3.5 text-red-500 ml-1" />
+                                        {!available && m.group !== "LocalLLM" && (
+                                            <AlertCircle className="h-3.5 w-3.5 text-destructive ml-1" />
                                         )}
                                         {m.id === value && available && (
-                                            <Check className="h-3.5 w-3.5 text-gray-600 ml-1" />
+                                            <Check className="h-3.5 w-3.5 text-muted-foreground ml-1" />
                                         )}
                                     </DropdownMenuItem>
                                 );

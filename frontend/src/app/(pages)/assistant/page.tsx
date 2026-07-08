@@ -4,20 +4,14 @@ import { useRouter } from "next/navigation";
 import { useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { InitialView } from "@/app/components/assistant/InitialView";
 import { ChatView } from "@/app/components/assistant/ChatView";
-import type { Message } from "@/app/components/shared/types";
+import type { MikeMessage } from "@/app/components/shared/types";
 
 export default function AssistantPage() {
     const router = useRouter();
-    const {
-        messages,
-        isResponseLoading,
-        handleChat,
-        handleNewChat,
-        cancel,
-        chatId,
-    } = useAssistantChat();
+    const { messages, isResponseLoading, handleChat, handleNewChat, cancel } =
+        useAssistantChat();
 
-    async function handleInitialSubmit(message: Message) {
+    async function handleInitialSubmit(message: MikeMessage) {
         const chatId = await handleNewChat(message);
         if (chatId) router.push(`/assistant/chat/${chatId}`);
     }
@@ -32,7 +26,6 @@ export default function AssistantPage() {
 
     return (
         <ChatView
-            chatId={chatId}
             messages={messages}
             isResponseLoading={isResponseLoading}
             handleChat={handleChat}

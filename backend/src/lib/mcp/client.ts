@@ -1,398 +1,223 @@
-import crypto from "crypto";
-import dns from "dns/promises";
-import net from "net";
-import {
-    BLOCKED_METADATA_HOSTS,
-    HEADER_NAME_RE,
-    MAX_CUSTOM_HEADER_VALUE_LENGTH,
-    MAX_CUSTOM_HEADERS,
-    type ConnectorRow,
-    type Db,
-    type McpConnectorAuthConfig,
-    type McpConnectorSummary,
-    type McpToolSummary,
-    type OAuthTokenRow,
-    type ToolCacheRow,
-} from "./types";
+// Thin wrapper around the MCP TypeScript SDK's Streamable-HTTP client.
+//
+// Eulex Desk opens one client per (user, MCP server) per chat request. Connections
+// are short-lived: we initialize, list tools, run any tools the model calls,
+// then close in a `finally` on the request handler. There is no connection
+// pool — each chat request pays an `initialize` round-trip per enabled
+// server. This keeps the design stateless and avoids needing a worker.
 
-function encryptionSecret(): string {
-    const secret =
-        process.env.MCP_CONNECTORS_ENCRYPTION_SECRET ||
-        process.env.USER_API_KEYS_ENCRYPTION_SECRET;
-    if (!secret) {
-        throw new Error(
-            "MCP_CONNECTORS_ENCRYPTION_SECRET or USER_API_KEYS_ENCRYPTION_SECRET is not configured",
-        );
-    }
-    return secret;
-}
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
-function encryptionKey(): Buffer {
-    return crypto.scryptSync(encryptionSecret(), "mike-user-mcp-v1", 32);
-}
+const CONNECT_TIMEOUT_MS = 10_000;
+const CALL_TIMEOUT_MS = 60_000;
 
-export function mcpOAuthCallbackUrl() {
-    const base = (
-        process.env.API_PUBLIC_URL ||
-        process.env.BACKEND_URL ||
-        `http://localhost:${process.env.PORT ?? "3001"}`
-    ).replace(/\/+$/, "");
-    return `${base}/user/mcp-connectors/oauth/callback`;
-}
-
-function encryptJson(value: Record<string, unknown>): {
-    encrypted_auth_config: string;
-    auth_config_iv: string;
-    auth_config_tag: string;
-} {
-    const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
-    const encrypted = Buffer.concat([
-        cipher.update(JSON.stringify(value), "utf8"),
-        cipher.final(),
-    ]);
-    return {
-        encrypted_auth_config: encrypted.toString("base64"),
-        auth_config_iv: iv.toString("base64"),
-        auth_config_tag: cipher.getAuthTag().toString("base64"),
-    };
-}
-
-export function encryptString(value: string): {
-    encrypted: string;
-    iv: string;
-    tag: string;
-} {
-    const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
-    const encrypted = Buffer.concat([
-        cipher.update(value, "utf8"),
-        cipher.final(),
-    ]);
-    return {
-        encrypted: encrypted.toString("base64"),
-        iv: iv.toString("base64"),
-        tag: cipher.getAuthTag().toString("base64"),
-    };
-}
-
-export function decryptString(
-    encrypted: string | null | undefined,
-    iv: string | null | undefined,
-    tag: string | null | undefined,
-): string | null {
-    if (!encrypted || !iv || !tag) return null;
+/**
+ * Picks the SDK transport class based on the upstream URL.
+ *
+ * MCP has two HTTP-style transports:
+ *   1. **Streamable HTTP** — current spec, single endpoint (e.g. `/mcp`)
+ *      that accepts both POST (request) and GET (SSE response) on the same
+ *      path. New servers ship this.
+ *   2. **SSE** — older spec, a GET on `/sse` opens a persistent stream
+ *      and a separate POST endpoint (advertised via the first SSE event)
+ *      receives requests. Many existing servers (e.g. capazme/mcp-legal-it,
+ *      community Python servers) still expose only this.
+ *
+ * Heuristic: if the URL path ends in `/sse` (case-insensitive), use the SSE
+ * transport. Otherwise default to Streamable HTTP. This keeps existing
+ * `mike/mcp.json` entries working unchanged while letting operators add
+ * SSE-only servers by just pasting their `…/sse` URL.
+ */
+function pickTransportType(url: string): "sse" | "streamable-http" {
     try {
-        const decipher = crypto.createDecipheriv(
-            "aes-256-gcm",
-            encryptionKey(),
-            Buffer.from(iv, "base64"),
-        );
-        decipher.setAuthTag(Buffer.from(tag, "base64"));
-        const decrypted = Buffer.concat([
-            decipher.update(Buffer.from(encrypted, "base64")),
-            decipher.final(),
-        ]);
-        return decrypted.toString("utf8");
-    } catch (err) {
-        console.error("[mcp-connectors] failed to decrypt string secret", {
-            error: err instanceof Error ? err.message : String(err),
-        });
-        return null;
-    }
-}
-
-export function decryptAuthConfig(row: ConnectorRow): McpConnectorAuthConfig {
-    if (
-        !row.encrypted_auth_config ||
-        !row.auth_config_iv ||
-        !row.auth_config_tag
-    ) {
-        return {};
-    }
-    try {
-        const decipher = crypto.createDecipheriv(
-            "aes-256-gcm",
-            encryptionKey(),
-            Buffer.from(row.auth_config_iv, "base64"),
-        );
-        decipher.setAuthTag(Buffer.from(row.auth_config_tag, "base64"));
-        const decrypted = Buffer.concat([
-            decipher.update(Buffer.from(row.encrypted_auth_config, "base64")),
-            decipher.final(),
-        ]);
-        const parsed = JSON.parse(decrypted.toString("utf8"));
-        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-            ? (parsed as McpConnectorAuthConfig)
-            : {};
-    } catch (err) {
-        console.error("[mcp-connectors] failed to decrypt auth config", {
-            connectorId: row.id,
-            error: err instanceof Error ? err.message : String(err),
-        });
-        return {};
-    }
-}
-
-function sanitizeToolPart(value: string, fallback: string, maxLength: number) {
-    const sanitized = value
-        .toLowerCase()
-        .replace(/[^a-z0-9_]+/g, "_")
-        .replace(/^_+|_+$/g, "")
-        .replace(/_+/g, "_");
-    return (sanitized || fallback).slice(0, maxLength);
-}
-
-export function openaiToolName(connector: ConnectorRow, toolName: string) {
-    const connectorSlug = sanitizeToolPart(connector.name, "connector", 18);
-    const toolSlug = sanitizeToolPart(toolName, "tool", 30);
-    const idSlug = connector.id.replace(/-/g, "").slice(0, 8);
-    return `mcp_${connectorSlug}_${toolSlug}_${idSlug}`;
-}
-
-export function normalizeJsonSchema(schema: unknown): Record<string, unknown> {
-    if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-        return { type: "object", properties: {} };
-    }
-    const out = { ...(schema as Record<string, unknown>) };
-    if (out.type !== "object") out.type = "object";
-    if (!out.properties || typeof out.properties !== "object") {
-        out.properties = {};
-    }
-    return out;
-}
-
-function truthyAnnotation(
-    annotations: Record<string, unknown> | null | undefined,
-    key: string,
-) {
-    return annotations?.[key] === true;
-}
-
-export function toolRequiresConfirmation(
-    annotations: Record<string, unknown> | null | undefined,
-) {
-    // Gate only genuinely destructive tools behind human confirmation. We do
-    // NOT gate on openWorldHint (almost every useful connector — Gmail, Slack,
-    // GitHub — is "open world", so gating on it disables everything), and we
-    // require readOnlyHint to be *explicitly* false rather than merely absent
-    // (a missing hint must not be treated the same as readOnlyHint:false).
-    return (
-        truthyAnnotation(annotations, "destructiveHint") ||
-        annotations?.readOnlyHint === false
-    );
-}
-
-function toToolSummary(row: ToolCacheRow): McpToolSummary {
-    return {
-        id: row.id,
-        toolName: row.tool_name,
-        openaiToolName: row.openai_tool_name,
-        title: row.title,
-        description: row.description,
-        enabled: row.enabled,
-        readOnly: truthyAnnotation(row.annotations, "readOnlyHint"),
-        destructive: truthyAnnotation(row.annotations, "destructiveHint"),
-        requiresConfirmation: row.requires_confirmation,
-        lastSeenAt: row.last_seen_at,
-    };
-}
-
-export function toConnectorSummary(
-    connector: ConnectorRow,
-    tools: ToolCacheRow[] = [],
-    oauthToken?: OAuthTokenRow | null,
-    toolCount = tools.length,
-): McpConnectorSummary {
-    const authConfig = decryptAuthConfig(connector);
-    return {
-        id: connector.id,
-        name: connector.name,
-        transport: connector.transport,
-        serverUrl: connector.server_url,
-        authType: connector.auth_type ?? "none",
-        enabled: connector.enabled,
-        hasAuthConfig: !!connector.encrypted_auth_config,
-        customHeaderKeys: Object.keys(authConfig.headers ?? {}),
-        oauthConnected: !!oauthToken?.encrypted_access_token,
-        toolPolicy: connector.tool_policy ?? {},
-        tools: tools.map(toToolSummary),
-        toolCount,
-        createdAt: connector.created_at,
-        updatedAt: connector.updated_at,
-    };
-}
-
-function isPrivateIpv4(ip: string) {
-    const parts = ip.split(".").map((part) => Number.parseInt(part, 10));
-    if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) {
-        return true;
-    }
-    const [a, b] = parts;
-    return (
-        a === 0 ||
-        a === 10 ||
-        a === 127 ||
-        (a === 100 && b >= 64 && b <= 127) ||
-        (a === 169 && b === 254) ||
-        (a === 172 && b >= 16 && b <= 31) ||
-        (a === 192 && b === 168) ||
-        (a === 192 && b === 0) ||
-        (a === 198 && (b === 18 || b === 19)) ||
-        a >= 224
-    );
-}
-
-function isPrivateIpv6(ip: string) {
-    const normalized = ip.toLowerCase();
-    if (normalized === "::1" || normalized === "::") return true;
-    if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
-    if (/^fe[89ab]:/.test(normalized)) return true;
-    const ipv4Tail = normalized.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    return ipv4Tail ? isPrivateIpv4(ipv4Tail[1]) : false;
-}
-
-function isBlockedIp(ip: string) {
-    const family = net.isIP(ip);
-    if (family === 4) return isPrivateIpv4(ip);
-    if (family === 6) return isPrivateIpv6(ip);
-    return true;
-}
-
-export async function validateRemoteMcpUrl(rawUrl: string): Promise<string> {
-    let url: URL;
-    try {
-        url = new URL(rawUrl);
+        const u = new URL(url);
+        if (u.pathname.toLowerCase().endsWith("/sse")) return "sse";
     } catch {
-        throw new Error("MCP server URL must be a valid URL.");
+        /* fall through */
     }
-    if (url.protocol !== "https:") {
-        throw new Error("MCP server URL must use HTTPS.");
-    }
-    url.username = "";
-    url.password = "";
-    url.hash = "";
-
-    const hostname = url.hostname.toLowerCase();
-    if (
-        hostname === "localhost" ||
-        hostname.endsWith(".localhost") ||
-        BLOCKED_METADATA_HOSTS.has(hostname)
-    ) {
-        throw new Error("MCP server URL points to a blocked host.");
-    }
-
-    const literalFamily = net.isIP(hostname);
-    const addresses = literalFamily
-        ? [{ address: hostname }]
-        : await dns.lookup(hostname, { all: true, verbatim: true });
-    if (!addresses.length || addresses.some(({ address }) => isBlockedIp(address))) {
-        throw new Error("MCP server URL resolves to a blocked network address.");
-    }
-
-    return url.toString();
+    return "streamable-http";
 }
 
-export function headersForAuth(config: McpConnectorAuthConfig) {
-    const headers: Record<string, string> = {};
-    for (const [key, value] of Object.entries(config.headers ?? {})) {
-        if (typeof value === "string" && key.toLowerCase() !== "host") {
-            headers[key] = value;
-        }
-    }
-    if (config.bearerToken?.trim()) {
-        headers.Authorization = `Bearer ${config.bearerToken.trim()}`;
-    }
-    return headers;
-}
+export class McpHttpClient {
+    private client: Client | null = null;
+    private transport: Transport | null = null;
 
-export function validateCustomHeaders(
-    raw: Record<string, unknown> | undefined,
-): Record<string, string> {
-    if (!raw) return {};
-    if (typeof raw !== "object" || Array.isArray(raw)) {
-        throw new Error("Custom headers must be an object.");
-    }
-    const entries = Object.entries(raw);
-    if (entries.length > MAX_CUSTOM_HEADERS) {
-        throw new Error(`Custom headers may not exceed ${MAX_CUSTOM_HEADERS} entries.`);
-    }
-    const headers: Record<string, string> = {};
-    for (const [key, value] of entries) {
-        const trimmedKey = key.trim();
-        if (!HEADER_NAME_RE.test(trimmedKey) || trimmedKey.toLowerCase() === "host") {
-            throw new Error(`Invalid custom header name: ${key}`);
-        }
-        if (
-            typeof value !== "string" ||
-            value.length > MAX_CUSTOM_HEADER_VALUE_LENGTH
-        ) {
-            throw new Error(
-                `Custom header ${key} must be a string of ${MAX_CUSTOM_HEADER_VALUE_LENGTH} characters or fewer.`,
-            );
-        }
-        headers[trimmedKey] = value;
-    }
-    return headers;
-}
+    constructor(
+        private readonly url: string,
+        private readonly headers: Record<string, string>,
+        private readonly authProvider?: OAuthClientProvider,
+    ) {}
 
-export function authConfigPatch(config: McpConnectorAuthConfig): Record<string, unknown> {
-    const hasBearer = !!config.bearerToken?.trim();
-    const hasHeaders = Object.keys(config.headers ?? {}).length > 0;
-    if (!hasBearer && !hasHeaders) {
-        return {
-            encrypted_auth_config: null,
-            auth_config_iv: null,
-            auth_config_tag: null,
+    async connect(): Promise<void> {
+        const kind = pickTransportType(this.url);
+        if (kind === "sse") {
+            this.transport = new SSEClientTransport(new URL(this.url), {
+                // SSE transport uses two channels: the EventSource (GET) and a
+                // POST channel. `eventSourceInit` covers the GET; `requestInit`
+                // covers POSTs. We attach the same headers to both so e.g.
+                // partner JWTs reach the server on both legs.
+                eventSourceInit: {
+                    fetch: (input, init) =>
+                        fetch(input, {
+                            ...init,
+                            headers: { ...(init?.headers ?? {}), ...this.headers },
+                        }),
+                },
+                requestInit: {
+                    headers: this.headers,
+                },
+                ...(this.authProvider ? { authProvider: this.authProvider } : {}),
+            });
+        } else {
+            this.transport = new StreamableHTTPClientTransport(new URL(this.url), {
+                requestInit: {
+                    headers: this.headers,
+                },
+                ...(this.authProvider ? { authProvider: this.authProvider } : {}),
+            });
+        }
+        this.client = new Client(
+            { name: "mike", version: "1.0.0" },
+            { capabilities: {} },
+        );
+        await withTimeout(
+            this.client.connect(this.transport),
+            CONNECT_TIMEOUT_MS,
+            "MCP connect",
+        );
+    }
+
+    async listTools(): Promise<Tool[]> {
+        if (!this.client) throw new Error("MCP client not connected");
+        const result = await withTimeout(
+            this.client.listTools(),
+            CONNECT_TIMEOUT_MS,
+            "MCP listTools",
+        );
+
+        // The SDK auto-validates `structuredContent` against each tool's
+        // `outputSchema` on every `callTool`, throwing JSON-RPC -32602 on
+        // mismatch. There is no public knob to disable that validation
+        // (see typescript-sdk #1943), and several real-world servers ship
+        // schemas that don't match their actual output (e.g. UK Lex MCP
+        // returns `provenance_timestamp` in a non-RFC-3339 format while
+        // declaring `string (date-time) | null`). We don't consume
+        // `structuredContent` anyway — `callTool` below only reads
+        // `content[].text` blocks, which the spec mandates servers also
+        // include for backwards compat. Drop the cached validators so a
+        // single misbehaving upstream server can't take a tool offline.
+        const internal = this.client as unknown as {
+            _cachedToolOutputValidators?: Map<string, unknown>;
         };
+        internal._cachedToolOutputValidators?.clear();
+
+        return result.tools as Tool[];
     }
-    return encryptJson({
-        ...(hasBearer ? { bearerToken: config.bearerToken?.trim() } : {}),
-        ...(hasHeaders ? { headers: config.headers } : {}),
+
+    /**
+     * Calls a tool and returns BOTH the joined text content AND the typed
+     * `structuredContent` (when the server ships it). The text is what the
+     * model consumes; `structured` is the un-flattened tool output (e.g. the
+     * `sources[]` arrays the legal MCP servers return) that callers can read
+     * without regex-parsing the text blob. `structured` is `undefined` when
+     * the server only returns text blocks, or on any error.
+     *
+     * Note: the SDK's `outputSchema` validator is cleared in `listTools()`
+     * (see comment there) precisely so consuming `structuredContent` here
+     * can't be taken offline by a server whose schema doesn't match its
+     * actual output. Do not re-enable that validation.
+     */
+    async callToolRich(
+        name: string,
+        args: Record<string, unknown>,
+    ): Promise<{ text: string; structured?: unknown }> {
+        if (!this.client) return { text: "MCP client not connected" };
+        try {
+            const result = await withTimeout(
+                this.client.callTool({ name, arguments: args }),
+                CALL_TIMEOUT_MS,
+                `MCP callTool(${name})`,
+            );
+            const blocks = (result.content ?? []) as Array<{
+                type?: string;
+                text?: string;
+            }>;
+            const text = blocks
+                .filter((b) => b?.type === "text" && typeof b.text === "string")
+                .map((b) => b.text)
+                .join("\n\n");
+            const structured = (result as { structuredContent?: unknown })
+                .structuredContent;
+            if (result.isError) {
+                return {
+                    text: `MCP tool '${name}' returned error: ${text || "(no detail)"}`,
+                };
+            }
+            return {
+                text: text || "(tool returned no text content)",
+                structured,
+            };
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return { text: `MCP tool '${name}' failed: ${msg}` };
+        }
+    }
+
+    /**
+     * Calls a tool and returns its text content joined by blank lines.
+     * Thin convenience wrapper over `callToolRich` for the many callers that
+     * only need the text. Errors (transport failures, MCP `isError`) are
+     * turned into a text response so the model can surface them rather than
+     * crashing the chat.
+     */
+    async callTool(
+        name: string,
+        args: Record<string, unknown>,
+    ): Promise<string> {
+        const { text } = await this.callToolRich(name, args);
+        return text;
+    }
+
+    async close(): Promise<void> {
+        try {
+            await this.client?.close();
+        } catch {
+            /* ignore */
+        }
+        try {
+            await this.transport?.close();
+        } catch {
+            /* ignore */
+        }
+        this.client = null;
+        this.transport = null;
+    }
+}
+
+function withTimeout<T>(
+    p: Promise<T>,
+    ms: number,
+    label: string,
+): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const t = setTimeout(
+            () => reject(new Error(`${label} timed out after ${ms}ms`)),
+            ms,
+        );
+        p.then(
+            (v) => {
+                clearTimeout(t);
+                resolve(v);
+            },
+            (e) => {
+                clearTimeout(t);
+                reject(e);
+            },
+        );
     });
-}
-
-export async function guardedFetch(
-    input: Parameters<typeof fetch>[0],
-    init?: Parameters<typeof fetch>[1],
-) {
-    const url =
-        typeof input === "string"
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url;
-    await validateRemoteMcpUrl(url);
-    return fetch(input, { ...init, redirect: "manual" });
-}
-
-export function base64Url(buffer: Buffer) {
-    return buffer
-        .toString("base64")
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=+$/g, "");
-}
-
-function sha256Base64Url(value: string) {
-    return base64Url(crypto.createHash("sha256").update(value).digest());
-}
-
-export function stateHash(state: string) {
-    return crypto.createHash("sha256").update(state).digest("hex");
-}
-
-export async function loadConnector(
-    userId: string,
-    connectorId: string,
-    db: Db,
-): Promise<ConnectorRow> {
-    const { data, error } = await db
-        .from("user_mcp_connectors")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("id", connectorId)
-        .single();
-    if (error) throw error;
-    return data as ConnectorRow;
 }

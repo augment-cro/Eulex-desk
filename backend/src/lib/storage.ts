@@ -1,57 +1,19 @@
 /**
- * Cloudflare R2 storage utilities for Mike document management.
- * R2 is S3-compatible — uses @aws-sdk/client-s3.
+ * Google Cloud Storage utilities for Eulex Desk document management.
  *
- * Required env vars:
- *   R2_ENDPOINT_URL     — https://<account-id>.r2.cloudflarestorage.com
- *   R2_ACCESS_KEY_ID    — R2 API token (Access Key ID)
- *   R2_SECRET_ACCESS_KEY — R2 API token (Secret Access Key)
- *   R2_BUCKET_NAME      — bucket name (default: "mike")
+ * On Cloud Run the default service account is used automatically —
+ * no credentials env-vars are needed.
+ *
+ * Optional env vars:
+ *   GCS_BUCKET_NAME — bucket name (default: "mike-docs-mikeoss")
  */
 
-import {
-  S3Client,
-  PutObjectCommand,
-  DeleteObjectCommand,
-  ListObjectsV2Command,
-} from "@aws-sdk/client-s3";
-import * as S3Commands from "@aws-sdk/client-s3";
-import { getSignedUrl as awsGetSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { Storage } from "@google-cloud/storage";
 
-const GetObjectCommand = (S3Commands as any).GetObjectCommand;
+const storage = new Storage();
+const BUCKET = process.env.GCS_BUCKET_NAME ?? "mike-docs-mikeoss";
 
-let cachedClient: S3Client | undefined;
-
-function getClient(): S3Client {
-  if (!cachedClient) {
-    cachedClient = new S3Client({
-      region: "auto",
-      endpoint: process.env.R2_ENDPOINT_URL!,
-      forcePathStyle: true,
-      credentials: {
-        accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-      },
-    });
-  }
-  return cachedClient;
-}
-
-const BUCKET = process.env.R2_BUCKET_NAME ?? "mike";
-
-export const storageEnabled = Boolean(
-  process.env.R2_ENDPOINT_URL &&
-  process.env.R2_ACCESS_KEY_ID &&
-  process.env.R2_SECRET_ACCESS_KEY,
-);
-
-function requireStorageConfig(): void {
-  if (!storageEnabled) {
-    throw new Error(
-      "R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY must be set",
-    );
-  }
-}
+export const storageEnabled = true; // always available on GCP
 
 // ---------------------------------------------------------------------------
 // Upload
@@ -62,16 +24,12 @@ export async function uploadFile(
   content: ArrayBuffer,
   contentType: string,
 ): Promise<void> {
-  requireStorageConfig();
-  const client = getClient();
-  await client.send(
-    new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      Body: Buffer.from(content),
-      ContentType: contentType,
-    }),
-  );
+  const bucket = storage.bucket(BUCKET);
+  const file = bucket.file(key);
+  await file.save(Buffer.from(content), {
+    contentType,
+    resumable: false,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -79,39 +37,17 @@ export async function uploadFile(
 // ---------------------------------------------------------------------------
 
 export async function downloadFile(key: string): Promise<ArrayBuffer | null> {
-  if (!storageEnabled) return null;
   try {
-    const client = getClient();
-    const response = (await client.send(
-      new GetObjectCommand({ Bucket: BUCKET, Key: key }),
-    )) as any;
-    if (!response.Body) return null;
-    const bytes = await response.Body.transformToByteArray();
-    return bytes.buffer as ArrayBuffer;
+    const bucket = storage.bucket(BUCKET);
+    const file = bucket.file(key);
+    const [contents] = await file.download();
+    return contents.buffer.slice(
+      contents.byteOffset,
+      contents.byteOffset + contents.byteLength,
+    ) as ArrayBuffer;
   } catch {
     return null;
   }
-}
-
-export async function listFiles(prefix: string): Promise<string[]> {
-  if (!storageEnabled) return [];
-  const client = getClient();
-  const keys: string[] = [];
-  let ContinuationToken: string | undefined;
-  do {
-    const response = await client.send(
-      new ListObjectsV2Command({
-        Bucket: BUCKET,
-        Prefix: prefix,
-        ContinuationToken,
-      }),
-    );
-    for (const item of response.Contents ?? []) {
-      if (item.Key) keys.push(item.Key);
-    }
-    ContinuationToken = response.NextContinuationToken;
-  } while (ContinuationToken);
-  return keys;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,9 +55,13 @@ export async function listFiles(prefix: string): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 export async function deleteFile(key: string): Promise<void> {
-  if (!storageEnabled) return;
-  const client = getClient();
-  await client.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+  try {
+    const bucket = storage.bucket(BUCKET);
+    const file = bucket.file(key);
+    await file.delete({ ignoreNotFound: true });
+  } catch {
+    // swallow – best-effort deletion
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,22 +73,19 @@ export async function getSignedUrl(
   expiresIn = 3600,
   downloadFilename?: string,
 ): Promise<string | null> {
-  if (!storageEnabled) return null;
   try {
-    const client = getClient();
-    // Override the response Content-Disposition so the browser uses this
-    // filename on download, instead of the last path segment of the R2 key
-    // (which includes the document UUID). The `download` attribute on <a>
-    // is ignored for cross-origin URLs, so we have to set it server-side.
-    const responseContentDisposition = downloadFilename
+    const bucket = storage.bucket(BUCKET);
+    const file = bucket.file(key);
+    const responseDisposition = downloadFilename
       ? buildContentDisposition("attachment", downloadFilename)
       : undefined;
-    const command = new GetObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      ResponseContentDisposition: responseContentDisposition,
-    }) as any;
-    return await awsGetSignedUrl(client, command, { expiresIn });
+    const [url] = await file.getSignedUrl({
+      version: "v4",
+      action: "read",
+      expires: Date.now() + expiresIn * 1000,
+      responseDisposition,
+    });
+    return url;
   } catch {
     return null;
   }
@@ -161,9 +98,7 @@ export function normalizeDownloadFilename(name: string): string {
 }
 
 export function sanitizeDispositionFilename(name: string): string {
-  return normalizeDownloadFilename(name)
-    .replace(/["\\]/g, "_")
-    .replace(/[^\x20-\x7E]/g, "_");
+  return normalizeDownloadFilename(name).replace(/["\\]/g, "_");
 }
 
 export function encodeRFC5987(str: string): string {
@@ -207,6 +142,10 @@ export function generatedDocKey(
   filename: string,
 ): string {
   return `generated/${userId}/${docId}/generated${storageExtension(filename, ".docx")}`;
+}
+
+export function convertedPdfKey(userId: string, docId: string): string {
+  return `documents/${userId}/${docId}/converted.pdf`;
 }
 
 export function versionStorageKey(

@@ -1,0 +1,32 @@
+Eulex Desk
+Copyright (C) 2026 Eulex Desk Contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, version 3 (AGPL-3.0-only).
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+---
+
+This software is a modified version of **Mike**, originally developed by
+Will Chen and contributors.
+
+  Original project: https://github.com/willchen96/mike
+  Original license: GNU Affero General Public License v3.0 (AGPL-3.0)
+  Original website: https://mikeoss.com
+
+Eulex Desk has been substantially modified from the original Mike source code.
+Modifications include (but are not limited to): additional LLM provider
+integrations, tabular document-review workflows, Microsoft Word add-in,
+MCP connector framework, in-browser DOCX editing (SuperDoc), legal-source
+citation system, workflow packs, multi-language UI, and Cloud Run deployment.
+
+In accordance with AGPL-3.0 §5(a), this modified version carries this
+notice stating that it was modified.
