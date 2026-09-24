@@ -36,6 +36,7 @@ import {
 } from "../lib/integrations/store";
 import type { ProviderId } from "../lib/integrations/types";
 import { processDocumentBytes } from "./documents";
+import { UnsupportedFileTypeError } from "../lib/fileTypes";
 
 export const integrationsRouter = Router();
 
@@ -346,15 +347,18 @@ integrationsRouter.post(
             });
             res.status(201).json(doc);
         } catch (err) {
+            // Google Sheets/Slides export as xlsx/pptx and are rejected
+            // here until those formats are supported — same structured
+            // 400 as a direct upload so the UI can name the format.
+            if (err instanceof UnsupportedFileTypeError) {
+                return void res.status(400).json(err.toResponseBody());
+            }
             const msg = err instanceof Error ? err.message : String(err);
             console.error(
                 `[integrations] /import for ${provider} failed:`,
                 msg,
             );
-            const status = msg.startsWith("Unsupported file type")
-                ? 400
-                : 502;
-            res.status(status).json({ detail: msg });
+            res.status(502).json({ detail: msg });
         }
     },
 );
@@ -367,9 +371,13 @@ function redirectToFrontend(
     // origin — we bounce it to the frontend so the user lands somewhere
     // useful. The frontend reads ?integration=&ok=&error= and shows a
     // toast / refreshes its connector list.
+    // FRONTEND_URL is a comma-separated CORS-origins list (see index.ts);
+    // a redirect needs exactly ONE origin, so take the first entry.
     const base =
-        process.env.FRONTEND_URL?.trim() ||
-        "https://max.eulex.ai";
+        (process.env.FRONTEND_URL ?? "https://max.eulex.ai")
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0)[0] ?? "https://max.eulex.ai";
     const qs = new URLSearchParams({
         integration: params.provider,
         ok: params.ok ? "1" : "0",

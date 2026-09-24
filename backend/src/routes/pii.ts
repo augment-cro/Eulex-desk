@@ -11,6 +11,9 @@
  *                                                   Used by the chat composer
  *                                                   so the browser never sees
  *                                                   the raw text.
+ *   POST   /pii/sessions/:id/attach-chat          — adopt a pre-chat preview
+ *                                                   session as the chat's
+ *                                                   session (#16 follow-up).
  *   POST   /pii/sessions/:id/apply-overrides      — persist user choices.
  *   POST   /pii/sessions/:id/disclose-placeholder — reveal one mapping.
  *   POST   /pii/sessions/:id/render               — render an assistant
@@ -19,18 +22,21 @@
  *   GET    /pii/version                           — engine version.
  *
  * Every route runs through requireAuth so the user-id is taken from
- * the verified JWT, NOT from the body. The sidecar still re-verifies
- * via the OIDC token + RLS, but defense-in-depth.
+ * the verified JWT, NOT from the body. End-user session ownership is
+ * enforced HERE (userOwnsSession); the sidecar independently verifies
+ * the CALLING SERVICE (Google-signed OIDC ID token / shared secret —
+ * see mike-pii-shield/app/auth.py, #52), not the end user.
  */
 
 import { Router } from "express";
+import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
 import { requireAuth } from "../middleware/auth";
 import { requireEntitlement } from "../lib/entitlements";
 import { getPool } from "../lib/db";
 import { piiClient, type PiiMode } from "../lib/pii";
 import { downloadFile } from "../lib/storage";
-import { extractDocxBodyText } from "../lib/docxTrackedChanges";
-import { extractPdfText } from "../lib/chatTools";
+import { extractDocumentText } from "../lib/documentText";
+import { isSupportedUploadType } from "../lib/fileTypes";
 
 export const piiRouter = Router();
 
@@ -65,7 +71,14 @@ async function userOwnsSession(
 
 interface PreviewBody {
     chat_id?: string;
-    document_version_id: string;
+    /** Present for document previews; absent for typed composer text
+     *  (#16 — strict mode reviews every input, not just documents). */
+    document_version_id?: string;
+    /** Reuse an existing (standalone) session instead of creating a new
+     *  one per preview — the fresh assistant page threads this so every
+     *  pre-chat preview shares one session that later gets adopted by
+     *  the chat via /sessions/:id/attach-chat. */
+    session_id?: string;
     text: string;
     mode?: PiiMode;
     language?: "hr" | "en";
@@ -73,25 +86,30 @@ interface PreviewBody {
 
 piiRouter.post("/sessions/preview", requireAuth, requireEntitlement("piiAnonymization"), async (req, res) => {
     const userId = res.locals.userId as string;
+    void recordFeatureUse({ userId, feature: "pii" });
+    void recordAuditEvent({ userId, eventType: "pii.session_started" });
     const body = req.body as PreviewBody;
-    if (!body?.text || !body?.document_version_id) {
+    if (!body?.text) {
         return res.status(400).json({
             error: "missing_fields",
-            detail: "text and document_version_id are required",
+            detail: "text is required",
         });
     }
     if (!piiClient.isConfigured()) {
         return res.status(503).json({ error: "pii_shield_unavailable" });
     }
 
+    // session_id (when present) wins over chat_id in the sidecar's
+    // resolution order; the sidecar itself 403s on owner mismatch.
     const result = await piiClient.anonymize({
         text: body.text,
         userId,
         mode: body.mode ?? "standard",
         language: body.language ?? "hr",
+        sessionId: body.session_id ?? null,
         chatId: body.chat_id ?? null,
-        documentVersionId: body.document_version_id,
-        source: "document",
+        documentVersionId: body.document_version_id ?? null,
+        source: body.document_version_id ? "document" : "user_input",
     });
     if (!result.ok) {
         return res.status(result.status ?? 502).json({
@@ -142,6 +160,8 @@ piiRouter.post("/sessions/preview", requireAuth, requireEntitlement("piiAnonymiz
 
 interface DocPreviewBody {
     chat_id?: string;
+    /** Fresh-page session threading — see PreviewBody.session_id. */
+    session_id?: string;
     mode?: PiiMode;
     language?: "hr" | "en";
 }
@@ -213,36 +233,24 @@ piiRouter.post(
             }
 
             const fileType = (doc.file_type ?? "").toLowerCase();
+            if (!isSupportedUploadType(fileType) && fileType !== "md") {
+                return res.status(415).json({
+                    error: "unsupported_file_type",
+                    detail: `file_type='${doc.file_type}' is not supported for preview.`,
+                });
+            }
             let text = "";
             try {
-                if (fileType === "pdf") {
-                    text = await extractPdfText(
-                        raw,
-                        process.env.GEMINI_API_KEY ?? null,
-                    );
-                } else if (fileType === "docx") {
-                    text = await extractDocxBodyText(Buffer.from(raw));
-                    if (!text) {
-                        const mammoth = await import("mammoth");
-                        const r = await mammoth.extractRawText({
-                            buffer: Buffer.from(raw),
-                        });
-                        text = r.value ?? "";
-                    }
-                } else if (fileType === "doc") {
-                    const WordExtractor = (await import("word-extractor"))
-                        .default;
-                    const extractor = new WordExtractor();
-                    const d = await extractor.extract(Buffer.from(raw));
-                    text = d.getBody();
-                } else if (fileType === "txt" || fileType === "md") {
-                    text = Buffer.from(raw).toString("utf8");
-                } else {
-                    return res.status(415).json({
-                        error: "unsupported_file_type",
-                        detail: `file_type='${doc.file_type}' is not supported for preview.`,
-                    });
-                }
+                // Same extractor — and, for PDFs, the same persisted OCR
+                // transcription — as chat read_document, so the analysis
+                // the user reviews here is of the exact text the model reads.
+                text = await extractDocumentText({
+                    fileType: fileType === "md" ? "txt" : fileType,
+                    bytes: raw,
+                    flavor: "plain",
+                    geminiApiKey: process.env.GEMINI_API_KEY ?? null,
+                    storagePath,
+                });
             } catch (err) {
                 console.error(
                     `[pii] preview extraction failed doc=${documentId} fileType="${fileType}":`,
@@ -264,6 +272,7 @@ piiRouter.post(
                 userId,
                 mode: body.mode ?? "standard",
                 language: body.language ?? "hr",
+                sessionId: body.session_id ?? null,
                 chatId: body.chat_id ?? null,
                 documentVersionId: versionId,
                 source: "document",
@@ -301,6 +310,62 @@ piiRouter.post(
 );
 
 // ----------------------------------------------------------------------- //
+//  POST /pii/sessions/:id/attach-chat                                     //
+// ----------------------------------------------------------------------- //
+//
+// Adopt a standalone preview session as THE session of a freshly created
+// chat (#16 follow-up). The fresh assistant page runs the strict review
+// modal BEFORE the chat row exists; the frontend calls this right after
+// /chat/create so the first turn's anonymization (keyed by chat_id)
+// resolves to the reviewed session — with the user's disclosure
+// overrides — instead of spawning a second, override-less one.
+// 409 = adoption came too late (chat already has a session, or the
+// preview session is bound elsewhere); callers proceed — entities just
+// stay masked, which is the fail-safe direction.
+
+piiRouter.post("/sessions/:id/attach-chat", requireAuth, async (req, res) => {
+    const userId = res.locals.userId as string;
+    const sessionId = req.params.id;
+    const chatId = req.body?.chat_id;
+    // Both ids reach Postgres as uuid params — reject non-uuids up front
+    // so a malformed body surfaces 400 instead of a raw cast error.
+    const UUID_RE =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (typeof chatId !== "string" || !UUID_RE.test(chatId)) {
+        return res.status(400).json({
+            error: "missing_fields",
+            detail: "chat_id (uuid) is required",
+        });
+    }
+    if (!UUID_RE.test(sessionId)) {
+        return res.status(400).json({ error: "invalid_session_id" });
+    }
+    if (!piiClient.isConfigured()) {
+        return res.status(503).json({ error: "pii_shield_unavailable" });
+    }
+    // Chat ownership: the session side is enforced by the sidecar
+    // (user_id in the payload), but the chat id comes from the client —
+    // verify it's the caller's chat before binding PII state to it.
+    const pool = await getPool();
+    const chatR = await pool.query(
+        `SELECT id FROM public.chats
+          WHERE id = $1 AND user_id = $2 AND status <> 'deleted'`,
+        [chatId, userId],
+    );
+    if (chatR.rows.length === 0) {
+        return res.status(404).json({ error: "chat_not_found" });
+    }
+    const result = await piiClient.attachChat({ sessionId, chatId, userId });
+    if (!result.ok) {
+        return res.status(result.status ?? 502).json({
+            error: "attach_failed",
+            detail: result.error,
+        });
+    }
+    return res.json({ session_id: result.data.id, chat_id: result.data.chat_id });
+});
+
+// ----------------------------------------------------------------------- //
 //  POST /pii/sessions/:id/apply-overrides                                 //
 // ----------------------------------------------------------------------- //
 
@@ -313,7 +378,25 @@ piiRouter.post(
         if (!(await userOwnsSession(userId, sessionId))) {
             return res.status(403).json({ error: "session_owner_mismatch" });
         }
-        const { masked_placeholders, approved_for_disclosure, text } = req.body ?? {};
+        const {
+            masked_placeholders,
+            approved_for_disclosure,
+            disclosure_reasons,
+            text,
+        } = req.body ?? {};
+        // Per-placeholder audit reasons (#55): forward only well-formed
+        // string→string pairs so a malformed body can't pollute the
+        // shield's audit metadata.
+        const disclosureReasons: Record<string, string> = {};
+        if (disclosure_reasons && typeof disclosure_reasons === "object") {
+            for (const [ph, reason] of Object.entries(
+                disclosure_reasons as Record<string, unknown>,
+            )) {
+                if (typeof reason === "string" && reason.trim()) {
+                    disclosureReasons[ph] = reason.trim();
+                }
+            }
+        }
         const result = await piiClient.applyOverrides({
             sessionId,
             maskedPlaceholders: Array.isArray(masked_placeholders)
@@ -322,6 +405,7 @@ piiRouter.post(
             approvedForDisclosure: Array.isArray(approved_for_disclosure)
                 ? approved_for_disclosure
                 : [],
+            disclosureReasons,
             text: typeof text === "string" ? text : undefined,
         });
         if (!result.ok) {
@@ -351,24 +435,21 @@ piiRouter.post(
         if (typeof placeholder !== "string" || !placeholder) {
             return res.status(400).json({ error: "missing_placeholder" });
         }
-        // Direct fetch — sidecar's `/sessions/{id}/disclose-placeholder`.
-        // We keep the body shape identical so the proxy stays a one-liner.
-        const url = `${process.env.PII_SHIELD_URL?.replace(/\/$/, "")}/sessions/${sessionId}/disclose-placeholder`;
-        try {
-            const resp = await fetch(url, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ placeholder, reason }),
-                signal: AbortSignal.timeout(5000),
-            });
-            const data = await resp.json();
-            return res.status(resp.status).json(data);
-        } catch (err) {
-            return res.status(502).json({
+        // Through piiClient like every other shield call (#52) — the
+        // old hand-rolled fetch sent no OIDC token, so disclosure was
+        // dead in prod (Cloud Run 403 before the request ever landed).
+        const result = await piiClient.disclosePlaceholder({
+            sessionId,
+            placeholder,
+            reason: typeof reason === "string" && reason.trim() ? reason.trim() : undefined,
+        });
+        if (!result.ok) {
+            return res.status(result.status ?? 502).json({
                 error: "sidecar_failure",
-                detail: err instanceof Error ? err.message : String(err),
+                detail: result.error,
             });
         }
+        return res.json(result.data);
     },
 );
 

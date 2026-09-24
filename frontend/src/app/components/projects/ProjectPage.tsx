@@ -29,7 +29,6 @@ import {
     createTabularReview,
     updateProject,
     listProjectChats,
-    deleteChat,
     renameChat,
     listTabularReviews,
     deleteTabularReview,
@@ -70,6 +69,7 @@ import { invalidateDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 import { AddNewTRModal } from "@/app/components/tabular/AddNewTRModal";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { track } from "@/app/lib/analytics";
+import { SUPPORTED_UPLOAD_LABEL } from "@/app/lib/supportedFileTypes";
 import { useLocale, useTranslations } from "next-intl";
 
 interface Props {
@@ -143,6 +143,7 @@ function DocVersionHistory({
         displayName: string | null,
     ) => Promise<void> | void;
 }) {
+    const t = useTranslations("projectPage");
     const [editingVersionId, setEditingVersionId] = useState<string | null>(
         null,
     );
@@ -162,7 +163,7 @@ function DocVersionHistory({
                 <div className={`sticky left-8 z-[60] ${NAME_COL_W} bg-muted/60 p-2`}>
                     <div className="flex items-center gap-2">
                         <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/70" />
-                        <span>Loading versions…</span>
+                        <span>{t("loadingVersions")}</span>
                     </div>
                 </div>
             </div>
@@ -174,7 +175,7 @@ function DocVersionHistory({
                 <div className={`sticky left-0 z-[60] ${CHECK_W} bg-muted/60 self-stretch`} />
                 <div className={`sticky left-8 z-[60] ${NAME_COL_W} bg-muted/60 p-2`}>
                     <div>
-                        No version history.
+                        {t("noVersionHistory")}
                     </div>
                 </div>
             </div>
@@ -189,7 +190,7 @@ function DocVersionHistory({
                     typeof v.version_number === "number" && v.version_number >= 1
                         ? `${v.version_number}`
                         : v.source === "upload"
-                          ? "Original"
+                          ? t("versionOriginal")
                           : "—";
                 const displayLabel = v.display_name?.trim() || numberLabel;
                 const dt = new Date(v.created_at);
@@ -247,7 +248,7 @@ function DocVersionHistory({
                                         setEditingVersionId(v.id);
                                         setEditingValue(v.display_name ?? "");
                                     }}
-                                    title="Rename version"
+                                    title={t("renameVersion")}
                                     className="shrink-0 rounded p-0.5 text-muted-foreground/70 opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent transition"
                                 >
                                     <Pencil className="h-3 w-3" />
@@ -267,7 +268,7 @@ function DocVersionHistory({
                                     e.stopPropagation();
                                     onDownloadVersion(docId, v.id, filename);
                                 }}
-                                title="Download this version"
+                                title={t("downloadVersion")}
                                 className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
                             >
                                 <Download className="h-3.5 w-3.5" />
@@ -283,6 +284,10 @@ function DocVersionHistory({
 export function ProjectPage({ projectId }: Props) {
     const tProject = useTranslations("projectPage");
     const tDelete = useTranslations("confirmDelete");
+    const tCommon = useTranslations("common");
+    const tRowActions = useTranslations("rowActions");
+    const tDocs = useTranslations("documents");
+    const tTRPage = useTranslations("tabularReviewsPage");
     const locale = useLocale();
     const { confirm: confirmDialog, alert: alertDialog, dialog: confirmDialogEl } =
         useConfirmDialog();
@@ -479,7 +484,10 @@ export function ProjectPage({ projectId }: Props) {
     const [search, setSearch] = useState("");
 
     const router = useRouter();
-    const { saveChat } = useChatHistoryContext();
+    // Delete through the context, not mikeApi directly — the raw call left
+    // the deleted chat in the sidebar's cache, where clicking it 404s and
+    // bounces the user back here (issue #103).
+    const { saveChat, deleteChat } = useChatHistoryContext();
 
     function handleTabChange(newTab: Tab) {
         const base = `/projects/${projectId}`;
@@ -581,26 +589,65 @@ export function ProjectPage({ projectId }: Props) {
         setExpandedFolderIds((prev) => new Set([...prev, tempId]));
         if (parentId) setExpandedFolderIds((prev) => new Set([...prev, parentId]));
 
-        // Replace with real folder from API
-        const folder = await createProjectFolder(projectId, name, parentId ?? undefined);
-        setFolders((prev) => prev.map((f) => f.id === tempId ? folder : f));
-        setExpandedFolderIds((prev) => {
-            const next = new Set(prev);
-            next.delete(tempId);
-            next.add(folder.id);
-            return next;
-        });
+        // Replace with real folder from API. On failure, drop the optimistic
+        // temp row — otherwise it lingered forever and rename/delete on its
+        // `temp-…` id 404'd (issue #102).
+        try {
+            const folder = await createProjectFolder(projectId, name, parentId ?? undefined);
+            setFolders((prev) => prev.map((f) => f.id === tempId ? folder : f));
+            setExpandedFolderIds((prev) => {
+                const next = new Set(prev);
+                next.delete(tempId);
+                next.add(folder.id);
+                return next;
+            });
+        } catch (err) {
+            console.error("Failed to create folder", err);
+            setFolders((prev) => prev.filter((f) => f.id !== tempId));
+            setExpandedFolderIds((prev) => {
+                const next = new Set(prev);
+                next.delete(tempId);
+                return next;
+            });
+        }
     }
 
     async function handleRenameFolder(folderId: string) {
         const name = renameFolderValue.trim();
         setRenamingFolderId(null);
         if (!name) return;
+        const prevFolders = folders;
         setFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, name } : f));
-        await renameProjectFolder(projectId, folderId, name);
+        try {
+            await renameProjectFolder(projectId, folderId, name);
+        } catch (err) {
+            // Roll back so the UI doesn't show a change the server rejected
+            // (which silently reverted on reload, issue #102).
+            console.error("Failed to rename folder", err);
+            setFolders(prevFolders);
+        }
+        return;
     }
 
     async function handleDeleteFolder(folderId: string) {
+        // Backend owner-gates folder deletion (#26) and would 404 silently;
+        // surface a clear permission warning instead (mirrors handleTitleCommit).
+        if (project && project.is_owner === false) {
+            setOwnerOnlyAction(tProject("deleteFolderAction"));
+            return;
+        }
+        // Folder delete cascades every subfolder — confirm first (issue #99).
+        const folder = folders.find((f) => f.id === folderId);
+        const ok = await confirmDialog({
+            title: tDelete("folderTitle"),
+            message: tDelete("folderBodyNamed", {
+                title: folder?.name ?? "",
+            }),
+            confirmLabel: tDelete("deleteAction"),
+            destructive: true,
+        });
+        if (!ok) return;
+
         // Collect all subfolder IDs that will cascade-delete
         const toDelete = new Set<string>();
         function collectIds(id: string) {
@@ -636,13 +683,20 @@ export function ProjectPage({ projectId }: Props) {
     }
 
     async function handleRemoveDocFromFolder(docId: string) {
+        const prevProject = project;
         setProject((prev) => prev ? {
             ...prev,
             documents: (prev.documents ?? []).map((d) =>
                 d.id === docId ? { ...d, folder_id: null } : d,
             ),
         } : prev);
-        await moveDocumentToFolder(projectId, docId, null);
+        try {
+            await moveDocumentToFolder(projectId, docId, null);
+        } catch (err) {
+            // Roll back the optimistic move on failure (issue #102).
+            console.error("Failed to move document out of folder", err);
+            setProject(prevProject);
+        }
     }
 
     async function handleRemoveDoc(docId: string) {
@@ -650,9 +704,19 @@ export function ProjectPage({ projectId }: Props) {
         // Backend only lets the doc creator delete. Warn the requester
         // instead of letting the request 404 silently.
         if (doc && user?.id && doc.user_id && doc.user_id !== user.id) {
-            setOwnerOnlyAction("delete this document");
+            setOwnerOnlyAction(tProject("deleteDocument"));
             return;
         }
+        // Permanent, all-versions delete — confirm first (issue #99).
+        const ok = await confirmDialog({
+            title: tDelete("documentTitle"),
+            message: tDelete("documentBodyNamed", {
+                title: doc?.filename ?? "",
+            }),
+            confirmLabel: tDelete("deleteAction"),
+            destructive: true,
+        });
+        if (!ok) return;
         await deleteDocument(docId);
         setProject((prev) =>
             prev ? { ...prev, documents: prev.documents?.filter((d) => d.id !== docId) || [] } : prev,
@@ -702,7 +766,7 @@ export function ProjectPage({ projectId }: Props) {
         // Server-side this would 404 silently for non-owners; surface a
         // clear permission warning instead.
         if (project && project.is_owner === false) {
-            setOwnerOnlyAction("rename this project");
+            setOwnerOnlyAction(tProject("renameProject"));
             return;
         }
         setProject((prev) => (prev ? { ...prev, name: newName } : prev));
@@ -715,7 +779,7 @@ export function ProjectPage({ projectId }: Props) {
         if (!trimmed) return;
         const chat = chats.find((c) => c.id === chatId);
         if (chat && user?.id && chat.user_id !== user.id) {
-            setOwnerOnlyAction("rename this chat");
+            setOwnerOnlyAction(tProject("renameChat"));
             return;
         }
         setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, title: trimmed } : c)));
@@ -806,6 +870,16 @@ export function ProjectPage({ projectId }: Props) {
             return !d || !d.user_id || !user?.id || d.user_id === user.id;
         });
         const blocked = ids.length - owned.length;
+        // Bulk permanent delete — confirm first, like chats/reviews (#99).
+        if (owned.length > 0) {
+            const ok = await confirmDialog({
+                title: tDelete("documentsTitle"),
+                message: tDelete("documentsBody", { count: owned.length }),
+                confirmLabel: tDelete("deleteAction"),
+                destructive: true,
+            });
+            if (!ok) return;
+        }
         setSelectedDocIds([]);
         await Promise.all(owned.map((id) => deleteDocument(id).catch(() => {})));
         setProject((prev) =>
@@ -813,7 +887,7 @@ export function ProjectPage({ projectId }: Props) {
         );
         if (blocked > 0) {
             setOwnerOnlyAction(
-                `delete ${blocked} of the selected documents — only the document creator can delete a document`,
+                tDocs("ownerOnlyDeletePartial", { count: blocked }),
             );
         }
     }
@@ -840,7 +914,7 @@ export function ProjectPage({ projectId }: Props) {
         setChats((prev) => prev.filter((c) => !owned.includes(c.id)));
         if (blocked > 0) {
             setOwnerOnlyAction(
-                `delete ${blocked} of the selected chats — only the chat creator can delete a chat`,
+                tProject("ownerOnlyDeleteChatsPartial", { count: blocked }),
             );
         }
     }
@@ -867,7 +941,7 @@ export function ProjectPage({ projectId }: Props) {
         setProjectReviews((prev) => prev.filter((r) => !owned.includes(r.id)));
         if (blocked > 0) {
             setOwnerOnlyAction(
-                `delete ${blocked} of the selected reviews — only the review creator can delete a review`,
+                tTRPage("ownerOnlyDeletePartial", { count: blocked }),
             );
         }
     }
@@ -891,21 +965,33 @@ export function ProjectPage({ projectId }: Props) {
         if (docId) {
             const doc = (project?.documents ?? []).find((d) => d.id === docId);
             if (!doc || (doc.folder_id ?? null) === targetFolderId) return;
+            const prevProject = project;
             setProject((prev) => prev ? {
                 ...prev,
                 documents: (prev.documents ?? []).map((d) =>
                     d.id === docId ? { ...d, folder_id: targetFolderId } : d,
                 ),
             } : prev);
-            await moveDocumentToFolder(projectId, docId, targetFolderId);
+            try {
+                await moveDocumentToFolder(projectId, docId, targetFolderId);
+            } catch (err) {
+                console.error("Failed to move document", err);
+                setProject(prevProject); // roll back (issue #102)
+            }
         } else if (subFolderId && subFolderId !== targetFolderId) {
             if (targetFolderId !== null && wouldCreateCycle(subFolderId, targetFolderId)) return;
             const folder = folders.find((f) => f.id === subFolderId);
             if (!folder || (folder.parent_folder_id ?? null) === targetFolderId) return;
+            const prevFolders = folders;
             setFolders((prev) => prev.map((f) =>
                 f.id === subFolderId ? { ...f, parent_folder_id: targetFolderId } : f,
             ));
-            await moveSubfolderToFolder(projectId, subFolderId, targetFolderId);
+            try {
+                await moveSubfolderToFolder(projectId, subFolderId, targetFolderId);
+            } catch (err) {
+                console.error("Failed to move folder", err);
+                setFolders(prevFolders); // roll back (issue #102)
+            }
         }
     }
 
@@ -972,6 +1058,12 @@ export function ProjectPage({ projectId }: Props) {
                                     e.dataTransfer.setData("application/mike-doc", doc.id);
                                     e.dataTransfer.effectAllowed = "move";
                                 }}
+                                // Swallow drag-over/drop on a doc row so a drop
+                                // ONTO another document doesn't bubble to the
+                                // root container and yank the dragged doc out to
+                                // the project root (issue #105).
+                                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                onDrop={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                 onClick={() => {
                                     setViewingDocVersion(null);
                                     setViewingDoc(doc);
@@ -1174,7 +1266,7 @@ export function ProjectPage({ projectId }: Props) {
 
     if (loading) {
         return (
-            <div className="flex-1 overflow-y-auto bg-background">
+            <div className="flex-1 h-full overflow-y-auto bg-background">
                 <div className="flex items-start justify-between px-8 py-4">
                     <div className="flex items-center gap-1.5 text-2xl font-medium font-serif">
                         <span className="text-muted-foreground/70">{tProject("projects")}</span>
@@ -1248,7 +1340,7 @@ export function ProjectPage({ projectId }: Props) {
                 onClick={() => setActionsOpen((v) => !v)}
                 className="flex items-center gap-1 text-xs font-medium text-foreground transition-colors"
             >
-                Actions
+                {tCommon("actions")}
                 <ChevronDown className="h-3.5 w-3.5" />
             </button>
             {actionsOpen && (
@@ -1258,7 +1350,7 @@ export function ProjectPage({ projectId }: Props) {
                             onClick={handleDownloadSelectedDocs}
                             className="w-full px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent transition-colors"
                         >
-                            Download
+                            {tRowActions("download")}
                         </button>
                     )}
                     {tab === "documents" && selectedDocIds.some((id) => docs.find((d) => d.id === id)?.folder_id != null) && (
@@ -1266,14 +1358,14 @@ export function ProjectPage({ projectId }: Props) {
                             onClick={handleRemoveSelectedFromFolder}
                             className="w-full px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent transition-colors"
                         >
-                            Remove from subfolder
+                            {tRowActions("removeFromSubfolder")}
                         </button>
                     )}
                     <button
                         onClick={handleDeleteSelected}
                         className="w-full px-3 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 transition-colors"
                     >
-                        Delete
+                        {tCommon("delete")}
                     </button>
                 </div>
             )}
@@ -1307,7 +1399,7 @@ export function ProjectPage({ projectId }: Props) {
     return (
         <div className="flex-1 overflow-y-auto bg-background flex flex-col h-full">
             {creatingChat && (
-                <FullscreenLoader label="Stvaranje novog razgovora…" />
+                <FullscreenLoader label={tProject("creatingChat")} />
             )}
             {/* Page header */}
             <div className="flex items-start justify-between px-8 py-4">
@@ -1444,7 +1536,7 @@ export function ProjectPage({ projectId }: Props) {
                                 className="flex-1 flex cursor-pointer flex-col items-center justify-center py-24 text-center"
                             >
                                 <Upload className="h-8 w-8 text-muted-foreground/70 mb-3" />
-                                <p className="text-sm text-muted-foreground/70">{tProject("dropFilesHere")}</p>
+                                <p className="text-sm text-muted-foreground/70">{tProject("dropFilesHere", { types: SUPPORTED_UPLOAD_LABEL })}</p>
                             </div>
                         ) : (
                             <div
@@ -1575,7 +1667,11 @@ export function ProjectPage({ projectId }: Props) {
                         {contextMenu && (
                             <div
                                 ref={contextMenuRef}
-                                className="fixed z-50 w-44 rounded-lg border border-border bg-surface-elevated overflow-hidden text-xs"
+                                // z-[70] so the menu paints ABOVE the sticky
+                                // checkbox/name columns (z-[60]) — otherwise
+                                // right-clicking a folder/doc name left its
+                                // left portion hidden behind the rows (#105).
+                                className="fixed z-[70] w-44 rounded-lg border border-border bg-surface-elevated overflow-hidden text-xs"
                                 style={{ top: contextMenu.y, left: contextMenu.x }}
                                 onClick={(e) => e.stopPropagation()}
                             >
@@ -1653,6 +1749,12 @@ export function ProjectPage({ projectId }: Props) {
                                     {tProject("assistantEmptyCreateNew")}
                                 </button>
                             </div>
+                        ) : filteredChats.length === 0 ? (
+                            // A search with zero matches used to leave a bare
+                            // header row (issue #105).
+                            <p className="py-12 text-center text-sm text-muted-foreground/70">
+                                {tProject("noSearchResults")}
+                            </p>
                         ) : (
                             <div>
                                 {filteredChats.map((chat) => (
@@ -1676,7 +1778,7 @@ export function ProjectPage({ projectId }: Props) {
                                             <RowActions
                                                 onRename={() => {
                                                     if (user?.id && chat.user_id !== user.id) {
-                                                        setOwnerOnlyAction("rename this chat");
+                                                        setOwnerOnlyAction(tProject("renameChat"));
                                                         return;
                                                     }
                                                     setRenameChatValue(chat.title && chat.title !== "New Chat" ? chat.title : "");
@@ -1684,7 +1786,7 @@ export function ProjectPage({ projectId }: Props) {
                                                 }}
                                                 onDelete={async () => {
                                                     if (user?.id && chat.user_id !== user.id) {
-                                                        setOwnerOnlyAction("delete this chat");
+                                                        setOwnerOnlyAction(tProject("deleteChat"));
                                                         return;
                                                     }
                                                     const trimmed = chat.title?.trim();
@@ -1742,6 +1844,10 @@ export function ProjectPage({ projectId }: Props) {
                                     {tProject("tabularEmptyCreateNew")}
                                 </button>
                             </div>
+                        ) : filteredReviews.length === 0 ? (
+                            <p className="py-12 text-center text-sm text-muted-foreground/70">
+                                {tProject("noSearchResults")}
+                            </p>
                         ) : (
                             <div>
                                 {filteredReviews.map((review) => (
@@ -1855,12 +1961,12 @@ export function ProjectPage({ projectId }: Props) {
                 fetchPeople={getProjectPeople}
                 currentUserEmail={user?.email ?? null}
                 breadcrumb={[
-                    "Projects",
+                    tProject("projects"),
                     project
                         ? project.name +
                           (project.cm_number ? ` (${project.cm_number})` : "")
                         : "",
-                    "People",
+                    tProject("people"),
                 ]}
                 // Only owners may modify the member list. Without this prop
                 // PeopleModal renders read-only — non-owners can still see

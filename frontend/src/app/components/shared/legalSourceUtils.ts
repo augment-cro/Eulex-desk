@@ -1,9 +1,44 @@
 import type {
+    AssistantEvent,
     CitationPinpoint,
     LegalDocumentArticle,
     LegalSource,
+    MikeAnnotation,
     PinpointTarget,
 } from "./types";
+
+/**
+ * Legal sources harvested from the messages BEFORE `beforeIndex` — the
+ * conversation-level fallback registry for auto-linking article references
+ * in follow-up answers that carry no `legal_sources` events of their own
+ * (the model reused the already-fetched sources without calling the legal
+ * tools again, issue #149). Deduped by source id, first occurrence wins.
+ */
+export function harvestConversationLegalSources(
+    messages: ReadonlyArray<{
+        events?: AssistantEvent[];
+        annotations?: MikeAnnotation[];
+    }>,
+    beforeIndex: number,
+): LegalSource[] {
+    const byId = new Map<string, LegalSource>();
+    const upto = Math.min(beforeIndex, messages.length);
+    for (let i = 0; i < upto; i++) {
+        for (const ev of messages[i].events ?? []) {
+            if (ev.type === "legal_sources") {
+                for (const s of ev.sources) {
+                    if (!byId.has(s.id)) byId.set(s.id, s);
+                }
+            }
+        }
+        for (const a of messages[i].annotations ?? []) {
+            if (a.type === "legal_source_data" && !byId.has(a.source.id)) {
+                byId.set(a.source.id, a.source);
+            }
+        }
+    }
+    return [...byId.values()];
+}
 
 /**
  * Kill switch for the magenta stavak/točka pinpoint highlight. Flip to
@@ -223,13 +258,107 @@ export function parsePinpoint(
 }
 
 /**
- * Bare article number from a label ("Članak 5." → "5", "Article 12a" → "12a").
- * Language-independent; matches the backend's extraction so the panel's
- * `data-article-number` keys line up.
+ * Canonical form of an article-number token: strip dots and whitespace,
+ * lowercase — "17.a", "17. a" and "17a" all key as "17a". MUST stay
+ * byte-identical to the backend's normalization (legalDocs.ts) so the panel's
+ * `data-article-number` keys line up with the cited numbers.
+ */
+export function normalizeArticleNumber(raw: string): string {
+    return raw.replace(/[.\s]/g, "").toLowerCase();
+}
+
+/**
+ * Bare article number from a label ("Članak 5." → "5", "Article 12a" → "12a",
+ * "Članak 17.a" → "17a"). Language-independent; matches the backend's
+ * extraction so the panel's `data-article-number` keys line up.
  */
 export function articleNumberOf(label: string | null | undefined): string | null {
     if (!label) return null;
-    return label.match(/\d+[a-z]?/i)?.[0]?.toLowerCase() ?? null;
+    const raw = label.match(/\d+(?:\.?\s?[a-z](?![a-z]))?/i)?.[0];
+    return raw ? normalizeArticleNumber(raw) : null;
+}
+
+/** Normalized article number with a letter suffix — "17a" (from "17.a"). */
+export function hasArticleSuffix(norm: string): boolean {
+    return /^\d+[a-z]$/.test(norm);
+}
+
+/** Base digits of a normalized article number ("17a" → "17", "17" → "17"). */
+export function articleBaseOf(norm: string): string {
+    return norm.match(/^\d+/)?.[0] ?? norm;
+}
+
+/** First article-number token in a clean label ("Članak 17. a" → "17. a"). */
+const LABEL_NUM_RE = /\d+(?:\.?\s?[a-z](?![a-z]))?/i;
+
+/**
+ * Article-keyword + number tokens inside prose-ish strings (titles,
+ * citations): "čl. 17", "članak 17.a", "Article 12a". Keyword required so a
+ * bare "17" in an NN gazette reference ("NN 17/2020") is never touched.
+ */
+const TEXT_ART_RE =
+    /((?:člank\w*|članc\w*|članak\w*|articol\w*|artikel\w*|articles?|art\.?|čl\.?|§{1,2})\s*)(\d+(?:\.?\s?[a-z](?![a-z]))?)/giu;
+
+/**
+ * Issue #43 — the upstream legal MCP sometimes returns the BASE article
+ * number ("17") for a suffixed article (17.a): `article.label` comes back
+ * null and `doc.article_number` lacks the letter, so the tab/header pair
+ * "čl. 17" with 17.a's heading. When the in-text reference that opened the
+ * source DOES carry the suffix ("članak 17.a"), upgrade the source's label
+ * fields so the suffix survives into the tab, the panel header and the
+ * scroll/CITIRANO targeting (`articleNumberOf` → "17a").
+ *
+ * `suffixedRaw` is the raw number as written in prose ("17.a", "17. a",
+ * "12a") — its formatting is preserved (whitespace collapsed). No-op unless
+ * the ref is suffixed AND the source's own number is exactly its bare base,
+ * so plain numeric articles and already-suffixed labels are never altered.
+ */
+export function upgradeSourceArticleSuffix(
+    source: LegalSource,
+    suffixedRaw: string,
+): LegalSource {
+    const refNorm = normalizeArticleNumber(suffixedRaw);
+    if (!hasArticleSuffix(refNorm)) return source;
+    const base = articleBaseOf(refNorm);
+    const own = articleNumberOf(source.articleLabel);
+    if (own !== base) return source; // already suffixed, or a different article
+    const display = suffixedRaw.replace(/\s+/g, "");
+    const swap = (text: string | null | undefined): string | null => {
+        if (!text) return text ?? null;
+        return text.replace(TEXT_ART_RE, (m, kw: string, num: string) =>
+            normalizeArticleNumber(num) === base ? `${kw}${display}` : m,
+        );
+    };
+    const articleLabel = source.articleLabel
+        ? // The label may be a bare number ("17") with no keyword — replace
+          // the number token itself, not just keyword-prefixed occurrences.
+          source.articleLabel.replace(LABEL_NUM_RE, display)
+        : display;
+    return {
+        ...source,
+        articleLabel,
+        title: swap(source.title) ?? source.title,
+        citation: swap(source.citation),
+    };
+}
+
+/**
+ * Display title for a legal-source tab / panel header. When the source's
+ * `articleLabel` carries a letter suffix ("Članak 17.a") but the MCP-composed
+ * `title` pairs the BARE base number with the article heading ("Zakon o
+ * radu, čl. 17 — Obvezni sadržaj…"), rewrite the title's article token to the
+ * suffixed form. Plain numeric articles pass through untouched (issue #43).
+ */
+export function legalSourceDisplayTitle(source: LegalSource): string {
+    const rawOwn = source.articleLabel?.match(LABEL_NUM_RE)?.[0];
+    if (!rawOwn) return source.title;
+    const ownNorm = normalizeArticleNumber(rawOwn);
+    if (!hasArticleSuffix(ownNorm)) return source.title;
+    const base = articleBaseOf(ownNorm);
+    const display = rawOwn.replace(/\s+/g, "");
+    return source.title.replace(TEXT_ART_RE, (m, kw: string, num: string) =>
+        normalizeArticleNumber(num) === base ? `${kw}${display}` : m,
+    );
 }
 
 /**
@@ -416,4 +545,19 @@ export function groupLegalSegments(
     flush();
     flushPendingAsHeading();
     return blocks;
+}
+
+/**
+ * Human display form of a Narodne novine reference. The HR API's
+ * `nn_reference` carries the document's ordinal within the issue
+ * ("NN 136/2025-2018" = issue 136/2025, objava no. 2018) — legal citation
+ * convention drops that ordinal, so strip the "-NNNN" suffix everywhere the
+ * user reads it. Also normalizes spacing ("NN136/25" → "NN 136/25").
+ */
+export function formatNnReference(ref: string | null | undefined): string | null {
+    if (!ref) return null;
+    return ref
+        .replace(/(NN\s*\d+\/\d+)-\d+/gi, "$1")
+        .replace(/NN\s*/gi, "NN ")
+        .trim();
 }

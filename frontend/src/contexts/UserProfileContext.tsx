@@ -28,6 +28,17 @@ interface UserProfile {
      * can also set / clear it in the profile page.
      */
     vatNumber: string | null;
+    /**
+     * Billing address (tracker #35). Zakon o PDV-u čl. 79. requires the
+     * buyer's address on a business invoice; pushed to Stripe
+     * customer.address. Street + city mandatory for a business at
+     * checkout, postal code optional.
+     */
+    addressLine1: string | null;
+    addressCity: string | null;
+    addressPostalCode: string | null;
+    /** Optional contact phone (tracker #37) — never required anywhere. */
+    phone: string | null;
     messageCreditsUsed: number;
     creditsResetDate: string;
     creditsRemaining: number;
@@ -73,20 +84,15 @@ interface UserProfile {
         mistral: boolean;
     };
     /**
-     * PII Shield user defaults (migration 120 + plan §1.5):
-     *
-     *  - piiDefaultMode: "off" disables the shield entirely; "standard"
-     *    anonymizes silently; "strict_legal" requires user review on
-     *    every new document; "strict" additionally hard-blocks
-     *    hallucinated placeholders.
-     *  - piiReviewRequired: force the review modal even in standard
-     *    mode.
-     *  - piiDisclosurePolicy: how the assistant resolves a placeholder
-     *    that an external tool wants to use ("allow" / "deny" / "ask").
+     * PII Shield user default — the single Anonymization mode (#14 /
+     * migration 207): "off" disables the shield entirely, "standard"
+     * anonymizes silently (no review prompt), "strict" masks the same
+     * way but asks the user to review every text input and document —
+     * initial and later additions — and hard-blocks hallucinated
+     * placeholders. The wire value "strict_legal" is a retired legacy
+     * alias of "strict" and is normalized away at parse time.
      */
-    piiDefaultMode: "off" | "standard" | "strict_legal" | "strict";
-    piiReviewRequired: boolean;
-    piiDisclosurePolicy: "allow" | "deny" | "ask";
+    piiDefaultMode: "off" | "standard" | "strict";
 }
 
 interface UserProfileContextType {
@@ -103,6 +109,15 @@ interface UserProfileContextType {
     updateCountry: (country: string | null) => Promise<boolean>;
     /** Persist the user's VAT number. Pass null or "" to clear. */
     updateVatNumber: (vatNumber: string | null) => Promise<boolean>;
+    /**
+     * Persist one billing-address field (tracker #35). Pass null or ""
+     * to clear. The backend mirrors the full address onto the Stripe
+     * customer so the next invoice carries it.
+     */
+    updateAddress: (
+        field: "addressLine1" | "addressCity" | "addressPostalCode" | "phone",
+        value: string | null,
+    ) => Promise<boolean>;
     updateModelPreference: (
         field: "tabularModel",
         value: string,
@@ -126,8 +141,6 @@ interface UserProfileContextType {
     updatePiiDefaults: (
         updates: Partial<{
             piiDefaultMode: UserProfile["piiDefaultMode"];
-            piiReviewRequired: boolean;
-            piiDisclosurePolicy: UserProfile["piiDisclosurePolicy"];
         }>,
     ) => Promise<boolean>;
     reloadProfile: () => Promise<void>;
@@ -138,13 +151,11 @@ const UserProfileContext = createContext<UserProfileContextType | undefined>(
     undefined,
 );
 
-const API_BASE =
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
-
 const MONTHLY_CREDIT_LIMIT = 999999; // temporarily unlimited
 
 import { getStoredTokens } from "@/lib/oauth";
 
+import { API_BASE } from "@/app/lib/apiBase";
 function authHeaders(): Record<string, string> {
     const tokens = getStoredTokens();
     if (!tokens?.access_token) return {};
@@ -189,30 +200,31 @@ function mapServerProfile(data: any): UserProfile {
     const PII_MODES: ReadonlyArray<UserProfile["piiDefaultMode"]> = [
         "off",
         "standard",
-        "strict_legal",
         "strict",
     ];
-    const PII_DISCLOSURE: ReadonlyArray<UserProfile["piiDisclosurePolicy"]> = [
-        "allow",
-        "deny",
-        "ask",
-    ];
+    // "strict_legal" is a retired legacy value (migration 207 collapses
+    // it into "strict") — normalize a not-yet-migrated row on read.
+    const rawPiiMode =
+        data.pii_default_mode === "strict_legal"
+            ? "strict"
+            : data.pii_default_mode;
     const piiDefaultMode: UserProfile["piiDefaultMode"] =
-        typeof data.pii_default_mode === "string" &&
-        (PII_MODES as readonly string[]).includes(data.pii_default_mode)
-            ? (data.pii_default_mode as UserProfile["piiDefaultMode"])
+        typeof rawPiiMode === "string" &&
+        (PII_MODES as readonly string[]).includes(rawPiiMode)
+            ? (rawPiiMode as UserProfile["piiDefaultMode"])
             : "off";
-    const piiDisclosurePolicy: UserProfile["piiDisclosurePolicy"] =
-        typeof data.pii_disclosure_policy === "string" &&
-        (PII_DISCLOSURE as readonly string[]).includes(data.pii_disclosure_policy)
-            ? (data.pii_disclosure_policy as UserProfile["piiDisclosurePolicy"])
-            : "ask";
 
+    const str = (v: unknown): string | null =>
+        typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
     return {
         displayName: data.display_name ?? null,
         organisation: data.organisation ?? null,
         country,
         vatNumber,
+        addressLine1: str(data.address_line1),
+        addressCity: str(data.address_city),
+        addressPostalCode: str(data.address_postal_code),
+        phone: str(data.phone),
         messageCreditsUsed: creditsUsed,
         creditsResetDate:
             data.credits_reset_date ??
@@ -234,8 +246,6 @@ function mapServerProfile(data: any): UserProfile {
             mistral: !!data.server_keys?.mistral,
         },
         piiDefaultMode,
-        piiReviewRequired: !!data.pii_review_required,
-        piiDisclosurePolicy,
     };
 }
 
@@ -281,6 +291,10 @@ const DEFAULT_PROFILE: UserProfile = {
     organisation: null,
     country: null,
     vatNumber: null,
+    addressLine1: null,
+    addressCity: null,
+    addressPostalCode: null,
+    phone: null,
     messageCreditsUsed: 0,
     creditsResetDate: new Date(Date.now() + 30 * 86400000).toISOString(),
     creditsRemaining: MONTHLY_CREDIT_LIMIT,
@@ -300,8 +314,6 @@ const DEFAULT_PROFILE: UserProfile = {
         mistral: false,
     },
     piiDefaultMode: "off",
-    piiReviewRequired: false,
-    piiDisclosurePolicy: "ask",
 };
 
 export function UserProfileProvider({ children }: { children: ReactNode }) {
@@ -345,15 +357,21 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         }
     }, []);
 
+    // Keyed on the user's id, NOT the `user` object: AuthContext replaces
+    // that object on every token refresh (and again when it swaps the JWT
+    // sub for the internal UUID), so depending on its identity refetched the
+    // profile on each one — the request loop in tracker #32.
+    const userId = user?.id ?? null;
+
     useEffect(() => {
-        if (isAuthenticated && user) {
+        if (isAuthenticated && userId) {
             setLoading(true);
             loadProfile();
         } else {
             setProfile(null);
             setLoading(false);
         }
-    }, [isAuthenticated, user, loadProfile]);
+    }, [isAuthenticated, userId, loadProfile]);
 
     const updateDisplayName = useCallback(
         async (displayName: string): Promise<boolean> => {
@@ -430,6 +448,37 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         [user],
     );
 
+    const updateAddress = useCallback(
+        async (
+            field: "addressLine1" | "addressCity" | "addressPostalCode" | "phone",
+            value: string | null,
+        ): Promise<boolean> => {
+            if (!user) return false;
+            const normalised =
+                typeof value === "string" && value.trim().length > 0
+                    ? value.trim()
+                    : null;
+            const column =
+                field === "addressLine1"
+                    ? "address_line1"
+                    : field === "addressCity"
+                      ? "address_city"
+                      : field === "phone"
+                        ? "phone"
+                        : "address_postal_code";
+            try {
+                await patchProfile({ [column]: normalised ?? "" });
+                setProfile((prev) =>
+                    prev ? { ...prev, [field]: normalised } : null,
+                );
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        [user],
+    );
+
     const updateModelPreference = useCallback(
         async (
             field: "tabularModel",
@@ -473,35 +522,16 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
     const updatePiiDefaults = useCallback(
         async (updates: {
             piiDefaultMode?: UserProfile["piiDefaultMode"];
-            piiReviewRequired?: boolean;
-            piiDisclosurePolicy?: UserProfile["piiDisclosurePolicy"];
         }): Promise<boolean> => {
             if (!user) return false;
-            const payload: Record<string, unknown> = {};
-            if (updates.piiDefaultMode !== undefined)
-                payload.pii_default_mode = updates.piiDefaultMode;
-            if (updates.piiReviewRequired !== undefined)
-                payload.pii_review_required = updates.piiReviewRequired;
-            if (updates.piiDisclosurePolicy !== undefined)
-                payload.pii_disclosure_policy = updates.piiDisclosurePolicy;
-            if (Object.keys(payload).length === 0) return true;
+            if (updates.piiDefaultMode === undefined) return true;
             try {
-                await patchProfile(payload);
+                await patchProfile({
+                    pii_default_mode: updates.piiDefaultMode,
+                });
                 setProfile((prev) =>
                     prev
-                        ? {
-                              ...prev,
-                              ...(updates.piiDefaultMode !== undefined && {
-                                  piiDefaultMode: updates.piiDefaultMode,
-                              }),
-                              ...(updates.piiReviewRequired !== undefined && {
-                                  piiReviewRequired: updates.piiReviewRequired,
-                              }),
-                              ...(updates.piiDisclosurePolicy !== undefined && {
-                                  piiDisclosurePolicy:
-                                      updates.piiDisclosurePolicy,
-                              }),
-                          }
+                        ? { ...prev, piiDefaultMode: updates.piiDefaultMode! }
                         : null,
                 );
                 return true;
@@ -549,6 +579,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 updateOrganisation,
                 updateCountry,
                 updateVatNumber,
+                updateAddress,
                 updateModelPreference,
                 updateReasoningEffort,
                 updatePiiDefaults,

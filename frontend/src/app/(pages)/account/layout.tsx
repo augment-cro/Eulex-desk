@@ -12,6 +12,7 @@ interface TabDef {
     id: string;
     labelKey:
         | "general"
+        | "billing"
         | "models"
         | "connectors"
         | "fileSources"
@@ -33,6 +34,7 @@ const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL || null;
 
 const TABS: TabDef[] = [
     { id: "general", labelKey: "general", href: "/account" },
+    { id: "billing", labelKey: "billing", href: "/account/billing" },
     { id: "models", labelKey: "models", href: "/account/models" },
     { id: "mcp", labelKey: "connectors", href: "/account/mcp", proOnly: true },
     { id: "files", labelKey: "fileSources", href: "/account/connectors" },
@@ -95,7 +97,7 @@ export default function AccountLayout({
 
                 <div className="flex flex-col md:flex-row gap-6 md:gap-10">
                     <nav
-                        aria-label="Settings"
+                        aria-label={t("settings")}
                         className="md:w-56 shrink-0 flex md:flex-col gap-1 overflow-x-auto"
                     >
                         {visibleTabs.map((tab) => {

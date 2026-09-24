@@ -36,6 +36,7 @@ import { RowActions } from "../shared/RowActions";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTranslations } from "next-intl";
+import { useConfirmDialog } from "@/app/components/modals/confirm-dialog";
 
 type Tab = "all" | "builtin" | "custom" | "hidden";
 
@@ -45,6 +46,9 @@ const NAME_COL_W = "w-[300px] shrink-0";
 export function WorkflowList() {
     const t = useTranslations("workflowsPage");
     const tCommon = useTranslations("common");
+    const tDelete = useTranslations("confirmDelete");
+    const { confirm: confirmDialog, dialog: confirmDialogEl } =
+        useConfirmDialog();
     const tRowActions = useTranslations("rowActions");
     const tBuiltinTitles = useTranslations("builtinWorkflows");
     const tBuiltinPractices = useTranslations("builtinPractices");
@@ -192,9 +196,29 @@ export function WorkflowList() {
     async function handleBulkRemove() {
         const ids = [...selectedIds];
         setActionsOpen(false);
-        setSelectedIds([]);
         const builtinIds = ids.filter((id) => isBuiltinWorkflowId(id));
-        const customIds = ids.filter((id) => !isBuiltinWorkflowId(id));
+        // Only delete workflows the user actually OWNS. Shared-to-me
+        // workflows are non-builtin UUIDs too, but the server delete is
+        // owner-scoped (0-row no-op), so removing them optimistically just
+        // made them reappear on reload (issue #120).
+        const ownedById = new Map(custom.map((w) => [w.id, w]));
+        const customIds = ids.filter(
+            (id) =>
+                !isBuiltinWorkflowId(id) &&
+                ownedById.get(id)?.is_owner !== false,
+        );
+        // Confirm the destructive custom-workflow delete (builtin "hide" is
+        // reversible and needs no prompt).
+        if (customIds.length > 0) {
+            const ok = await confirmDialog({
+                title: tDelete("workflowsTitle"),
+                message: tDelete("workflowsBody", { count: customIds.length }),
+                confirmLabel: tDelete("deleteAction"),
+                destructive: true,
+            });
+            if (!ok) return;
+        }
+        setSelectedIds([]);
         if (builtinIds.length > 0) {
             setHiddenBuiltinIds((prev) => [
                 ...prev,
@@ -205,10 +229,17 @@ export function WorkflowList() {
             );
         }
         if (customIds.length > 0) {
-            await Promise.all(
-                customIds.map((id) => deleteWorkflow(id).catch(() => {})),
+            // Remove only the rows whose delete actually succeeded, so a
+            // server failure doesn't leave a phantom-removed row (#120).
+            const results = await Promise.all(
+                customIds.map((id) =>
+                    deleteWorkflow(id)
+                        .then(() => id)
+                        .catch(() => null),
+                ),
             );
-            setCustom((prev) => prev.filter((w) => !customIds.includes(w.id)));
+            const deleted = new Set(results.filter((id): id is string => !!id));
+            setCustom((prev) => prev.filter((w) => !deleted.has(w.id)));
         }
     }
 
@@ -608,12 +639,35 @@ export function WorkflowList() {
                                     ) : wf.is_owner === false ? null : (
                                         <RowActions
                                             onDelete={async () => {
-                                                await deleteWorkflow(wf.id);
-                                                setCustom((prev) =>
-                                                    prev.filter(
-                                                        (w) => w.id !== wf.id,
+                                                // Permanent delete — confirm
+                                                // first (issue #120).
+                                                const ok = await confirmDialog({
+                                                    title: tDelete(
+                                                        "workflowTitle",
                                                     ),
-                                                );
+                                                    message: tDelete(
+                                                        "workflowBodyNamed",
+                                                        { title: wf.title },
+                                                    ),
+                                                    confirmLabel:
+                                                        tDelete("deleteAction"),
+                                                    destructive: true,
+                                                });
+                                                if (!ok) return;
+                                                try {
+                                                    await deleteWorkflow(wf.id);
+                                                    setCustom((prev) =>
+                                                        prev.filter(
+                                                            (w) =>
+                                                                w.id !== wf.id,
+                                                        ),
+                                                    );
+                                                } catch (err) {
+                                                    console.error(
+                                                        "Failed to delete workflow",
+                                                        err,
+                                                    );
+                                                }
                                             }}
                                         />
                                     )}
@@ -640,6 +694,7 @@ export function WorkflowList() {
                     router.push(`/workflows/${wf.id}`);
                 }}
             />
+            {confirmDialogEl}
         </div>
     );
 }

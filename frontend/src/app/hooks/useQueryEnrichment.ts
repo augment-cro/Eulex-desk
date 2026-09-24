@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
+import { useTranslations } from "next-intl";
 import {
     streamEnrichQuery,
     type EnrichedQuery,
@@ -76,6 +77,7 @@ function cacheSet(query: string, variants: EnrichedQuery[]): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function useQueryEnrichment() {
+    const t = useTranslations("assistant");
     // Completed variant cards (full {query, why} objects)
     const [variants, setVariants] = useState<EnrichedQuery[]>([]);
     // Per-card streaming text — index matches the incoming card position.
@@ -151,12 +153,15 @@ export function useQueryEnrichment() {
                 }
             } catch (err) {
                 if ((err as Error)?.name === "AbortError") return;
-                setError(err instanceof Error ? err.message : "Enrichment failed");
+                // Localized copy only — raw err.message is English/technical
+                // and must not reach the UI (#91).
+                console.error("[enrich] stream failed", err);
+                setError(t("enrichment.error"));
             } finally {
                 setIsEnriching(false);
             }
         },
-        [],
+        [t],
     );
 
     const reset = useCallback(() => {

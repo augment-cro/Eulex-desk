@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
+import { getClient } from "../lib/db";
 import {
   buildContentDisposition,
   downloadFile,
@@ -19,14 +20,22 @@ import { buildDownloadUrl } from "../lib/downloadTokens";
 import {
   attachActiveVersionPaths,
   attachLatestVersionNumbers,
+  contentSha256,
   loadActiveVersion,
 } from "../lib/documentVersions";
+import { sealManifest } from "../lib/manifestSigning";
 import { ensureDocAccess } from "../lib/access";
 import { normalizeUploadFilename } from "../lib/filenameUtf8";
 import { singleFileUpload } from "../lib/upload";
+import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
+import {
+  UnsupportedFileTypeError,
+  assertSupportedUploadType,
+  contentTypeForUpload,
+} from "../lib/fileTypes";
+import { textCachePathsFor } from "../lib/documentText";
 
 export const documentsRouter = Router();
-const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
 
 // Hard cap on /download-zip request size. Each entry triggers a parallel
 // loadActiveVersion + downloadFile + JSZip.file(...) that holds the full
@@ -90,7 +99,11 @@ documentsRouter.delete("/:documentId", requireAuth, async (req, res) => {
     .eq("document_id", documentId);
   await Promise.all(
     (versions ?? []).flatMap((v: { storage_path?: string; pdf_storage_path?: string }) =>
-      [v.storage_path, v.pdf_storage_path]
+      [
+        v.storage_path,
+        v.pdf_storage_path,
+        ...(v.storage_path ? textCachePathsFor(v.storage_path) : []),
+      ]
         .filter((p): p is string => typeof p === "string" && p.length > 0)
         .map((p) => deleteFile(p).catch(() => {})),
     ),
@@ -141,6 +154,13 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
 
   if (fileType === "pdf" || (isDocx && active.pdf_storage_path)) {
     res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      buildContentDisposition("inline", doc.filename as string),
+    );
+    res.send(Buffer.from(raw));
+  } else if (fileType === "txt") {
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader(
       "Content-Disposition",
       buildContentDisposition("inline", doc.filename as string),
@@ -204,20 +224,87 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
   const JSZip = (await import("jszip")).default;
   const zip = new JSZip();
 
-  await Promise.all(
-    docs.map(async (doc) => {
-      const active = await loadActiveVersion(doc.id, db);
-      if (!active) return;
-      const raw = await downloadFile(active.storage_path);
-      if (!raw) return;
-      zip.file(doc.filename, Buffer.from(raw));
-    }),
+  // `documents.filename` is user-controlled and only had *leading* slashes
+  // stripped at upload, so `../../evil.pdf` could land verbatim as a zip
+  // entry name (zip-slip on extractors that honour it). Two docs sharing a
+  // filename also silently overwrote each other. Flatten to a basename and
+  // de-duplicate with a numeric suffix (issue #112).
+  // Reserved for the integrity manifest below — a user document named
+  // manifest.json gets de-duplicated to "manifest (2).json" instead of
+  // colliding with it.
+  const usedNames = new Set<string>(["manifest.json"]);
+  const safeEntryName = (filename: string): string => {
+    const base =
+      (filename ?? "").split(/[/\\]/).pop()?.replace(/^\.+/, "") || "document";
+    if (!usedNames.has(base)) {
+      usedNames.add(base);
+      return base;
+    }
+    const dot = base.lastIndexOf(".");
+    const stem = dot > 0 ? base.slice(0, dot) : base;
+    const ext = dot > 0 ? base.slice(dot) : "";
+    let n = 2;
+    let candidate = `${stem} (${n})${ext}`;
+    while (usedNames.has(candidate)) {
+      n += 1;
+      candidate = `${stem} (${n})${ext}`;
+    }
+    usedNames.add(candidate);
+    return candidate;
+  };
+
+  // Sequential: safeEntryName's de-dup set must not be mutated concurrently.
+  const manifestEntries: Record<string, unknown>[] = [];
+  for (const doc of docs) {
+    const active = await loadActiveVersion(doc.id, db);
+    if (!active) continue;
+    const raw = await downloadFile(active.storage_path);
+    if (!raw) continue;
+    const entryName = safeEntryName(doc.filename);
+    zip.file(entryName, Buffer.from(raw));
+    // Hash the exact bytes placed in the zip, so the manifest entry is
+    // verifiable against the extracted file with `shasum -a 256 <file>`.
+    manifestEntries.push({
+      entry_name: entryName,
+      document_id: doc.id,
+      version_id: active.id,
+      version_number: active.version_number,
+      content_sha256: contentSha256(raw),
+      size_bytes: raw.byteLength,
+    });
+  }
+
+  // Integrity manifest for the zip itself: per-entry SHA-256 over the bytes
+  // shipped, sealed (digest + optional Ed25519 signature) like the project
+  // export manifest.
+  zip.file(
+    "manifest.json",
+    JSON.stringify(
+      sealManifest({
+        manifest_version: 1,
+        kind: "document_zip",
+        exported_at: new Date().toISOString(),
+        documents: manifestEntries,
+      }),
+      null,
+      2,
+    ),
   );
 
   const content = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", 'attachment; filename="documents.zip"');
   res.send(content);
+
+  // Workspace audit trail (#27) — fire-and-forget, ids only.
+  void recordAuditEvent({
+    userId,
+    eventType: "document.zip_exported",
+    metadata: {
+      document_count: docs.length,
+      document_ids: docs.map((d) => d.id),
+    },
+  });
 });
 
 // GET /single-documents/:documentId/url
@@ -441,10 +528,18 @@ documentsRouter.post(
 
     // Reject if the uploaded file's extension doesn't match the document's
     // declared type — otherwise every downstream viewer/extractor breaks.
-    const suffix = uploadFilename.includes(".")
-      ? uploadFilename.split(".").pop()!.toLowerCase()
-      : "";
-    if (doc.file_type && suffix && doc.file_type !== suffix) {
+    // An extension-less blob used to slip through (the old check required a
+    // non-empty suffix), then got served as application/pdf by /display and
+    // as DOCX by /docx (issue #112). Require a supported extension.
+    let suffix: ReturnType<typeof assertSupportedUploadType>;
+    try {
+      suffix = assertSupportedUploadType(uploadFilename, "version");
+    } catch (e) {
+      if (e instanceof UnsupportedFileTypeError)
+        return void res.status(400).json(e.toResponseBody());
+      throw e;
+    }
+    if (doc.file_type && doc.file_type !== suffix) {
       return void res.status(400).json({
         detail: `Uploaded file type (${suffix}) does not match document type (${doc.file_type}).`,
       });
@@ -459,10 +554,7 @@ documentsRouter.post(
       versionSlug,
       uploadFilename,
     );
-    const contentType =
-      suffix === "pdf"
-        ? "application/pdf"
-        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const contentType = contentTypeForUpload(suffix);
     try {
       await uploadFile(
         key,
@@ -535,6 +627,8 @@ documentsRouter.post(
         source: "user_upload",
         version_number: nextVersionNumber,
         display_name: defaultDisplayName,
+        size_bytes: file.buffer.byteLength,
+        content_sha256: contentSha256(file.buffer),
       })
       .select("id, version_number, source, created_at, display_name")
       .single();
@@ -570,6 +664,19 @@ documentsRouter.post(
       .from("documents")
       .update(documentsUpdate)
       .eq("id", documentId);
+
+    // Workspace audit trail (#27) — fire-and-forget, ids and enums only.
+    void recordAuditEvent({
+      userId,
+      eventType: "document.version_added",
+      documentId,
+      projectId: (doc.project_id as string | null) ?? null,
+      metadata: {
+        version_id: versionRow.id,
+        version_number: nextVersionNumber,
+        file_type: suffix,
+      },
+    });
 
     res.status(201).json(versionRow);
   },
@@ -755,6 +862,13 @@ async function handleEditResolution(
       return void res.status(404).json({ detail: "Document not found" });
     }
     const activeForResolved = await loadActiveVersion(documentId, db);
+    // Count for real — hardcoding 0 let a stale UI clear the pending-edits
+    // badge while other edits were still pending (issue #112).
+    const { count: stillPending } = await db
+      .from("document_edits")
+      .select("id", { count: "exact", head: true })
+      .eq("document_id", documentId)
+      .eq("status", "pending");
     const payload = {
       ok: true,
       already_resolved: true,
@@ -766,7 +880,7 @@ async function handleEditResolution(
             (doc.filename as string) ?? "document.docx",
           )
         : null,
-      remaining_pending: 0,
+      remaining_pending: stillPending ?? 0,
     };
     return void res.status(200).json(payload);
   }
@@ -781,6 +895,21 @@ async function handleEditResolution(
   const access = await ensureDocAccess(doc, userId, userEmail, db);
   if (!access.ok)
     return void res.status(404).json({ detail: "Document not found" });
+
+  // Serialize concurrent accept/reject on the SAME document with a
+  // per-document pg advisory lock. Without it two requests both downloaded
+  // the same original DOCX, each resolved a different tracked change, and
+  // both re-uploaded to the same path → last write wins, leaving one edit
+  // marked resolved while its change stayed in the file (issue #107). The
+  // lock is held across the download→resolve→upload critical section; it's
+  // per-document so it never blocks other documents.
+  const lockClient = await getClient();
+  let lockHeld = false;
+  try {
+    await lockClient.query("SELECT pg_advisory_lock(hashtext($1))", [
+      documentId,
+    ]);
+    lockHeld = true;
 
   const active = await loadActiveVersion(documentId, db);
   const latestPath = active?.storage_path ?? null;
@@ -810,6 +939,15 @@ async function handleEditResolution(
       console.error("[edit-resolution] status update failed");
       return void res.status(500).json({ detail: "Failed to update edit" });
     }
+    // Workspace audit trail (#27) — fire-and-forget.
+    void recordAuditEvent({
+      userId,
+      eventType:
+        mode === "accept" ? "document.edit_accepted" : "document.edit_rejected",
+      documentId,
+      projectId: (doc.project_id as string | null) ?? null,
+      metadata: { edit_id: editId, change_found: false },
+    });
     const { data: filenameRow } = await db
       .from("documents")
       .select("filename")
@@ -836,11 +974,61 @@ async function handleEditResolution(
     resolvedBytes.byteOffset,
     resolvedBytes.byteOffset + resolvedBytes.byteLength,
   ) as ArrayBuffer;
+
+  // Clear the hash before the bytes change, and set it again after. The
+  // stored object and the hash live in different systems, so they cannot be
+  // written atomically; ordering it this way means a failure in between
+  // leaves the version unhashed — which the export manifest reports as
+  // unverifiable. The opposite ordering can leave a hash attesting to
+  // content the version no longer holds, the one thing the manifest must
+  // never do.
+  if (active) {
+    await db
+      .from("document_versions")
+      .update({ content_sha256: null })
+      .eq("id", active.id);
+  }
+
   await uploadFile(
     latestPath,
     ab,
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   );
+
+  if (active) {
+    await db
+      .from("document_versions")
+      .update({
+        content_sha256: contentSha256(ab),
+        size_bytes: ab.byteLength,
+      })
+      .eq("id", active.id);
+  }
+
+  // The DOCX bytes changed in place, so the version's cached PDF rendition
+  // is now stale — GET /display prefers it for DOCX, so the viewer kept
+  // showing the unresolved tracked change forever (issue #111). Rebuild it
+  // best-effort; on failure clear the pointer so /display falls back to the
+  // (correct) DOCX path rather than serving stale bytes.
+  if (active?.pdf_storage_path) {
+    try {
+      const pdfBuf = await docxToPdf(Buffer.from(resolvedBytes));
+      const pdfAb = pdfBuf.buffer.slice(
+        pdfBuf.byteOffset,
+        pdfBuf.byteOffset + pdfBuf.byteLength,
+      ) as ArrayBuffer;
+      await uploadFile(active.pdf_storage_path, pdfAb, "application/pdf");
+    } catch (err) {
+      console.warn(
+        "[edit-resolution] PDF rendition rebuild failed — clearing pointer:",
+        err instanceof Error ? err.message : err,
+      );
+      await db
+        .from("document_versions")
+        .update({ pdf_storage_path: null })
+        .eq("id", active.id);
+    }
+  }
 
   const { error: statusErr } = await db
     .from("document_edits")
@@ -853,6 +1041,16 @@ async function handleEditResolution(
     console.error("[edit-resolution] status update failed");
     return void res.status(500).json({ detail: "Failed to update edit" });
   }
+
+  // Workspace audit trail (#27) — fire-and-forget.
+  void recordAuditEvent({
+    userId,
+    eventType:
+      mode === "accept" ? "document.edit_accepted" : "document.edit_rejected",
+    documentId,
+    projectId: (doc.project_id as string | null) ?? null,
+    metadata: { edit_id: editId },
+  });
 
   const { count: remainingPending } = await db
     .from("document_edits")
@@ -875,6 +1073,23 @@ async function handleEditResolution(
     remaining_pending: remainingPending ?? 0,
   };
   res.json(payload);
+  } finally {
+    let unlockFailed = false;
+    if (lockHeld) {
+      try {
+        await lockClient.query("SELECT pg_advisory_unlock(hashtext($1))", [
+          documentId,
+        ]);
+      } catch (unlockErr) {
+        // If we couldn't release the session-level advisory lock, DON'T
+        // return this connection to the pool with the lock still held — the
+        // next checkout would inherit it and deadlock. Destroy it instead.
+        unlockFailed = true;
+        console.error("[edit-resolution] advisory unlock failed:", unlockErr);
+      }
+    }
+    lockClient.release(unlockFailed);
+  }
 }
 
 documentsRouter.post(
@@ -895,12 +1110,13 @@ documentsRouter.post(
  * extraction, DOCX→PDF conversion, document_versions row, status flip).
  *
  * This is the single source of truth for "putting a file into Eulex Desk";
- * the multipart upload route and the integrations import endpoint
- * (Google Drive / OneDrive / Box) both call into here so any future
- * pipeline change is picked up by both paths automatically.
+ * the standalone and project multipart upload routes and the integrations
+ * import endpoint (Google Drive / OneDrive / Box) all call into here so any
+ * future pipeline change is picked up by every path automatically.
  *
- * Throws on validation/storage errors. Caller is responsible for
- * mapping exceptions to HTTP responses.
+ * Throws on validation/storage errors (`UnsupportedFileTypeError` for a
+ * format outside lib/fileTypes). Caller is responsible for mapping
+ * exceptions to HTTP responses.
  */
 export async function processDocumentBytes(params: {
   userId: string;
@@ -920,14 +1136,12 @@ export async function processDocumentBytes(params: {
 }): Promise<Record<string, unknown>> {
   const { userId, projectId, filename, content, db, source } = params;
 
-  const suffix = filename.includes(".")
-    ? filename.split(".").pop()!.toLowerCase()
-    : "";
-  if (!ALLOWED_TYPES.has(suffix)) {
-    throw new Error(
-      `Unsupported file type: ${suffix}. Allowed: pdf, docx, doc`,
-    );
-  }
+  // "txt" exists for the chat composer's long-paste → attachment flow; it
+  // skips the DOCX→PDF rendition (text-only pipeline).
+  const suffix = assertSupportedUploadType(
+    filename,
+    source ? `connector:${source.provider}` : projectId ? "project" : "standalone",
+  );
 
   const insertPayload: Record<string, unknown> = {
     project_id: projectId,
@@ -958,10 +1172,7 @@ export async function processDocumentBytes(params: {
   try {
     const docId = doc.id as string;
     const key = storageKey(userId, docId, filename);
-    const contentType =
-      suffix === "pdf"
-        ? "application/pdf"
-        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const contentType = contentTypeForUpload(suffix);
     const ab = content.buffer.slice(
       content.byteOffset,
       content.byteOffset + content.byteLength,
@@ -1004,6 +1215,8 @@ export async function processDocumentBytes(params: {
         source: "upload",
         version_number: 1,
         display_name: filename,
+        size_bytes: content.byteLength,
+        content_sha256: contentSha256(content),
       })
       .select("id")
       .single();
@@ -1025,6 +1238,21 @@ export async function processDocumentBytes(params: {
       })
       .eq("id", docId);
 
+    // Workspace audit trail (#27) — fire-and-forget, ids and enums only
+    // (no filenames). Covers direct uploads AND connector imports.
+    void recordFeatureUse({ userId, feature: "document", projectId });
+    void recordAuditEvent({
+      userId,
+      eventType: "document.uploaded",
+      documentId: docId,
+      projectId,
+      metadata: {
+        file_type: suffix,
+        size_bytes: content.byteLength,
+        ...(source ? { source_provider: source.provider } : {}),
+      },
+    });
+
     const { data: updated } = await db
       .from("documents")
       .select("*")
@@ -1041,7 +1269,10 @@ export async function processDocumentBytes(params: {
   }
 }
 
-async function handleDocumentUpload(
+/** Multipart upload → processDocumentBytes → HTTP response. Shared by the
+ *  standalone (`POST /single-documents`) and project
+ *  (`POST /projects/:id/documents`) upload routes. */
+export async function handleDocumentUpload(
   req: import("express").Request,
   res: import("express").Response,
   userId: string,
@@ -1061,10 +1292,10 @@ async function handleDocumentUpload(
     });
     return void res.status(201).json(responseDoc);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.startsWith("Unsupported file type")) {
-      return void res.status(400).json({ detail: msg });
+    if (e instanceof UnsupportedFileTypeError) {
+      return void res.status(400).json(e.toResponseBody());
     }
+    const msg = e instanceof Error ? e.message : String(e);
     return void res.status(500).json({ detail: msg });
   }
 }
@@ -1091,6 +1322,9 @@ async function extractStructureTree(
   _filename: string,
 ): Promise<unknown[] | null> {
   try {
+    // Plain text (pasted-text attachments) carries no useful outline;
+    // mammoth below would throw on a non-zip buffer anyway.
+    if (fileType === "txt") return null;
     if (fileType === "pdf") {
       const pdfjsLib = await import(
         "pdfjs-dist/legacy/build/pdf.mjs" as string

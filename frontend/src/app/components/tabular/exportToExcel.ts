@@ -4,10 +4,13 @@ import ExcelJS from "exceljs";
 import type { ColumnConfig, MikeDocument, TabularCell } from "../shared/types";
 import { preprocessCitations, unwrapNestedSummaryJson } from "./citation-utils";
 
-function formatCellForExport(cell: TabularCell | undefined): string {
+function formatCellForExport(
+    cell: TabularCell | undefined,
+    errorLabel: string,
+): string {
     if (!cell) return "";
     if (cell.status === "pending" || cell.status === "generating") return "";
-    if (cell.status === "error") return "Error";
+    if (cell.status === "error") return errorLabel;
     const summary = unwrapNestedSummaryJson(cell.content?.summary ?? "");
     if (!summary) return "";
     const { processed } = preprocessCitations(summary);
@@ -33,18 +36,27 @@ export async function exportTabularReviewToExcel(params: {
     columns: ColumnConfig[];
     documents: MikeDocument[];
     cells: TabularCell[];
+    /** Localized labels for the fixed export strings (issue #115). */
+    labels?: {
+        sheetName?: string;
+        documentHeader?: string;
+        errorCell?: string;
+    };
 }) {
-    const { reviewTitle, columns, documents, cells } = params;
+    const { reviewTitle, columns, documents, cells, labels } = params;
+    const sheetName = labels?.sheetName || "Review";
+    const documentHeader = labels?.documentHeader || "Document";
+    const errorCell = labels?.errorCell || "Error";
 
     const sortedCols = [...columns].sort((a, b) => a.index - b.index);
     const cellMap = new Map<string, TabularCell>();
     for (const c of cells) cellMap.set(`${c.document_id}:${c.column_index}`, c);
 
     const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet("Review");
+    const ws = wb.addWorksheet(sheetName);
 
     ws.columns = [
-        { header: "Document", width: 40 },
+        { header: documentHeader, width: 40 },
         ...sortedCols.map((c) => ({ header: c.name, width: 40 })),
     ];
 
@@ -60,7 +72,12 @@ export async function exportTabularReviewToExcel(params: {
     for (const doc of documents) {
         const row: string[] = [doc.filename];
         for (const col of sortedCols) {
-            row.push(formatCellForExport(cellMap.get(`${doc.id}:${col.index}`)));
+            row.push(
+                formatCellForExport(
+                    cellMap.get(`${doc.id}:${col.index}`),
+                    errorCell,
+                ),
+            );
         }
         const excelRow = ws.addRow(row);
         excelRow.alignment = { vertical: "top", wrapText: true };

@@ -112,6 +112,7 @@ async function loadOne(
         row,
         tools,
         toolNameMap,
+        instructions: client.getInstructions(),
         client: {
             callTool: (name, args) => client.callTool(name, args),
             callToolRich: (name, args) => client.callToolRich(name, args),

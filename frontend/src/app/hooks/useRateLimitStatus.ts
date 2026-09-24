@@ -16,9 +16,7 @@ import {
 } from "../lib/rateLimitStore";
 import { getStoredTokens } from "@/lib/oauth";
 
-const API_BASE =
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
-
+import { API_BASE } from "@/app/lib/apiBase";
 let inflight: Promise<void> | null = null;
 
 async function refreshOnce(): Promise<void> {

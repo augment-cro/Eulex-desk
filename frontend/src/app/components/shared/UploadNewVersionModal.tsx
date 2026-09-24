@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { X, Upload } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { listDocumentVersions } from "@/app/lib/mikeApi";
+import { versionUploadAccept } from "@/app/lib/supportedFileTypes";
 import type { MikeDocument } from "./types";
 
 interface Props {
@@ -55,7 +56,9 @@ export function UploadNewVersionModal({ open, onClose, doc, onSubmit }: Props) {
 
     if (!open || !doc) return null;
 
-    const accept = doc.file_type === "pdf" ? ".pdf" : ".docx,.doc";
+    // Same type as the document (the backend rejects a mismatch) — a .txt
+    // document used to be offered .docx/.doc here.
+    const accept = versionUploadAccept(doc.file_type);
 
     function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0] ?? null;

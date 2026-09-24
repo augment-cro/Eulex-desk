@@ -28,14 +28,17 @@ export function SharingPanel({ contextId, shares, onSharesChange }: Props) {
 
     async function handleShare(e: React.FormEvent) {
         e.preventDefault();
-        const target = email.trim();
+        // Lowercase-normalize so "Bob@x.com" and "bob@x.com" don't become two
+        // rows (with a duplicate React key) and so unshare matches the service
+        // (which stores lowercased) (issue #126 F5).
+        const target = email.trim().toLowerCase();
         if (!target) return;
         setBusy(true);
         setError("");
         try {
             await shareContext(contextId, target, allowEdit);
             const rest = shares.filter(
-                (s) => s.shared_with_email !== target,
+                (s) => s.shared_with_email.toLowerCase() !== target,
             );
             onSharesChange([
                 ...rest,
@@ -56,10 +59,13 @@ export function SharingPanel({ contextId, shares, onSharesChange }: Props) {
     }
 
     async function handleUnshare(target: string) {
+        const norm = target.toLowerCase();
         try {
-            await unshareContext(contextId, target);
+            await unshareContext(contextId, norm);
             onSharesChange(
-                shares.filter((s) => s.shared_with_email !== target),
+                shares.filter(
+                    (s) => s.shared_with_email.toLowerCase() !== norm,
+                ),
             );
         } catch (err: unknown) {
             console.error("Failed to remove share", err);
@@ -107,7 +113,7 @@ export function SharingPanel({ contextId, shares, onSharesChange }: Props) {
                 <ul className="flex flex-col gap-1">
                     {shares.map((s) => (
                         <li
-                            key={s.shared_with_email}
+                            key={s.shared_with_email.toLowerCase()}
                             className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-1.5"
                         >
                             <span className="min-w-0 truncate text-sm text-foreground">

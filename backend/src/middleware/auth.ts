@@ -9,6 +9,7 @@
  */
 
 import jwt from 'jsonwebtoken';
+import { recordAuditEvent } from "../lib/audit";
 import type { Request, Response, NextFunction } from 'express';
 import { getPool } from '../lib/db';
 import {
@@ -16,7 +17,9 @@ import {
     pullMembershipStatus,
 } from '../lib/membership';
 import { linkInvitesForUser } from '../lib/teams';
+import { syncSignupContact } from '../lib/brevoContacts';
 import { isSupabaseToken, verifySupabaseToken } from '../lib/supabaseAuth';
+import { resolveSupabaseUserTier } from '../lib/tierResolution';
 import { getFreeTierLevelId } from '../lib/stripe';
 
 /**
@@ -29,6 +32,14 @@ import { getFreeTierLevelId } from '../lib/stripe';
  * paid→other-paid) converge within the window.
  */
 const UMP_PULL_STALE_MS = 60_000;
+
+/**
+ * Kill switch for the UMP pull (issue #19): set UMP_PULL_ENABLED=false
+ * (or 0) to turn it off in prod via env alone. Enabled by default.
+ */
+const UMP_PULL_ENABLED = !/^(false|0)$/i.test(
+  (process.env.UMP_PULL_ENABLED ?? '').trim(),
+);
 
 /**
  * Throttled "user was here" tracking → public.user_login_state.
@@ -181,6 +192,11 @@ export async function requireAuth(
     // invitee becomes an active team member automatically.
     if (wasNewUser) {
       await linkInvitesForUser(rows[0].id, rows[0].email ?? decoded.email);
+      // Newsletter list sync — fire-and-forget, never blocks auth.
+      void syncSignupContact({
+        email: rows[0].email ?? decoded.email,
+        displayName: decoded.name,
+      });
     }
 
     res.locals.userId = rows[0].id;
@@ -243,8 +259,11 @@ export async function requireAuth(
     //   • free → paid      (homepage checkout, UMP admin upgrade)
     //   • paid → free       (cancellation, refund, UMP admin downgrade)
     //   • paid → other paid (plan change in UMP)
-    // applyPulledStatus is the authority: a paid snapshot refreshes the
-    // override to that exact level; a free/unknown snapshot CLEARS it.
+    // applyPulledStatus is the authority for UMP-owned overrides: a paid
+    // snapshot refreshes the override to that exact level; a free/unknown
+    // snapshot CLEARS it. Overrides granted by AdminMax or Stripe are NOT
+    // touched (issue #19) — UMP doesn't know Max-native tiers and would
+    // report "free" for them.
     // It also COALESCE-backfills country/VAT, so the previous
     // "country-only" pull for already-paid users is now redundant.
     //
@@ -255,12 +274,14 @@ export async function requireAuth(
         !overrideSyncedAt ||
         Date.now() - overrideSyncedAt.getTime() > UMP_PULL_STALE_MS;
 
-    if (stale) {
+    if (UMP_PULL_ENABLED && stale) {
         try {
             const snapshot = await pullMembershipStatus(wpUserId);
             if (snapshot) {
-                await applyPulledStatus(rows[0].id, snapshot);
-                effectiveTier = snapshot.level_id;
+                // `false` = an admin/Stripe grant is active and the pull
+                // was discarded — keep the local tier for this request too.
+                const applied = await applyPulledStatus(rows[0].id, snapshot);
+                if (applied) effectiveTier = snapshot.level_id;
             }
         } catch (err) {
             console.warn(
@@ -294,10 +315,11 @@ export async function requireAuth(
  * the SAME shape the WordPress path sets, so all downstream routes are
  * unaffected.
  *
- * Tier: Supabase tokens carry no tier claim. The authoritative source is
- * the local user_tier_state override (fed by the Stripe webhook); absent an
- * active override the user is free. There is deliberately NO UMP pull here
- * — that is a WordPress-only concern.
+ * Tier (Phase B, GH #143): the verified token's `app_metadata` is the READ
+ * source for the per-user tier; `user_tier_state` is a legacy fallback only
+ * (no tier field in app_metadata), and neither source → free (fail closed).
+ * See lib/tierResolution.ts. There is deliberately NO UMP pull here — that
+ * is a WordPress-only concern.
  */
 async function handleSupabaseAuth(
   token: string,
@@ -377,12 +399,36 @@ async function handleSupabaseAuth(
       userId = upsert.rows[0].id;
       userEmail = upsert.rows[0].email ?? email;
       wasNewUser = upsert.rows[0].inserted;
+      if (wasNewUser) {
+        // Lifecycle signal (migration 210): exactly-once, race-safe via xmax.
+        void recordAuditEvent({ userId, eventType: "user.signed_up", metadata: { source: "supabase" } });
+        // Newsletter list sync (BREVO_SIGNUP_LIST_ID) — fire-and-forget,
+        // exactly-once thanks to the same xmax guard.
+        void syncSignupContact({ email: userEmail, displayName: display });
+      }
 
       // Backfill the identity mapping for next time.
+      //
+      // Two unique constraints can fire here: the PK (supabase_user_id) and
+      // user_supabase_identity_user_id_uq (one identity per user). The old
+      // `ON CONFLICT (supabase_user_id) DO NOTHING` absorbed only the first,
+      // so a RE-created Supabase account for the same email (new auth UUID —
+      // provider switch with linking off, or auth-user deletion + re-signup)
+      // hit the user_id index instead and this threw on every request: the
+      // stale row kept the old UUID, the insert could never succeed, and the
+      // person was permanently locked out with 401s. Arbitrate on user_id and
+      // RELINK: the token's email is Supabase-verified and lower(email) is
+      // already this middleware's trust anchor (see the users upsert above),
+      // so the freshest authenticated identity wins. The concurrent
+      // first-login race the old clause guarded stays covered — both racers
+      // insert the same (supabase_user_id, user_id) pair, so the loser takes
+      // the DO UPDATE path and no-ops.
       await pool.query(
         `INSERT INTO public.user_supabase_identity (supabase_user_id, user_id, email)
          VALUES ($1, $2, $3)
-         ON CONFLICT (supabase_user_id) DO NOTHING`,
+         ON CONFLICT (user_id) DO UPDATE
+           SET supabase_user_id = EXCLUDED.supabase_user_id,
+               email = EXCLUDED.email`,
         [claims.sub, userId, email],
       );
     }
@@ -409,32 +455,33 @@ async function handleSupabaseAuth(
       );
     }
 
-    // Tier — local override only; default free. No UMP pull.
+    // Tier — Phase B of tracker #15 (GH #143): the VERIFIED token's
+    // `app_metadata` is the READ source for the per-user tier (the write
+    // side — Stripe webhooks / AdminMax via updateSupabaseUserTier — has
+    // mirrored every change there since 2026-07-14). Ladder, implemented
+    // in lib/tierResolution.ts:
+    //   1. app_metadata.tier_level_id (explicit null / expired tier_until
+    //      → free);
+    //   2. user_tier_state — legacy fallback only when app_metadata has no
+    //      tier field at all (never-backfilled user; logged);
+    //   3. free (fail closed).
+    // The claim can be ~1h stale (access-token lifetime), so quota
+    // ENFORCEMENT re-reads it via a fresh admin lookup — see
+    // enforceRateLimit() in lib/rateLimit.ts, keyed off
+    // res.locals.supabaseUserId below. No UMP pull here — that is a
+    // WordPress-only concern.
     const freeLevel = getFreeTierLevelId();
     let effectiveTier = freeLevel;
-    try {
-      const ovr = await pool.query<{
-        active_tier_level_id: number | null;
-        active_tier_until: string | null;
-      }>(
-        `SELECT active_tier_level_id, active_tier_until
-           FROM public.user_tier_state WHERE user_id = $1`,
-        [userId],
-      );
-      const o = ovr.rows[0];
-      if (o && o.active_tier_level_id != null) {
-        const expired =
-          o.active_tier_until && new Date(o.active_tier_until) < new Date();
-        if (!expired) effectiveTier = o.active_tier_level_id;
-      }
-    } catch (err) {
-      console.error(
-        '[auth] supabase tier override lookup failed (defaulting free):',
-        err instanceof Error ? err.message : err,
-      );
+    if (userId) {
+      effectiveTier = await resolveSupabaseUserTier({
+        userId,
+        supabaseUserId: claims.sub,
+        appMetadata: claims.raw.app_metadata,
+      });
     }
 
     res.locals.userId = userId;
+    res.locals.supabaseUserId = claims.sub;
     res.locals.userEmail = userEmail;
     res.locals.wpUserId = null;
     res.locals.tier = effectiveTier === freeLevel ? 'free' : 'plus';

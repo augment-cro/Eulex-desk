@@ -35,6 +35,14 @@ export interface ParallelExtractResponse {
     results: ParallelExtractResult[];
     /** Set when the request failed or a per-URL error was the only outcome. */
     error?: string;
+    /**
+     * Machine-readable companion to `error`, so the caller can tell a
+     * transient failure from a permanent one:
+     *   - Parallel's own per-URL `error_type` ("network_error", …)
+     *   - `http_<status>` when our call to the API itself failed
+     *   - `request_failed` when the fetch threw or timed out
+     */
+    errorType?: string;
 }
 
 const ENDPOINT = "https://api.parallel.ai/v1/extract";
@@ -124,6 +132,7 @@ export async function extractWithParallel(
             return {
                 results: [],
                 error: `Parallel extract HTTP ${res.status}: ${txt.slice(0, 200)}`,
+                errorType: `http_${res.status}`,
             };
         }
         raw = (await res.json()) as RawResponse;
@@ -131,6 +140,7 @@ export async function extractWithParallel(
         return {
             results: [],
             error: `Parallel extract request failed: ${(err as Error).message}`,
+            errorType: "request_failed",
         };
     } finally {
         clearTimeout(timer);
@@ -159,6 +169,7 @@ export async function extractWithParallel(
             error: `Parallel extract: ${e.error_type ?? "error"}${
                 e.content ? ` — ${e.content.slice(0, 200)}` : ""
             }`,
+            errorType: e.error_type ?? "error",
         };
     }
     return { results };

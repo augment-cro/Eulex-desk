@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { streamChat, streamProjectChat } from "@/app/lib/mikeApi";
+import { useTranslations } from "next-intl";
+import { piiAttachChat, streamChat, streamProjectChat } from "@/app/lib/mikeApi";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useGenerateChatTitle } from "./useGenerateChatTitle";
 import { track } from "@/app/lib/analytics";
@@ -51,6 +52,23 @@ interface UseAssistantChatOptions {
     projectId?: string;
 }
 
+/**
+ * Non-OK HTTP answer from the chat endpoint before the SSE stream started.
+ * Carries the status and the backend's stable error `code` (when present) so
+ * the catch block can pick a localized banner message — the raw response body
+ * (English `detail` strings, JSON) must never reach the chat surface.
+ */
+class ChatHttpError extends Error {
+    constructor(
+        readonly status: number,
+        readonly code: string | null,
+        detail: string | null,
+    ) {
+        super(detail || `HTTP ${status}`);
+        this.name = "ChatHttpError";
+    }
+}
+
 function findLastContentIndex(events: AssistantEvent[]): number {
     for (let i = events.length - 1; i >= 0; i--) {
         if (events[i].type === "content") return i;
@@ -93,6 +111,7 @@ export function useAssistantChat({
     projectId,
 }: UseAssistantChatOptions = {}) {
     const router = useRouter();
+    const tErrors = useTranslations("assistant.errors");
     const {
         replaceChatId,
         loadChats,
@@ -255,6 +274,35 @@ export function useAssistantChat({
         }
     };
 
+    // Navigating away mid-stream must stop the SSE fetch and the drip
+    // interval — otherwise the request keeps consuming (and billing) in
+    // the background with no way to cancel it, and a leaked interval keeps
+    // calling setMessages on an unmounted component (issue #89).
+    //
+    // StrictMode caveat: a dev mount runs effect → cleanup → effect
+    // synchronously, and the auto-send effect has already started the
+    // first stream by the time that simulated cleanup runs — aborting
+    // there killed every first message in dev. Defer the abort one tick
+    // and cancel it when the effect re-runs, so only a genuine unmount
+    // aborts.
+    const pendingUnmountAbortRef = useRef<ReturnType<
+        typeof setTimeout
+    > | null>(null);
+    useEffect(() => {
+        if (pendingUnmountAbortRef.current !== null) {
+            clearTimeout(pendingUnmountAbortRef.current);
+            pendingUnmountAbortRef.current = null;
+        }
+        return () => {
+            pendingUnmountAbortRef.current = setTimeout(() => {
+                abortControllerRef.current?.abort();
+                abortControllerRef.current = null;
+                stopDrip();
+            }, 0);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     // Transient placeholder events (tool_call_start, thinking) fill the
     // latency gap between real SSE events so the wrapper doesn't look stuck.
     // Anytime a real event arrives, drop any streaming placeholder first.
@@ -348,7 +396,7 @@ export function useAssistantChat({
             displayedDoc?: { filename: string; documentId: string } | null;
         },
     ): Promise<string | null> => {
-        if (!message.content.trim()) return null;
+        if (!message.content.trim() && !message.files?.length && !message.workflow) return null;
 
         setIsResponseLoading(true);
 
@@ -459,7 +507,20 @@ export function useAssistantChat({
                     throw rlError;
                 }
                 const errText = await response.text();
-                throw new Error(`HTTP ${response.status}: ${errText}`);
+                let code: string | null = null;
+                let detail: string | null = null;
+                try {
+                    const body = JSON.parse(errText) as {
+                        code?: unknown;
+                        detail?: unknown;
+                    };
+                    code = typeof body.code === "string" ? body.code : null;
+                    detail =
+                        typeof body.detail === "string" ? body.detail : null;
+                } catch {
+                    /* non-JSON body — keep nulls */
+                }
+                throw new ChatHttpError(response.status, code, detail);
             }
 
             const reader = response.body?.getReader();
@@ -511,6 +572,36 @@ export function useAssistantChat({
                             });
                             await reader.cancel();
                             break;
+                        }
+
+                        if (data.type === "error") {
+                            // Mid-stream backend failure (the LLM/tool loop
+                            // died after headers were flushed). The payload
+                            // message is an English marker string — show the
+                            // localized banner instead, keeping any partial
+                            // content already streamed. A fail-closed PII
+                            // abort ships its own code so the banner can
+                            // explain why the turn was withheld.
+                            stopDrip();
+                            flushDrip();
+                            clearStreamingPlaceholders();
+                            const errorText =
+                                data.code === "PII_SHIELD_UNAVAILABLE"
+                                    ? tErrors("piiUnavailable")
+                                    : tErrors("streamError");
+                            setMessages((prev) => {
+                                const last = prev[prev.length - 1];
+                                if (last?.role === "assistant") {
+                                    const updated = [...prev];
+                                    updated[updated.length - 1] = {
+                                        ...last,
+                                        error: errorText,
+                                    };
+                                    return updated;
+                                }
+                                return prev;
+                            });
+                            continue;
                         }
 
                         if (data.type === "chat_id") {
@@ -1120,7 +1211,38 @@ export function useAssistantChat({
             }
 
             flushDrip();
+            finalizeStreamingContent();
             finalizeStreamingReasoning();
+            // Persist the streamed text onto message.content — the events
+            // array is what renders, but `content` is what gets sent back
+            // as history on the NEXT turn (apiMessages maps role+content
+            // only). Leaving it "" made every follow-up in-session transmit
+            // prior assistant turns as empty strings, so the model lost its
+            // own answers (issue #84). Same join as getChat().
+            {
+                const finalContent = eventsRef.current
+                    .filter(
+                        (e): e is { type: "content"; text: string } =>
+                            e.type === "content" &&
+                            typeof (e as { text?: unknown }).text === "string",
+                    )
+                    .map((e) => e.text)
+                    .join("");
+                if (finalContent) {
+                    setMessages((prev) => {
+                        const last = prev[prev.length - 1];
+                        if (last?.role !== "assistant" || last.content) {
+                            return prev;
+                        }
+                        const updated = [...prev];
+                        updated[updated.length - 1] = {
+                            ...last,
+                            content: finalContent,
+                        };
+                        return updated;
+                    });
+                }
+            }
             setIsResponseLoading(false);
             setIsLoadingCitations(false);
 
@@ -1164,13 +1286,13 @@ export function useAssistantChat({
         } catch (error: any) {
             if (error.name === "AbortError") {
                 flushDrip();
+                const cancelText = tErrors("cancelled");
                 setMessages((prev) => {
                     const last = prev[prev.length - 1];
                     if (last?.role === "assistant") {
                         const updated = [...prev];
                         const events = last.events ?? [];
                         const idx = findLastContentIndex(events);
-                        const cancelText = "Cancelled by user";
                         if (idx >= 0) {
                             const newEvents = [...events];
                             const existing = newEvents[idx] as {
@@ -1180,7 +1302,7 @@ export function useAssistantChat({
                             newEvents[idx] = {
                                 type: "content",
                                 text: existing.text
-                                    ? `${existing.text}\n\nCancelled by user`
+                                    ? `${existing.text}\n\n${cancelText}`
                                     : cancelText,
                             };
                             updated[updated.length - 1] = {
@@ -1203,9 +1325,7 @@ export function useAssistantChat({
                         {
                             role: "assistant",
                             content: "",
-                            events: [
-                                { type: "content", text: "Cancelled by user" },
-                            ],
+                            events: [{ type: "content", text: cancelText }],
                         },
                     ];
                 });
@@ -1231,10 +1351,22 @@ export function useAssistantChat({
                 });
             } else {
                 stopDrip();
-                const errorMessage =
-                    typeof error?.message === "string" && error.message
-                        ? error.message
-                        : "Sorry, something went wrong.";
+                // Never surface raw backend/browser error text — banner copy
+                // is owned by the frontend i18n layer (assistant.errors.*),
+                // keyed off the backend's stable error codes. The original
+                // error still goes to the console for diagnostics.
+                console.error("[useAssistantChat] send failed", error);
+                let errorMessage = tErrors("generic");
+                if (error instanceof ChatHttpError) {
+                    if (error.status === 401) {
+                        errorMessage = tErrors("sessionExpired");
+                    } else if (error.code === "PROJECT_NOT_FOUND") {
+                        errorMessage = tErrors("projectNotFound");
+                    }
+                } else if (error instanceof TypeError) {
+                    // fetch() network failure ("Failed to fetch", offline…)
+                    errorMessage = tErrors("network");
+                }
                 setMessages((prev) => {
                     const last = prev[prev.length - 1];
                     if (last?.role === "assistant") {
@@ -1261,6 +1393,13 @@ export function useAssistantChat({
             return null;
         } finally {
             abortControllerRef.current = null;
+            // The RateLimit-* headers on the stream carry the numbers from
+            // BEFORE this turn (they're written when the stream opens), so
+            // the usage ring would lag one message behind. Pull a fresh
+            // snapshot now that the turn's usage row is recorded.
+            void import("./useRateLimitStatus").then(
+                ({ refreshRateLimitStatus }) => refreshRateLimitStatus(),
+            );
         }
     };
 
@@ -1268,15 +1407,43 @@ export function useAssistantChat({
         message: MikeMessage,
         projectId?: string,
     ): Promise<string | null> => {
-        if (!message.content.trim()) return null;
+        if (!message.content.trim() && !message.files?.length && !message.workflow) return null;
 
         setMessages([message]);
         setNewChatMessages([message]);
 
         const newChatId = await saveChat(projectId);
         if (newChatId) {
+            // Fresh-page strict review (#16 follow-up): the review modal
+            // ran BEFORE this chat existed, on a standalone session that
+            // holds the user's disclosure approvals. Adopt it as the
+            // chat's session BEFORE the first turn streams, so the
+            // turn's anonymization resolves to it. Await on purpose —
+            // fire-and-forget would race the turn's session lookup.
+            // Non-fatal: on failure entities simply stay masked.
+            if (message.piiSessionId) {
+                try {
+                    await piiAttachChat(message.piiSessionId, newChatId);
+                } catch (err) {
+                    console.warn(
+                        "[pii] attach-chat failed — first-turn disclosure approvals may not apply:",
+                        err,
+                    );
+                }
+            }
             setChatId(newChatId);
             setCurrentChatId(newChatId);
+        } else {
+            // /chat/create failed. Clearing the pending message matters:
+            // a leftover here becomes `initialMessages` for the NEXT chat
+            // the user opens — hiding that chat's history and auto-sending
+            // this message into it (issue #88). Also show the failure
+            // instead of a silent dead end.
+            setNewChatMessages(null);
+            setMessages([
+                message,
+                { role: "assistant", content: "", error: tErrors("network") },
+            ]);
         }
 
         return newChatId;

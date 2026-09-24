@@ -189,6 +189,11 @@ async function call<T>(
         const token = await getOidcToken(base);
         if (token) headers.authorization = `Bearer ${token}`;
     }
+    // App-layer shared secret (#52): the shield's non-OIDC auth path
+    // for environments without a metadata server (local dev, compose).
+    // Set the SAME value as the shield's PII_SHIELD_AUTH_TOKEN.
+    const sharedSecret = process.env.PII_SHIELD_AUTH_TOKEN?.trim();
+    if (sharedSecret) headers["x-shield-token"] = sharedSecret;
     try {
         const resp = await fetch(url, {
             method: opts.method ?? "POST",
@@ -285,6 +290,9 @@ export const piiClient = {
         sessionId: string;
         maskedPlaceholders: string[];
         approvedForDisclosure: string[];
+        /** Per-placeholder disclosure justification (#55) — audited by
+         * the shield alongside the override decision. */
+        disclosureReasons?: Record<string, string>;
         text?: string;
     }): Promise<Result<ApplyOverridesResult>> {
         return call<ApplyOverridesResult>(
@@ -292,8 +300,24 @@ export const piiClient = {
             {
                 masked_placeholders: args.maskedPlaceholders,
                 approved_for_disclosure: args.approvedForDisclosure,
+                disclosure_reasons: args.disclosureReasons ?? {},
                 text: args.text,
             },
+        );
+    },
+
+    /** Reveal one placeholder's original value (audited). Goes through
+     * the same authenticated `call()` path as every other shield call —
+     * the previous hand-rolled fetch sent no OIDC token and 403'd in
+     * prod (#52). */
+    async disclosePlaceholder(args: {
+        sessionId: string;
+        placeholder: string;
+        reason?: string;
+    }): Promise<Result<{ placeholder: string; original: string }>> {
+        return call<{ placeholder: string; original: string }>(
+            `/sessions/${args.sessionId}/disclose-placeholder`,
+            { placeholder: args.placeholder, reason: args.reason },
         );
     },
 
@@ -329,6 +353,22 @@ export const piiClient = {
 
     async getSession(sessionId: string): Promise<Result<SessionMeta>> {
         return call<SessionMeta>(`/sessions/${sessionId}`, null, { method: "GET" });
+    },
+
+    /** Adopt a standalone preview session as THE session of a chat
+     * (#16 follow-up — fresh-assistant-page review). 409 when the chat
+     * already has a session or the preview session is already bound
+     * elsewhere; callers treat that as non-fatal (entities simply stay
+     * masked, fail-safe). */
+    async attachChat(args: {
+        sessionId: string;
+        chatId: string;
+        userId: string;
+    }): Promise<Result<SessionLookup>> {
+        return call<SessionLookup>(`/sessions/${args.sessionId}/attach-chat`, {
+            chat_id: args.chatId,
+            user_id: args.userId,
+        });
     },
 
     /** Resolve (chat_id → ACTIVE session) without creating one. 404

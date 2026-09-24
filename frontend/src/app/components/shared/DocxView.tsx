@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
+import { useTranslations } from "next-intl";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { useFetchDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 import { supabase } from "@/lib/supabase";
@@ -10,6 +11,7 @@ import {
 } from "./highlightDocxQuote";
 import type { CitationQuote } from "./types";
 
+import { API_BASE } from "@/app/lib/apiBase";
 interface Props {
     documentId: string;
     versionId?: string | null;
@@ -170,8 +172,7 @@ async function tagWIdsOnRenderedDom(
             data: { session },
         } = await supabase.auth.getSession();
         const token = session?.access_token;
-        const apiBase =
-            process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
+        const apiBase = API_BASE;
         const qs = versionId
             ? `?version_id=${encodeURIComponent(versionId)}`
             : "";
@@ -230,6 +231,7 @@ export function DocxView({
     rounded = true,
     bordered = true,
 }: Props) {
+    const tc = useTranslations("common");
     const scrollRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const lastScrollTopRef = useRef(0);
@@ -502,7 +504,7 @@ export function DocxView({
                         type="button"
                         onClick={() => onWarningDismiss?.()}
                         className="text-warning hover:text-foreground"
-                        aria-label="Dismiss warning"
+                        aria-label={tc("dismissWarning")}
                     >
                         ×
                     </button>

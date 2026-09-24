@@ -19,21 +19,14 @@ export type UserModelSettings = {
      */
     preferred_language: string;
     /**
-     * PII Shield user defaults. See migration 120 columns on
-     * `user_profiles` and `backend/src/lib/pii/gate.ts` for semantics.
-     *
-     *   pii_default_mode    — applied when a new chat doesn't specify
-     *                          its own mode. "off" disables the sidecar
-     *                          for everything that user does.
-     *   pii_review_required — force the document-preview modal even
-     *                          in "standard" mode.
-     *   pii_disclosure_policy — what happens when an LLM tool argument
-     *                          would expose PII: "allow", "deny",
-     *                          "ask" (frontend prompt).
+     * PII Shield user default — the single Anonymization mode since #14
+     * (migration 207): applied when a new chat doesn't specify its own
+     * mode. "off" disables the sidecar for everything that user does.
+     * See `backend/src/lib/pii/gate.ts` for semantics. The retired
+     * `pii_review_required` / `pii_disclosure_policy` columns still
+     * exist in the DB but are no longer read anywhere.
      */
-    pii_default_mode: "off" | "standard" | "strict_legal" | "strict";
-    pii_review_required: boolean;
-    pii_disclosure_policy: "allow" | "deny" | "ask";
+    pii_default_mode: "off" | "standard" | "strict";
 };
 
 /**
@@ -172,7 +165,7 @@ export async function getUserModelSettings(
         .from("user_profiles")
         .select(
             "tabular_model, preferred_language, claude_api_key, gemini_api_key, openai_api_key, mistral_api_key, " +
-            "pii_default_mode, pii_review_required, pii_disclosure_policy",
+            "pii_default_mode",
         )
         .eq("user_id", userId)
         .single();
@@ -201,18 +194,16 @@ export async function getUserModelSettings(
             ? data.preferred_language
             : "hr";
 
-    const PII_MODES = new Set(["off", "standard", "strict_legal", "strict"] as const);
-    const PII_DISCLOSURE = new Set(["allow", "deny", "ask"] as const);
+    // "strict_legal" is a retired legacy value (collapsed into "strict"
+    // by migration 207) — normalize on read so a not-yet-migrated row
+    // still resolves to the stricter mode.
+    const rawMode =
+        data?.pii_default_mode === "strict_legal" ? "strict" : data?.pii_default_mode;
+    const PII_MODES = new Set(["off", "standard", "strict"] as const);
     const piiMode =
-        typeof data?.pii_default_mode === "string" &&
-        PII_MODES.has(data.pii_default_mode as never)
-            ? (data.pii_default_mode as UserModelSettings["pii_default_mode"])
+        typeof rawMode === "string" && PII_MODES.has(rawMode as never)
+            ? (rawMode as UserModelSettings["pii_default_mode"])
             : "off";
-    const piiDisclosure =
-        typeof data?.pii_disclosure_policy === "string" &&
-        PII_DISCLOSURE.has(data.pii_disclosure_policy as never)
-            ? (data.pii_disclosure_policy as UserModelSettings["pii_disclosure_policy"])
-            : "ask";
 
     return {
         title_model: resolveTitleModel(api_keys),
@@ -220,8 +211,6 @@ export async function getUserModelSettings(
         api_keys,
         preferred_language: lang,
         pii_default_mode: piiMode,
-        pii_review_required: !!data?.pii_review_required,
-        pii_disclosure_policy: piiDisclosure,
     };
 }
 

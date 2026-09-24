@@ -285,13 +285,35 @@ const STATEMENTS: ReadonlyArray<{ name: string; sql: string }> = [
     },
     {
         // Attribute each usage row to the surface that produced it
-        // ("web" | "word"). Usage is counted toward the user's quota
+        // ("web" | "word" | "tabular" | "draft" | "workflow" | "search";
+        // NULL on rows written before call sites tagged themselves —
+        // AdminMax analytics groups those as "unknown").
+        // Usage is counted toward the user's quota
         // regardless of client; this column only adds reporting visibility.
         // Idempotent ALTER so existing production tables pick it up too.
         name: "llm_usage.client",
         sql: `
             ALTER TABLE public.llm_usage
                 ADD COLUMN IF NOT EXISTS client text;
+        `,
+    },
+    {
+        name: "llm_usage.cost_breakdown",
+        sql: `
+            ALTER TABLE public.llm_usage ADD COLUMN IF NOT EXISTS cost_breakdown jsonb;
+            DO $$ BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'llm_usage'
+                      AND column_name = 'cost_usd'
+                      AND (numeric_scale <> 10 OR is_nullable = 'NO' OR column_default IS NOT NULL)
+                ) THEN
+                    ALTER TABLE public.llm_usage
+                        ALTER COLUMN cost_usd TYPE numeric(18, 10),
+                        ALTER COLUMN cost_usd DROP NOT NULL,
+                        ALTER COLUMN cost_usd DROP DEFAULT;
+                END IF;
+            END $$;
         `,
     },
     {
@@ -314,6 +336,38 @@ const STATEMENTS: ReadonlyArray<{ name: string; sql: string }> = [
         sql: `
             CREATE INDEX IF NOT EXISTS idx_llm_usage_model_created
                 ON public.llm_usage (model, created_at DESC);
+        `,
+    },
+    {
+        // Append-only audit trail for /adminmax/* write actions and data
+        // exports. Mirrors migration 133. `actor` stays 'adminmax' until
+        // per-operator identity exists.
+        name: "admin_audit",
+        sql: `
+            CREATE TABLE IF NOT EXISTS public.admin_audit (
+                id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+                actor       text        NOT NULL DEFAULT 'adminmax',
+                action      text        NOT NULL,
+                target_type text,
+                target_id   text,
+                payload     jsonb,
+                ip          text,
+                created_at  timestamptz NOT NULL DEFAULT now()
+            );
+        `,
+    },
+    {
+        name: "admin_audit_created_idx",
+        sql: `
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_created
+                ON public.admin_audit (created_at DESC);
+        `,
+    },
+    {
+        name: "admin_audit_target_idx",
+        sql: `
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_target
+                ON public.admin_audit (target_type, target_id, created_at DESC);
         `,
     },
     {
@@ -543,6 +597,22 @@ const STATEMENTS: ReadonlyArray<{ name: string; sql: string }> = [
         `,
     },
     {
+        // Billing address (tracker #35). Zakon o PDV-u čl. 79. st. 1. t. 3.:
+        // an invoice must carry the buyer's name, ADDRESS and OIB / VAT
+        // ID — so for a business customer street + city are mandatory
+        // and are pushed to Stripe customer.address before the
+        // subscription exists. Same table as country/vat_number for the
+        // same IAM-ownership reason. postal_code optional.
+        name: "user_tier_state.billing_address",
+        sql: `
+            ALTER TABLE public.user_tier_state
+                ADD COLUMN IF NOT EXISTS address_line1 text,
+                ADD COLUMN IF NOT EXISTS address_city text,
+                ADD COLUMN IF NOT EXISTS address_postal_code text,
+                ADD COLUMN IF NOT EXISTS phone text;
+        `,
+    },
+    {
         // Optional catalog of UMP level definitions (future: sync from WP).
         name: "ump_membership_levels",
         sql: `
@@ -596,6 +666,8 @@ const STATEMENTS: ReadonlyArray<{ name: string; sql: string }> = [
         `,
     },
     {
+        // Retired since #14 / migration 207 (kept for rollback; no code
+        // reads it — its opt-ins were folded into mode='strict' below).
         name: "user_profiles.pii_review_required",
         sql: `
             ALTER TABLE public.user_profiles
@@ -604,11 +676,31 @@ const STATEMENTS: ReadonlyArray<{ name: string; sql: string }> = [
         `,
     },
     {
+        // Retired since #14 / migration 207 (kept for rollback; never
+        // consulted at decision time — tool behaviour is the per-tool
+        // policy registry in lib/pii/toolPolicy.ts).
         name: "user_profiles.pii_disclosure_policy",
         sql: `
             ALTER TABLE public.user_profiles
                 ADD COLUMN IF NOT EXISTS pii_disclosure_policy jsonb
                     NOT NULL DEFAULT '{}'::jsonb;
+        `,
+    },
+    {
+        // Migration 207 — collapse the four-value mode into three:
+        // 'strict_legal' folds into 'strict', and users who explicitly
+        // opted into always-review keep their review via 'strict'.
+        // Idempotent: after the first run both WHERE clauses match zero
+        // rows. Mirrors backend/migrations/207_pii_mode_collapse.sql.
+        name: "user_profiles.pii_mode_collapse_207",
+        sql: `
+            UPDATE public.user_profiles
+               SET pii_default_mode = 'strict'
+             WHERE pii_default_mode = 'strict_legal'
+                OR (pii_default_mode = 'standard' AND pii_review_required = true);
+            UPDATE public.chats
+               SET pii_mode = 'strict'
+             WHERE pii_mode = 'strict_legal';
         `,
     },
     // ── Team subsystem (MVP) ────────────────────────────────────────────
@@ -789,6 +881,25 @@ const STATEMENTS: ReadonlyArray<{ name: string; sql: string }> = [
         `,
     },
     {
+        // Promo-code attribution: the webhook stamps each mirrored paid
+        // invoice with the customer-facing promotion code (e.g. HOK2026)
+        // that discounted it, so AdminMax can report per-code
+        // subscriptions/revenue. Mirrors migration 206.
+        name: "billing_revenue.promo_code",
+        sql: `
+            ALTER TABLE public.billing_revenue
+                ADD COLUMN IF NOT EXISTS promo_code text;
+        `,
+    },
+    {
+        name: "billing_revenue_promo_idx",
+        sql: `
+            CREATE INDEX IF NOT EXISTS idx_billing_revenue_promo
+                ON public.billing_revenue (promo_code)
+                WHERE promo_code IS NOT NULL;
+        `,
+    },
+    {
         // Cross-instance lease for POST /tabular-review/:id/generate. The
         // in-memory activeGenerateRuns set only guards one process; with
         // Cloud Run maxScale > 1 a second click can land on another
@@ -912,6 +1023,48 @@ const STATEMENTS: ReadonlyArray<{ name: string; sql: string }> = [
         sql: `
             CREATE INDEX IF NOT EXISTS service_notifications_user_idx
                 ON public.service_notifications (user_id, created_at DESC);
+        `,
+    },
+    {
+        // Sidebar conversation groups — see migration 132. Per-user only
+        // (user_id is text, matching chats.user_id). Soft-delete status
+        // model; routes/chatGroups.ts never returns 'deleted' rows.
+        name: "chat_groups",
+        sql: `
+            CREATE TABLE IF NOT EXISTS public.chat_groups (
+                id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id     text        NOT NULL,
+                name        text        NOT NULL,
+                status      text        NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived','deleted')),
+                created_at  timestamptz NOT NULL DEFAULT now(),
+                updated_at  timestamptz NOT NULL DEFAULT now()
+            );
+        `,
+    },
+    {
+        name: "chat_groups_user_idx",
+        sql: `
+            CREATE INDEX IF NOT EXISTS idx_chat_groups_user
+                ON public.chat_groups (user_id);
+        `,
+    },
+    {
+        // Chat history management flags — see migration 132. status:
+        // 'deleted' rows are invisible everywhere (soft delete); DELETE
+        // /chat/:id flips status instead of removing the row.
+        name: "chats.history_management_columns",
+        sql: `
+            ALTER TABLE public.chats
+                ADD COLUMN IF NOT EXISTS group_id uuid REFERENCES public.chat_groups(id) ON DELETE SET NULL,
+                ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false,
+                ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived','deleted'));
+        `,
+    },
+    {
+        name: "chats_user_status_idx",
+        sql: `
+            CREATE INDEX IF NOT EXISTS idx_chats_user_status
+                ON public.chats (user_id, status);
         `,
     },
 ];

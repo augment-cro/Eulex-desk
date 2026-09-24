@@ -57,10 +57,21 @@ const unconfigured: ProviderClient = {
   list: async () => ({ ok: false, error: "CONTEXTS_URL_NOT_SET" }),
 };
 
-function buildApp(store: ContextsRuntimeStore, client: ProviderClient) {
+// Allow-all target checker by default; individual tests override to assert
+// the attach-target authorization (issue #125).
+const allowAllTargets = {
+  canAccessProject: async () => true,
+  canEditWorkflow: async () => true,
+};
+
+function buildApp(
+  store: ContextsRuntimeStore,
+  client: ProviderClient,
+  targets = allowAllTargets,
+) {
   const app = express();
   app.use(express.json());
-  app.use("/contexts", makeContextsRouter(store, stubAuth, client));
+  app.use("/contexts", makeContextsRouter(store, stubAuth, client, targets));
   return app;
 }
 
@@ -155,6 +166,22 @@ describe("contexts runtime routes", () => {
 
     await request(app).post("/contexts/nope/workflows/wf1").expect(404);
     await request(app).get("/contexts/nope/links").expect(404);
+  });
+
+  it("attach: 404 when the caller lacks access to the target project/workflow (issue #125)", async () => {
+    const store = memoryStore();
+    // Context is visible, but the target checker denies the project/workflow.
+    const app = buildApp(store, providerWith([{ id: "a", name: "A" }]), {
+      canAccessProject: async () => false,
+      canEditWorkflow: async () => false,
+    });
+    await request(app).post("/contexts/a/workflows/wf1").expect(404);
+    await request(app).post("/contexts/a/projects/p1").expect(404);
+    await request(app).delete("/contexts/a/workflows/wf1").expect(404);
+    await request(app).delete("/contexts/a/projects/p1").expect(404);
+    // Nothing was written.
+    const links = await request(app).get("/contexts/a/links").expect(200);
+    assert.deepEqual(links.body, { workflows: [], projects: [] });
   });
 
   it("an async handler rejection becomes a 500 JSON response, not a hang", async () => {

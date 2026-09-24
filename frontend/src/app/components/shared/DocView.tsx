@@ -5,6 +5,7 @@ import { ZoomIn, ZoomOut } from "lucide-react";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { useFetchSingleDoc } from "@/app/hooks/useFetchSingleDoc";
 import { DocxViewer } from "./DocxViewer";
+import { TextDocView } from "./TextDocView";
 import type { CitationQuote } from "./types";
 import {
     clearHighlights,
@@ -68,6 +69,13 @@ export function DocView({
     const quoteKey = quoteList
         .map((q) => `${q.page ?? ""}:${q.quote}`)
         .join("|");
+
+    // Plain-text documents have no pages — the text viewer only needs the
+    // quote strings.
+    const textQuotes = useMemo(
+        () => quoteList.map((q) => q.quote),
+        [quoteList],
+    );
 
     const [containerWidth, setContainerWidth] = useState(0);
     const [zoom, setZoom] = useState(1.0);
@@ -529,6 +537,19 @@ export function DocView({
                 currentPageRef.current,
             );
         }
+    }
+
+    // /display answered text/plain — a .txt document. Without this branch it
+    // used to fall through to the DOCX viewer, which cannot render text.
+    if (result?.type === "text") {
+        return (
+            <TextDocView
+                text={result.text}
+                quotes={textQuotes}
+                rounded={rounded}
+                bordered={bordered}
+            />
+        );
     }
 
     if (fallbackToDocx && doc?.document_id) {

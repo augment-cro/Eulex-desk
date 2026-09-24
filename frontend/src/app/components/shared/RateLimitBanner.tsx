@@ -33,12 +33,12 @@ function formatNumber(n: number): string {
     return new Intl.NumberFormat("hr-HR").format(n);
 }
 
-function formatRelief(iso: string | null): string {
+function formatRelief(iso: string | null, soonLabel: string): string {
     if (!iso) return "—";
     const target = new Date(iso);
     const now = Date.now();
     const diffMs = target.getTime() - now;
-    if (diffMs <= 0) return "uskoro";
+    if (diffMs <= 0) return soonLabel;
     const minutes = Math.round(diffMs / 60_000);
     if (minutes < 60) return `${minutes} min`;
     const hours = Math.floor(minutes / 60);
@@ -93,7 +93,10 @@ export function RateLimitBanner() {
                         <div className="mt-0.5 text-[11px] opacity-80">
                             {isHard
                                 ? t("hardBody", {
-                                      relief: formatRelief(snap.nextReliefAt),
+                                      relief: formatRelief(
+                                          snap.nextReliefAt,
+                                          t("reliefSoon"),
+                                      ),
                                   })
                                 : `${t("softBody", {
                                       used: formatNumber(snap.usedTokens),

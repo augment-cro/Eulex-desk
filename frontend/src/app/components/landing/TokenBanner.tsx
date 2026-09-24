@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 
+import { API_BASE } from "@/app/lib/apiBase";
 const CAP = 200_000_000;
-const API_BASE =
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
 
 function fmt(n: number): string {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(".", ",")} M`;
@@ -13,6 +13,7 @@ function fmt(n: number): string {
 }
 
 export function TokenBanner() {
+    const t = useTranslations("landing.tokenBanner");
     const [used, setUsed] = useState<number | null>(null);
 
     useEffect(() => {
@@ -45,11 +46,13 @@ export function TokenBanner() {
         <div className="bg-card text-foreground border-b border-border">
             <div className="max-w-5xl mx-auto px-6 py-4 md:py-5">
                 <p className="text-center font-display text-base md:text-lg text-foreground mb-4">
-                    Poklanjamo prvih{" "}
-                    <span className="font-semibold">200.000.000 tokena</span>{" "}
-                    besplatno za testiranje.
+                    {t.rich("message", {
+                        b: (chunks) => (
+                            <span className="font-semibold">{chunks}</span>
+                        ),
+                    })}
                     <span className="ml-2 text-foreground text-xs font-mono">
-                        Ostalo: {fmt(remaining)}
+                        {t("remaining", { amount: fmt(remaining) })}
                     </span>
                 </p>
 
@@ -57,7 +60,7 @@ export function TokenBanner() {
                     <div className="flex justify-between items-end mb-1.5">
                         <span className="font-mono text-xs text-foreground">0</span>
                         <span className="font-mono text-xs text-foreground font-semibold">
-                            {fmt(used)} iskorišteno
+                            {t("used", { amount: fmt(used) })}
                         </span>
                         <span className="font-mono text-xs text-foreground">200 M</span>
                     </div>
@@ -70,7 +73,7 @@ export function TokenBanner() {
                     </div>
 
                     <p className="mt-1.5 text-center font-mono text-xs text-foreground">
-                        {pct.toFixed(2)}% iskorišteno
+                        {t("percentUsed", { pct: pct.toFixed(2) })}
                     </p>
                 </div>
             </div>

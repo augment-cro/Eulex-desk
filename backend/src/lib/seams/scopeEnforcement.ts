@@ -180,7 +180,7 @@ export function redactToolResult<S extends { id: string }>(params: {
  * chatTools.deriveActiveJurisdictions.
  */
 const LEGAL_SERVER_RE =
-    /eulex|eur-?lex|zakon|narodne|hrvat|croat|legifrance|france|french|francus|ris-?at|austria|österreich|osterreich|uk-?legal|legislation\.gov\.uk|united kingdom/;
+    /eulex|eur-?lex|zakon|narodne|hrvat|croat|sggz|zagreb|sloven|legal-it|italij|italian|legifrance|france|french|francus|ris-?at|austria|österreich|osterreich|uk-?legal|legislation\.gov\.uk|united kingdom/;
 
 export function isLegalMcpServer(
     row: { slug?: string | null; name?: string | null } | null | undefined,

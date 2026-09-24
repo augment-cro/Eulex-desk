@@ -10,10 +10,14 @@ import {
     extractAnnotations,
     runLLMStream,
     PROJECT_EXTRA_TOOLS,
+    PiiShieldUnavailableError,
     type ChatMessage,
 } from "../lib/chatTools";
 import { getUserApiKeys } from "../lib/userSettings";
+import { LlmStreamStallError, providerForModel } from "../lib/llm";
 import { recordLlmUsage } from "../lib/llmUsage";
+import { emptyUsage, getErrorUsage, type UsageContext } from "../lib/llm/usage";
+import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
 import { checkProjectAccess } from "../lib/access";
 import {
     closeMcpServers,
@@ -72,6 +76,16 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
         client?: "web" | "word";
         editMode?: "track" | "comments";
     };
+    // Validate before touching the DB: `[...messages]` on a non-array throws
+    // inside this bare async handler, whose rejection never reaches the error
+    // middleware — the request hung until the Cloud Run timeout AND left an
+    // orphan chat row behind (created below). See issue #109.
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return void res
+            .status(400)
+            .json({ detail: "messages array is required" });
+    }
+
     const reasoningEffort: "low" | "medium" | "high" | undefined =
         effort === "low" || effort === "medium" || effort === "high"
             ? effort
@@ -87,7 +101,9 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
         db,
     );
     if (!projectAccess.ok)
-        return void res.status(404).json({ detail: "Project not found" });
+        return void res
+            .status(404)
+            .json({ detail: "Project not found", code: "PROJECT_NOT_FOUND" });
 
     let chatId = chat_id ?? null;
     let chatTitle: string | null = null;
@@ -97,6 +113,8 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
             .from("chats")
             .select("id, title, project_id")
             .eq("id", chatId)
+            // Deleted chats (migration 132) can't receive messages.
+            .neq("status", "deleted")
             .single();
         const canUse = !!existing && existing.project_id === projectId;
         if (!canUse) chatId = null;
@@ -112,7 +130,7 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
         if (error || !newChat)
             return void res
                 .status(500)
-                .json({ detail: "Failed to create chat" });
+                .json({ detail: "Failed to create chat", code: "CHAT_CREATE_FAILED" });
         chatId = newChat.id as string;
         chatTitle = newChat.title;
     }
@@ -243,7 +261,12 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
     if (typeof req.setTimeout === "function") req.setTimeout(0);
     if (typeof res.setTimeout === "function") res.setTimeout(0);
 
-    const write = (line: string) => res.write(line);
+    // Guarded against write-after-end — see chat.ts: after a stall-watchdog
+    // abort (#25) the orphaned stream may still write after res.end(),
+    // which would crash the process via an unhandled 'error' event.
+    const write = (line: string) => {
+        if (!res.writableEnded) res.write(line);
+    };
 
     // SSE keep-alive heartbeat — see /chat/stream for the rationale.
     const heartbeat = setInterval(() => {
@@ -253,14 +276,24 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
             /* socket closed; cleared in finally */
         }
     }, 15_000);
-    req.on("close", () => clearInterval(heartbeat));
+    // Abort the turn on client disconnect — stops token spend + further tool
+    // calls after a Stop / tab-close (issue #92), same as the /chat route.
+    const turnAbort = new AbortController();
+    req.on("close", () => {
+        clearInterval(heartbeat);
+        if (!res.writableEnded) turnAbort.abort();
+    });
 
     const apiKeys = await getUserApiKeys(userId, db);
     // Per-user connectors come first so they win any slug collision in
     // findMcpServerForTool; built-in (system-side) MCPs follow.
     const [userMcpServers, builtinMcpServers] = await Promise.all([
         loadEnabledMcpServersForUser(userId, db),
-        loadBuiltinMcpServers(userId, db),
+        loadBuiltinMcpServers(
+            userId,
+            db,
+            res.locals.tierLevelId as number | undefined,
+        ),
     ]);
     const mcpServers = [...userMcpServers, ...builtinMcpServers];
 
@@ -279,6 +312,7 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
 
     const turnStartedAt = Date.now();
     let usageRecorded = false;
+    let completedUsage: UsageContext | undefined;
 
     try {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
@@ -330,6 +364,7 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
             usage,
             selectedModel,
             webSearchCostUsd,
+            docTexts,
         } = await runLLMStream({
             apiMessages,
             docStore,
@@ -350,9 +385,19 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
             canExportDocx,
             webSearchEnabled: web_search,
             activeContexts,
+            abortSignal: turnAbort.signal,
+            // Stall watchdog (#25) — same controller; see chat.ts.
+            turnAbort,
         });
+        if (usage) completedUsage = { usage, model: selectedModel, extraCostUsd: webSearchCostUsd };
 
-        const annotations = extractAnnotations(fullText, docIndex, events);
+        // docTexts → citation-quote verification on `citation_data` (#22).
+        const annotations = extractAnnotations(
+            fullText,
+            docIndex,
+            events,
+            docTexts,
+        );
         const { data: insertedAssistant } = await db
             .from("chat_messages")
             .insert({
@@ -364,11 +409,26 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
             .select("id")
             .single();
 
+        // Workspace audit trail (#27) — fire-and-forget, never awaited on
+        // the stream path; recordAuditEvent swallows its own failures.
+        void recordFeatureUse({ userId, feature: "projects", surface: "web", projectId });
+        void recordAuditEvent({
+            userId,
+            eventType: "chat.turn_completed",
+            chatId,
+            projectId,
+            surface: "web",
+            metadata: {
+                model: selectedModel,
+                cancelled: turnAbort.signal.aborted,
+            },
+        });
+
         if (usage) {
             usageRecorded = true;
             await recordLlmUsage({
                 userId,
-                provider: "claude",
+                provider: providerForModel(selectedModel),
                 client: client ?? "web",
                 model: selectedModel,
                 chatId,
@@ -376,7 +436,7 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
                 projectChatMessageId: insertedAssistant?.id ?? null,
                 usage,
                 durationMs: Date.now() - turnStartedAt,
-                status: "ok",
+                status: turnAbort.signal.aborted ? "aborted" : "ok",
                 // See chat.ts — search-provider USD folded into cost_usd.
                 extraCostUsd: webSearchCostUsd,
             });
@@ -392,32 +452,35 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
         console.error("[project-chat/stream] error:", err);
         if (!usageRecorded) {
             try {
+                const partial = getErrorUsage(err) ?? completedUsage;
+                const actualModel = partial?.model ?? model ?? "unknown";
+                let actualProvider = "unknown";
+                try { actualProvider = providerForModel(actualModel); } catch {}
                 await recordLlmUsage({
-                    userId,
-                    provider: "claude",
-                    client: client ?? "web",
-                    model: model ?? "unknown",
-                    chatId,
+                    userId, provider: actualProvider, client: client ?? "web",
+                    model: actualModel, chatId,
                     projectId,
-                    usage: {
-                        inputTokens: 0,
-                        outputTokens: 0,
-                        cacheCreationInputTokens: 0,
-                        cacheReadInputTokens: 0,
-                        iterations: 0,
-                    },
+                    usage: partial?.usage ?? { ...emptyUsage(), incomplete: true },
+                    extraCostUsd: partial?.extraCostUsd,
                     durationMs: Date.now() - turnStartedAt,
                     status: "error",
-                    errorMessage:
-                        err instanceof Error ? err.message : String(err),
+                    errorMessage: err instanceof Error ? err.message : String(err),
                 });
-            } catch {
-                /* recordLlmUsage already logs its own failures */
-            }
+            } catch { /* recordLlmUsage already logs its own failures */ }
         }
+
         try {
+            // Fail-closed PII abort (#45) gets its own code so the client
+            // can render the dedicated localized banner; stall-watchdog
+            // abort (#25) ships STREAM_STALLED — see chat.ts.
+            const { message, code } =
+                err instanceof PiiShieldUnavailableError
+                    ? { message: err.message, code: err.code }
+                    : err instanceof LlmStreamStallError
+                      ? { message: err.message, code: err.code }
+                      : { message: "Stream error", code: "STREAM_ERROR" };
             write(
-                `data: ${JSON.stringify({ type: "error", message: "Stream error" })}\n\n`,
+                `data: ${JSON.stringify({ type: "error", message, code })}\n\n`,
             );
             write("data: [DONE]\n\n");
         } catch {

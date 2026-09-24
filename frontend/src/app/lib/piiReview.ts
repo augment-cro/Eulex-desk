@@ -15,33 +15,30 @@
  *
  * Single source of truth → identičan UX bez obzira na ulaznu točku.
  *
- * Rules
- * =====
- * | mode          | reviewRequired | open modal? |
- * |---------------|----------------|-------------|
- * | off           | any            | NEVER       |
- * | standard      | false          | NEVER       |
- * | standard      | true           | YES         |
- * | strict_legal  | any            | YES         |
- * | strict        | any            | YES         |
+ * Rules (#14 — single Anonymization mode)
+ * =======================================
+ * | mode     | open modal? |
+ * |----------|-------------|
+ * | off      | NEVER       |
+ * | standard | NEVER       |
+ * | strict   | ALWAYS      |
  *
- * Why `standard + reviewRequired=false` skips the modal:
+ * Why `standard` skips the modal:
  *   The whole point of "standard" mode is silent best-effort masking
- *   with high recall. Opening a modal for every upload would defeat
- *   the purpose. Users who want the gate explicitly opt-in via the
- *   "uvijek tražiti pregled" toggle on /account/privacy.
+ *   with high recall. Users who want the gate pick "strict" on
+ *   /account/privacy — there is no separate review toggle anymore (the
+ *   old `reviewRequired` opt-in migrated into strict, migration 207).
+ *
+ * "strict_legal" is a retired legacy wire value; treat it as strict.
  */
 
 export type PiiReviewMode = "off" | "standard" | "strict_legal" | "strict";
 
 export function shouldReviewPii(args: {
     mode: PiiReviewMode | null | undefined;
-    reviewRequired: boolean | null | undefined;
 }): boolean {
     const mode = args.mode ?? "off";
-    if (mode === "off") return false;
-    if (mode === "standard") return !!args.reviewRequired;
-    return true;
+    return mode === "strict" || mode === "strict_legal";
 }
 
 /**

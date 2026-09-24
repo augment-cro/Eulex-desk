@@ -35,6 +35,7 @@
  * @module membership
  */
 import crypto from "node:crypto";
+import { recordAuditEvent } from "./audit";
 import { query } from "./db";
 import { getTierLimitsRow } from "./tierLimitsStore";
 import {
@@ -276,6 +277,13 @@ async function recordTierChange(
     const levelChanged = (before.level ?? null) !== (after.level ?? null);
     const untilChanged = beforeUntilIso !== afterUntilIso;
     if (!levelChanged && !untilChanged) return;
+    // Lifecycle signal (migration 210): one event per real transition —
+    // this guard already dedupes Stripe's created→updated→invoice storm.
+    void recordAuditEvent({
+        userId,
+        eventType: levelChanged ? "subscription.tier_changed" : "subscription.until_changed",
+        metadata: { old_level: before.level, new_level: after.level, source },
+    });
     try {
         await query(
             `INSERT INTO public.tier_change_history (
@@ -453,6 +461,28 @@ export async function findUserByStripeCustomer(
     return result.rows[0] ?? null;
 }
 
+/**
+ * Persist the billing country the user chose at checkout. Country is
+ * REQUIRED before any subscription is created (tracker #33): without it
+ * Stripe cannot resolve a tax location and the invoice ships without VAT
+ * — and, because nothing re-enables `automatic_tax` later, every renewal
+ * of that subscription stays VAT-free too. Idempotent upsert; the value
+ * arrives validated as ISO-3166-1 alpha-2 (see routes/billing.ts).
+ */
+export async function rememberCheckoutCountry(
+    userId: string,
+    country: string,
+): Promise<void> {
+    await query(
+        `INSERT INTO public.user_tier_state (
+            user_id, country, active_tier_synced_at
+         ) VALUES ($1, $2, now())
+         ON CONFLICT (user_id) DO UPDATE SET
+            country = EXCLUDED.country`,
+        [userId, country],
+    );
+}
+
 /** Persist the Stripe customer linkage on first-seen events. */
 export async function rememberStripeCustomer(
     userId: string,
@@ -579,15 +609,59 @@ export async function pullMembershipStatus(
 }
 
 /**
+ * `true` when the user's current ACTIVE override was last written by
+ * AdminMax or a Stripe webhook (per the latest tier_change_history row —
+ * recordTierChange only logs real transitions, so the newest row is the
+ * write that produced the current state). UMP only knows about levels
+ * that exist in UMP; Max-native tiers (Legal Pro, 10, 11) and manual
+ * admin grants read back as "free" from the pull, so ump_sync must never
+ * overwrite or clear such an override (issue #19).
+ */
+async function hasAdminOrStripeOverride(userId: string): Promise<boolean> {
+    const r = await query<{ source: TierChangeSource }>(
+        `SELECT h.source
+           FROM public.user_tier_state s
+           JOIN LATERAL (
+               SELECT source FROM public.tier_change_history
+                WHERE user_id = s.user_id
+                ORDER BY created_at DESC
+                LIMIT 1
+           ) h ON true
+          WHERE s.user_id = $1
+            AND s.active_tier_level_id IS NOT NULL
+            AND (s.active_tier_until IS NULL OR s.active_tier_until > now())`,
+        [userId],
+    );
+    const source = r.rows[0]?.source;
+    return source === "admin" || source === "stripe";
+}
+
+/**
  * Update the local override based on a pull result. Any paid level
  * (plus / pro / team) → set the override to that exact level; Free (or
  * any unknown level) → clear; sync timestamp is bumped either way so we
  * don't re-pull for the next 5 minutes.
+ *
+ * NOT authoritative over admin/Stripe grants: when the current active
+ * override came from AdminMax or a Stripe webhook, the pull result is
+ * discarded (only the sync timestamp is bumped) and `false` is returned
+ * so the caller keeps the local tier instead of the snapshot's.
  */
 export async function applyPulledStatus(
     userId: string,
     snapshot: MembershipStatusSnapshot,
-): Promise<void> {
+): Promise<boolean> {
+    if (await hasAdminOrStripeOverride(userId)) {
+        // Bump the sync timestamp so the auth staleness gate doesn't
+        // re-pull on every request, and leave the grant untouched.
+        await query(
+            `UPDATE public.user_tier_state
+                SET active_tier_synced_at = now()
+              WHERE user_id = $1`,
+            [userId],
+        );
+        return false;
+    }
     if (isPaidLevel(snapshot.level_id)) {
         const until = snapshot.expires_at ? new Date(snapshot.expires_at) : null;
         await setLocalTierActive(userId, snapshot.level_id, until, {}, {
@@ -641,6 +715,7 @@ export async function applyPulledStatus(
             );
         }
     }
+    return true;
 }
 
 export { getPlusTierLevelId, getFreeTierLevelId };

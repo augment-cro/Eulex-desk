@@ -67,8 +67,20 @@ export function SourcesList({
                                 ? t("badge.eu")
                                 : s.scope === "@hr"
                                   ? t("badge.hr")
-                                  : t("badge.fr")}
+                                  : s.scope === "@si"
+                                    ? t("badge.si")
+                                    : s.scope === "@de"
+                                      ? t("badge.de")
+                                      : t("badge.fr")}
                         </Badge>
+                        {s.kind === "caselaw" && (
+                            <Badge
+                                variant="outline"
+                                className="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                            >
+                                {t("badge.caselaw")}
+                            </Badge>
+                        )}
                         <span className="truncate font-medium text-foreground/90 group-hover:text-foreground">
                             {s.title}
                         </span>

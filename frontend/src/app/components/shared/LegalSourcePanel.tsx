@@ -7,14 +7,25 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { getLegalDocument } from "@/app/lib/mikeApi";
+import { getLegalDocument, getLegalDocumentVersions } from "@/app/lib/mikeApi";
 import { highlightDocxQuote } from "./highlightDocxQuote";
+import { LegalTimeline } from "./LegalTimeline";
 import {
     articleNumberOf,
+    formatNnReference,
     groupLegalSegments,
     hrWholeRegulationPath,
+    legalSourceDisplayTitle,
 } from "./legalSourceUtils";
-import type { CitationPinpoint, LegalDocument, LegalSource } from "./types";
+import type {
+    CitationPinpoint,
+    LegalDocument,
+    LegalDocumentVersion,
+    LegalSource,
+} from "./types";
+
+/** Staging kill-switch for the version timeline (build-time env flag). */
+const TIMELINE_ENABLED = process.env.NEXT_PUBLIC_LEGAL_TIMELINE === "1";
 
 /**
  * Right-side panel body for a legal source (EU / HR / FR).
@@ -182,6 +193,55 @@ export function LegalSourcePanel({
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(false);
 
+    // ---- version timeline (HR regulations, behind NEXT_PUBLIC_LEGAL_TIMELINE)
+    // Whole-regulation proxy path — the timeline is law-level, never per
+    // article or court decision.
+    const regulationPath =
+        TIMELINE_ENABLED && source.scope === "@hr" && source.kind !== "caselaw"
+            ? hrWholeRegulationPath(source.fetchPath)
+            : null;
+    const [versions, setVersions] = useState<LegalDocumentVersion[]>([]);
+    // null = the default (in-force) view; an index = explicit user pick.
+    const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+
+    // Reset the timeline when the cited regulation changes — adjust-during-
+    // render (not in an effect) so there's no extra cascading render pass.
+    const [versionsFor, setVersionsFor] = useState(regulationPath);
+    if (versionsFor !== regulationPath) {
+        setVersionsFor(regulationPath);
+        setVersions([]);
+        setSelectedIdx(null);
+    }
+
+    useEffect(() => {
+        let cancelled = false;
+        if (!regulationPath) return;
+        getLegalDocumentVersions("@hr", regulationPath).then((v) => {
+            if (!cancelled) setVersions(v);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [regulationPath]);
+
+    // Default stop = the in-force version; for fully repealed laws, the
+    // newest non-future one (what the plain full-document fetch shows).
+    const defaultIdx = useMemo(() => {
+        const inForce = versions.findIndex((v) => v.status === "in_force");
+        if (inForce >= 0) return inForce;
+        for (let i = versions.length - 1; i >= 0; i--) {
+            if (versions[i].status !== "future") return i;
+        }
+        return versions.length - 1;
+    }, [versions]);
+
+    // The explicitly selected HISTORICAL/FUTURE version (null on the default
+    // view) — drives the refetch, the notice banner and the footer link.
+    const activeVersion =
+        selectedIdx !== null && selectedIdx !== defaultIdx
+            ? (versions[selectedIdx] ?? null)
+            : null;
+
     // Fold the flat segment list into hierarchical render blocks (article cards
     // + structural headings) for readable display.
     const blocks = useMemo(
@@ -196,6 +256,9 @@ export function LegalSourcePanel({
         const strip = (c: string | null | undefined) =>
             (c ?? "")
                 .replace(/,?\s*čl\.?\s*\d+[a-z]?\.?/gi, "")
+                // NN objava ordinal ("NN 136/2025-2018" → "NN 136/2025") —
+                // citation convention drops the in-issue document number.
+                .replace(/(NN\s*\d+\/\d+)-\d+/gi, "$1")
                 .replace(/\s{2,}/g, " ")
                 .replace(/^[\s,]+|[\s,]+$/g, "")
                 .trim();
@@ -211,14 +274,38 @@ export function LegalSourcePanel({
         return c;
     }, [fullDoc, source.citation, source.title]);
 
-    // Background fetch of the full document.
-    useEffect(() => {
-        let cancelled = false;
+    // Background fetch of the full document. When a historical version is
+    // selected, fetch by its OWN regulation id (lineage fragments — an old
+    // version can live on a different regulation row) + exact version_id.
+    const docSrc = useMemo<LegalSource>(
+        () =>
+            activeVersion
+                ? {
+                      ...fetchSource,
+                      fetchPath: `/api/v1/regulations/${activeVersion.regulationId}`,
+                  }
+                : fetchSource,
+        [fetchSource, activeVersion],
+    );
+
+    // Reset document state the moment the fetch target changes — adjust-
+    // during-render (initial null → also covers the very first render).
+    const docKey = `${docSrc.fetchPath ?? ""}|${activeVersion?.id ?? ""}`;
+    const [docFor, setDocFor] = useState<string | null>(null);
+    if (docFor !== docKey) {
+        setDocFor(docKey);
         setFullDoc(null);
         setError(false);
-        if (!fetchSource.fetchPath) return;
-        setLoading(true);
-        getLegalDocument(fetchSource)
+        setLoading(!!docSrc.fetchPath);
+    }
+
+    useEffect(() => {
+        let cancelled = false;
+        if (!docSrc.fetchPath) return;
+        getLegalDocument(
+            docSrc,
+            activeVersion ? { versionId: activeVersion.id } : undefined,
+        )
             .then((doc) => {
                 if (cancelled) return;
                 if (doc && doc.articles.length > 0) setFullDoc(doc);
@@ -232,7 +319,7 @@ export function LegalSourcePanel({
         return () => {
             cancelled = true;
         };
-    }, [fetchSource]);
+    }, [docSrc, activeVersion]);
 
     // Locate the cited passage once content (snippet or full doc) is in the
     // DOM. Priority:
@@ -293,14 +380,26 @@ export function LegalSourcePanel({
             ? t("badge.eu")
             : source.scope === "@hr"
               ? t("badge.hr")
-              : t("badge.fr");
+              : source.scope === "@si"
+                ? t("badge.si")
+                : source.scope === "@de"
+                  ? t("badge.de")
+                  : t("badge.fr");
 
+    // Court decisions live on the case-law portal (odluke.sudovi.hr), not on
+    // the statute publishers — never label their link "Narodne novine".
     const externalLabel =
-        source.scope === "@eu"
-            ? t("viewOnEurLex")
-            : source.scope === "@hr"
-              ? t("viewOnNarodneNovine")
-              : t("viewOnLegifrance");
+        source.kind === "caselaw"
+            ? t("viewOnCourtPortal")
+            : source.scope === "@eu"
+              ? t("viewOnEurLex")
+              : source.scope === "@hr"
+                ? t("viewOnNarodneNovine")
+                : source.scope === "@si"
+                  ? t("viewOnPisrs")
+                  : source.scope === "@de"
+                    ? t("viewOnGesetzeImInternet")
+                    : t("viewOnLegifrance");
 
     return (
         <div className="flex h-full flex-col bg-card">
@@ -317,6 +416,14 @@ export function LegalSourcePanel({
                     >
                         {badgeLabel}
                     </Badge>
+                    {source.kind === "caselaw" && (
+                        <Badge
+                            variant="outline"
+                            className="uppercase tracking-wide text-muted-foreground"
+                        >
+                            {t("badge.caselaw")}
+                        </Badge>
+                    )}
                     {typeof source.inForce === "boolean" && (
                         <Badge
                             variant="outline"
@@ -337,14 +444,40 @@ export function LegalSourcePanel({
                     )}
                 </div>
                 <h2 className="text-[15px] font-semibold leading-snug text-foreground">
-                    {fullDoc?.title || source.title}
+                    {fullDoc?.title || legalSourceDisplayTitle(source)}
                 </h2>
                 {lawCitation && lawCitation !== (fullDoc?.title || source.title) && (
                     <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
                         {lawCitation}
                     </p>
                 )}
+                {versions.length >= 2 && (
+                    <LegalTimeline
+                        versions={versions}
+                        selectedIndex={selectedIdx ?? defaultIdx}
+                        onSelect={setSelectedIdx}
+                        disabled={loading}
+                    />
+                )}
             </div>
+
+            {/* Point-in-time notice — the user is NOT reading the in-force
+                text. Pinned above the scroll so it can never leave view. */}
+            {activeVersion && (
+                <div className="border-b border-border bg-warning/10 px-4 py-2 text-xs leading-relaxed text-foreground">
+                    <span className="font-semibold">
+                        {activeVersion.status === "future"
+                            ? t("timeline.futureNotice")
+                            : t("timeline.historicalNotice")}
+                    </span>
+                    {activeVersion.nnReference && (
+                        <span className="text-muted-foreground">
+                            {" · "}
+                            {formatNnReference(activeVersion.nnReference)}
+                        </span>
+                    )}
+                </div>
+            )}
 
             {/* Body — full document when available, else the cited passage. */}
             <ScrollArea className="min-h-0 flex-1">
@@ -447,6 +580,13 @@ export function LegalSourcePanel({
                         <Loader2 className="h-5 w-5 animate-spin text-foreground" />
                         <p className="text-sm">{t("loadingLaw")}</p>
                     </div>
+                ) : activeVersion ? (
+                    // A historical version failed to load. NEVER fall back to
+                    // the snippet here — it quotes the CURRENT text and would
+                    // masquerade as the selected version.
+                    <p className="py-16 text-center text-sm text-muted-foreground">
+                        {t("timeline.versionTextUnavailable")}
+                    </p>
                 ) : (
                     <>
                         <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -474,8 +614,10 @@ export function LegalSourcePanel({
               </div>
             </ScrollArea>
 
-            {/* Footer — open the official source. */}
-            {source.externalUrl && (
+            {/* Footer — open the official source. On a historical version,
+                link to THAT version's NN objava (ELI) instead of the law's
+                default external URL. */}
+            {(activeVersion?.eliUrl || source.externalUrl) && (
                 <div className="border-t border-border px-4 py-3">
                     <Button
                         asChild
@@ -484,7 +626,7 @@ export function LegalSourcePanel({
                         className="w-full"
                     >
                         <a
-                            href={source.externalUrl}
+                            href={activeVersion?.eliUrl ?? source.externalUrl ?? undefined}
                             target="_blank"
                             rel="noopener noreferrer"
                         >

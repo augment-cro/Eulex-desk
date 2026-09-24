@@ -17,12 +17,14 @@ import {
     addContextSource,
     createContext as apiCreateContext,
     getContext,
+    listContextAlerts,
     listContextShares,
     listContextSources,
     removeContextSource,
     updateContext,
     updateContextSource,
     type ContextSourceKind,
+    type MikeContextAlertEvent,
     type MikeContextShare,
     type MikeContextSource,
 } from "@/app/lib/mikeApi";
@@ -70,6 +72,18 @@ export function NewContextModal({ contextId, onClose }: Props) {
     const [error, setError] = useState("");
 
     const isEditing = ctxId !== null;
+
+    // Source-change alerts for this context (contexts-service read model;
+    // fails soft to an empty list while alerting is not configured).
+    const [alerts, setAlerts] = useState<MikeContextAlertEvent[]>([]);
+    useEffect(() => {
+        if (!ctxId) return;
+        let cancelled = false;
+        listContextAlerts(ctxId)
+            .then((rows) => { if (!cancelled) setAlerts(rows); })
+            .catch(() => { if (!cancelled) setAlerts([]); });
+        return () => { cancelled = true; };
+    }, [ctxId]);
     const canEdit = isOwner || allowEdit;
 
     useEffect(() => {
@@ -342,6 +356,14 @@ export function NewContextModal({ contextId, onClose }: Props) {
                                     <TabsTrigger value="instructions">
                                         {tPage("instructionsTab")}
                                     </TabsTrigger>
+                                    <TabsTrigger value="alerts">
+                                        {tPage("alertsTab")}
+                                        {alerts.length > 0 && (
+                                            <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 text-[11px] text-primary">
+                                                {alerts.length}
+                                            </span>
+                                        )}
+                                    </TabsTrigger>
                                     {/* Owner-gated: the shares API is
                                         owner-only. */}
                                     {isOwner && (
@@ -367,6 +389,31 @@ export function NewContextModal({ contextId, onClose }: Props) {
                                             readOnly={!canEdit}
                                         />
                                     </div>
+                                </TabsContent>
+                                <TabsContent
+                                    value="alerts"
+                                    className="min-h-0 overflow-y-auto"
+                                >
+                                    {alerts.length === 0 ? (
+                                        <p className="text-sm text-muted-foreground py-6">
+                                            {tPage("alertsEmpty")}
+                                        </p>
+                                    ) : (
+                                        <ul className="divide-y divide-border">
+                                            {alerts.map((a) => (
+                                                <li key={a.id} className="py-3">
+                                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-primary">
+                                                            {tPage(`alertChange_${a.change_type}` as "alertChange_amendment")}
+                                                        </span>
+                                                        <span>{new Date(a.detected_at).toLocaleDateString()}</span>
+                                                        <span className="font-mono">{a.source_id}</span>
+                                                    </div>
+                                                    <p className="mt-1 text-sm text-foreground">{a.summary}</p>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
                                 </TabsContent>
                                 {isOwner && ctxId && (
                                     <TabsContent

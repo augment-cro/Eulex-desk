@@ -13,9 +13,11 @@ import {
     uploadProjectDocument,
     uploadStandaloneDocument,
 } from "@/app/lib/mikeApi";
-import { track, fileTypeOf } from "@/app/lib/analytics";
+import { uploadFilesBulk, type UploadFailure } from "@/app/lib/bulkUpload";
+import { SUPPORTED_UPLOAD_ACCEPT } from "@/app/lib/supportedFileTypes";
 import { FileDirectory } from "../shared/FileDirectory";
 import { ConnectorsButton } from "../shared/ConnectorsButton";
+import { UploadFailuresAlert } from "../shared/UploadFailuresAlert";
 import {
     fetchBuiltinWorkflows,
     getLocalizedWorkflowTitle,
@@ -73,6 +75,9 @@ export function AddNewTRModal({
         new Set(),
     );
     const [uploading, setUploading] = useState(false);
+    const [uploadFailures, setUploadFailures] = useState<UploadFailure[]>(
+        [],
+    );
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Workflow templates
@@ -144,6 +149,7 @@ export function AddNewTRModal({
         setSelectedDocIds(new Set());
         setSelectedWorkflowId(null);
         setWorkflowDropdownOpen(false);
+        setUploadFailures([]);
         onClose();
     }
 
@@ -181,66 +187,46 @@ export function AddNewTRModal({
         }
     }
 
-    async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-        const files = Array.from(e.target.files ?? []);
-        if (!files.length) return;
-        setUploading(true);
-        try {
-            const uploaded = await Promise.all(
-                files.map(async (f) => {
-                    const surface =
-                        underProject && selectedProjectId
-                            ? "project"
-                            : "standalone";
-                    const fileType = fileTypeOf(f);
-                    try {
-                        const doc =
-                            underProject && selectedProjectId
-                                ? await uploadProjectDocument(
-                                      selectedProjectId,
-                                      f,
-                                  )
-                                : await uploadStandaloneDocument(f);
-                        track("document_uploaded", {
-                            surface,
-                            file_type: fileType,
-                            result: "success",
-                        });
-                        return doc;
-                    } catch (err) {
-                        track("document_uploaded", {
-                            surface,
-                            file_type: fileType,
-                            result: "error",
-                        });
-                        throw err;
-                    }
-                }),
-            );
-            if (underProject && selectedProjectId) {
-                setProjectDocs((prev) => [...uploaded, ...prev]);
-            } else {
-                setStandaloneDocs((prev) => [...uploaded, ...prev]);
-            }
-            uploaded.forEach((d) =>
-                setSelectedDocIds((prev) => new Set([...prev, d.id])),
-            );
-        } catch (err) {
-            console.error("Upload failed:", err);
-        } finally {
-            setUploading(false);
-            if (fileInputRef.current) fileInputRef.current.value = "";
-        }
-    }
-
-    // Determine which project (if any) the connector import should land
-    // in. Mirrors the same projectId resolution used by handleUpload so
-    // a "Project docs" view stays consistent.
+    // Which project (if any) uploads and connector imports land in: the
+    // fixed project in project mode, the picked one when "create under a
+    // project" is on, standalone otherwise. (Project-mode uploads used to go
+    // standalone and never showed up in the list.)
     const importTargetProjectId: string | null = isProjectMode
         ? (projectId ?? null)
         : underProject && selectedProjectId
           ? selectedProjectId
           : null;
+
+    async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+        const files = Array.from(e.target.files ?? []);
+        if (!files.length) return;
+        const targetProjectId = importTargetProjectId;
+        setUploading(true);
+        setUploadFailures([]);
+        try {
+            // Each document is listed + pre-selected as soon as it lands,
+            // so one failed file never hides the others.
+            const { failures } = await uploadFilesBulk(files, {
+                upload: (f) =>
+                    targetProjectId
+                        ? uploadProjectDocument(targetProjectId, f)
+                        : uploadStandaloneDocument(f),
+                surface: targetProjectId ? "project" : "standalone",
+                onUploaded: (doc) => {
+                    if (targetProjectId) {
+                        setProjectDocs((prev) => [doc, ...prev]);
+                    } else {
+                        setStandaloneDocs((prev) => [doc, ...prev]);
+                    }
+                    setSelectedDocIds((prev) => new Set([...prev, doc.id]));
+                },
+            });
+            setUploadFailures(failures);
+        } finally {
+            setUploading(false);
+            if (fileInputRef.current) fileInputRef.current.value = "";
+        }
+    }
 
     function handleConnectorImport(doc: MikeDocument) {
         // Drop the new doc into the same list the directory is currently
@@ -261,9 +247,16 @@ export function AddNewTRModal({
     const selectedProject = projects.find((p) => p.id === selectedProjectId);
     const selectedWorkflow = workflows.find((w) => w.id === selectedWorkflowId);
 
-    // What to show in the directory depends on mode and toggle state
+    // What to show in the directory depends on mode and toggle state. In
+    // project mode, docs uploaded / imported here (`projectDocs`) come first
+    // — the parent's `fixedProjectDocs` doesn't know about them yet.
     const directoryStandalone = isProjectMode
-        ? (fixedProjectDocs ?? [])
+        ? [
+              ...projectDocs,
+              ...(fixedProjectDocs ?? []).filter(
+                  (d) => !projectDocs.some((p) => p.id === d.id),
+              ),
+          ]
         : underProject
           ? []
           : standaloneDocs;
@@ -552,13 +545,19 @@ export function AddNewTRModal({
                         )}
                     </div>
 
+                    <UploadFailuresAlert
+                        failures={uploadFailures}
+                        onDismiss={() => setUploadFailures([])}
+                        className="mx-6 mb-3 w-auto shrink-0"
+                    />
+
                     {/* Footer */}
                     <div className="flex items-center justify-between gap-2 border-t border-border px-6 py-4 shrink-0">
                         <div className="flex items-center gap-2">
                             <input
                                 ref={fileInputRef}
                                 type="file"
-                                accept=".pdf,.docx,.doc"
+                                accept={SUPPORTED_UPLOAD_ACCEPT}
                                 multiple
                                 className="hidden"
                                 onChange={handleUpload}

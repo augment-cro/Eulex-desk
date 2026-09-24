@@ -59,6 +59,9 @@ ARG NEXT_PUBLIC_SOURCE_URL=""
 # Contexts service (open contract) — base URL the browser calls directly
 # for context management. Empty = contexts UI dormant.
 ARG NEXT_PUBLIC_CONTEXTS_URL=""
+# Version timeline in the legal-source panel (staging kill-switch).
+# "1" = show the slider; empty/anything else = feature fully hidden.
+ARG NEXT_PUBLIC_LEGAL_TIMELINE=""
 # NOTE: Do not use shell loop vars like `$f` / `$found` here — Docker
 # expands `$WORD` in RUN as build-time ARG/ENV before `/bin/sh` runs, so
 # unknown names become empty and the guard always fails even when
@@ -83,6 +86,9 @@ RUN if [ -n "$NEXT_PUBLIC_API_BASE_URL" ]; then \
     fi && \
     if [ -n "$NEXT_PUBLIC_CONTEXTS_URL" ]; then \
         printf 'NEXT_PUBLIC_CONTEXTS_URL=%s\n' "$NEXT_PUBLIC_CONTEXTS_URL" >> .env.production.local; \
+    fi && \
+    if [ -n "$NEXT_PUBLIC_LEGAL_TIMELINE" ]; then \
+        printf 'NEXT_PUBLIC_LEGAL_TIMELINE=%s\n' "$NEXT_PUBLIC_LEGAL_TIMELINE" >> .env.production.local; \
     fi && \
     echo "--- .env.production.local (build-arg overrides) ---" && \
     ( cat .env.production.local 2>/dev/null || echo "(absent — .env.production wins)" ) && \

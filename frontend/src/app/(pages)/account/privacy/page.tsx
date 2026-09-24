@@ -9,28 +9,21 @@ import DocumentAnonymizationPreviewModal from "@/app/components/assistant/Docume
 import { ProFeatureLock } from "@/app/components/account/ProFeatureLock";
 import { hasProFeatures } from "@/lib/tiers";
 
-type Mode = "off" | "standard" | "strict_legal" | "strict";
-type Disclosure = "allow" | "deny" | "ask";
+type Mode = "off" | "standard" | "strict";
 
+// One Anonymization mode governs every outbound flow — the main LLM and
+// external tools (web search, MCP) alike. The old split (Default mode +
+// review toggle + disclosure policy) collapsed here in #14/migration 207.
 const MODE_OPTIONS: Array<{ id: Mode; labelKey: string; descKey: string }> = [
     { id: "off", labelKey: "modeOff", descKey: "modeOffDesc" },
     { id: "standard", labelKey: "modeStandard", descKey: "modeStandardDesc" },
-    { id: "strict_legal", labelKey: "modeStrictLegal", descKey: "modeStrictLegalDesc" },
     { id: "strict", labelKey: "modeStrict", descKey: "modeStrictDesc" },
-];
-
-const DISCLOSURE_OPTIONS: Array<{ id: Disclosure; labelKey: string }> = [
-    { id: "ask", labelKey: "disclosureAsk" },
-    { id: "allow", labelKey: "disclosureAllow" },
-    { id: "deny", labelKey: "disclosureDeny" },
 ];
 
 export default function PrivacyPage() {
     const t = useTranslations("privacy");
     const { profile, updatePiiDefaults } = useUserProfile();
     const [savedMode, setSavedMode] = useState(false);
-    const [savedReview, setSavedReview] = useState(false);
-    const [savedDisclosure, setSavedDisclosure] = useState(false);
     const [engineInfo, setEngineInfo] = useState<{
         configured: boolean;
         engine_version?: string;
@@ -72,23 +65,6 @@ export default function PrivacyPage() {
         }
     };
 
-    const handleReviewToggle = async (val: boolean) => {
-        const ok = await updatePiiDefaults({ piiReviewRequired: val });
-        if (ok) {
-            setSavedReview(true);
-            setTimeout(() => setSavedReview(false), 1500);
-        }
-    };
-
-    const handleDisclosureChange = async (policy: Disclosure) => {
-        if (policy === profile.piiDisclosurePolicy) return;
-        const ok = await updatePiiDefaults({ piiDisclosurePolicy: policy });
-        if (ok) {
-            setSavedDisclosure(true);
-            setTimeout(() => setSavedDisclosure(false), 1500);
-        }
-    };
-
     return (
         <div className="space-y-8">
             <header>
@@ -123,10 +99,10 @@ export default function PrivacyPage() {
                 )}
             </header>
 
-            {/* Default mode */}
+            {/* Anonymization mode — the single control (#14) */}
             <section>
                 <h3 className="text-sm font-semibold text-foreground mb-3">
-                    {t("modeLabel", { default: "Zadani način rada" })}
+                    {t("modeLabel", { default: "Način anonimizacije" })}
                     {savedMode && (
                         <span className="ml-2 inline-flex items-center gap-1 text-success">
                             <Check className="h-3 w-3" /> {t("saved", { default: "Spremljeno" })}
@@ -164,69 +140,6 @@ export default function PrivacyPage() {
                 </div>
             </section>
 
-            {/* Review-required toggle */}
-            <section className="max-w-2xl">
-                <label className="flex items-center justify-between gap-3 rounded border px-3 py-2">
-                    <span>
-                        <span className="block text-sm font-medium">
-                            {t("reviewRequired", {
-                                default: "Uvijek tražiti pregled prije slanja AI-u",
-                            })}
-                        </span>
-                        <span className="block text-xs text-muted-foreground mt-0.5">
-                            {t("reviewRequiredDesc", {
-                                default:
-                                    "I u standardnom načinu otvori modal s pregledom prepoznatih podataka prije prvog AI poziva po dokumentu.",
-                            })}
-                        </span>
-                    </span>
-                    <input
-                        type="checkbox"
-                        checked={profile.piiReviewRequired}
-                        onChange={(e) => handleReviewToggle(e.target.checked)}
-                    />
-                </label>
-                {savedReview && (
-                    <span className="mt-1 inline-flex items-center gap-1 text-xs text-success">
-                        <Check className="h-3 w-3" /> {t("saved", { default: "Spremljeno" })}
-                    </span>
-                )}
-            </section>
-
-            {/* Disclosure policy */}
-            <section className="max-w-2xl">
-                <h3 className="text-sm font-semibold text-foreground mb-3">
-                    {t("disclosureLabel", { default: "Otkrivanje podataka alatima" })}
-                </h3>
-                <div className="grid gap-2">
-                    {DISCLOSURE_OPTIONS.map((opt) => (
-                        <label
-                            key={opt.id}
-                            className={`flex items-center gap-2 rounded border px-3 py-2 cursor-pointer ${
-                                profile.piiDisclosurePolicy === opt.id
-                                    ? "border-ring bg-accent"
-                                    : "border-border hover:bg-accent"
-                            }`}
-                        >
-                            <input
-                                type="radio"
-                                name="pii-disclosure"
-                                checked={profile.piiDisclosurePolicy === opt.id}
-                                onChange={() => handleDisclosureChange(opt.id)}
-                            />
-                            <span className="text-sm">
-                                {t(opt.labelKey, { default: opt.id })}
-                            </span>
-                        </label>
-                    ))}
-                </div>
-                {savedDisclosure && (
-                    <span className="mt-1 inline-flex items-center gap-1 text-xs text-success">
-                        <Check className="h-3 w-3" /> {t("saved", { default: "Spremljeno" })}
-                    </span>
-                )}
-            </section>
-
             {/* Review modal demo. The modal itself is identical to the
                 production one — same component, same UX. We feed it a
                 fixed sample so users can browse the screen and the
@@ -243,7 +156,7 @@ export default function PrivacyPage() {
                 <p className="text-xs text-muted-foreground mb-3">
                     {t("demoSubtitle", {
                         default:
-                            "U strict modovima i kad je 'uvijek tražiti pregled' uključen, prije svakog AI poziva otvori se modal s prepoznatim podacima. Kliknite niže da vidite kako izgleda na uzorku ugovora.",
+                            "U strogom načinu prije svakog AI poziva otvori se modal s prepoznatim podacima. Kliknite niže da vidite kako izgleda na uzorku ugovora.",
                     })}
                 </p>
                 <button
@@ -252,7 +165,7 @@ export default function PrivacyPage() {
                         setDemoPreview({
                             session_id: "demo-session",
                             preview_text:
-                                "UGOVOR O AUTORSKOM DJELU sklopljen između ⟦PII:ORGANIZATION_1⟧, ⟦PII:LOCATION_1⟧, ⟦PII:LOCATION_2⟧, OIB ⟦PII:HR_OIB_1⟧, zastupanog po direktoru ⟦PII:PERSON_1⟧, i dr. ⟦PII:PERSON_2⟧, ⟦PII:LOCATION_3⟧, ⟦PII:LOCATION_4⟧, dana ⟦PII:DATE_TIME_1⟧.",
+                                "UGOVOR O AUTORSKOM DJELU sklopljen između ⟦PII:ORGANIZATION_1⟧, ⟦PII:LOCATION_1⟧, ⟦PII:LOCATION_2⟧, OIB ⟦PII:HR_OIB_1⟧, zastupanog po direktoru ⟦PII:PERSON_1⟧, i ⟦PII:PERSON_2⟧, ⟦PII:LOCATION_3⟧, ⟦PII:LOCATION_4⟧, dana ⟦PII:DATE_TIME_1⟧.",
                             entities: [
                                 {
                                     placeholder: "⟦PII:PERSON_1⟧",
@@ -268,7 +181,7 @@ export default function PrivacyPage() {
                                     start: 0,
                                     end: 0,
                                     score: 0.94,
-                                    original_text: "dr. Marko Primjerić",
+                                    original_text: "Ana Primjerić",
                                 },
                                 {
                                     placeholder: "⟦PII:ORGANIZATION_1⟧",
@@ -301,7 +214,7 @@ export default function PrivacyPage() {
                                     end: 0,
                                     score: 0.9,
                                     original_text:
-                                        "Roberta Frangeša Mihanovića 6",
+                                        "Ulica Primjera 1",
                                 },
                                 {
                                     placeholder: "⟦PII:LOCATION_3⟧",
@@ -309,7 +222,7 @@ export default function PrivacyPage() {
                                     start: 0,
                                     end: 0,
                                     score: 0.93,
-                                    original_text: "Beograd",
+                                    original_text: "Split",
                                 },
                                 {
                                     placeholder: "⟦PII:LOCATION_4⟧",
@@ -317,7 +230,7 @@ export default function PrivacyPage() {
                                     start: 0,
                                     end: 0,
                                     score: 0.92,
-                                    original_text: "Srbija",
+                                    original_text: "Hrvatska",
                                 },
                                 {
                                     placeholder: "⟦PII:DATE_TIME_1⟧",

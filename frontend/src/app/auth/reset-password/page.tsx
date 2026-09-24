@@ -37,7 +37,11 @@ function ResetPasswordHandler() {
         const oauthError = searchParams.get("error");
         const errorDesc = searchParams.get("error_description");
         if (oauthError) {
-            setError(errorDesc || oauthError);
+            // Raw Supabase/OAuth error strings are English — log them,
+            // render localized copy (an expired/used recovery link is by
+            // far the common case here).
+            console.error("[auth/reset-password]", oauthError, errorDesc);
+            setError(t("resetInvalidLink"));
             return;
         }
 
@@ -70,7 +74,14 @@ function ResetPasswordHandler() {
                 password,
             });
             if (sbError) {
-                setError(sbError.message);
+                console.error("[auth/reset-password]", sbError);
+                setError(
+                    sbError.code === "weak_password"
+                        ? t("resetWeakPassword")
+                        : sbError.code === "same_password"
+                          ? t("resetSamePassword")
+                          : t("resetGenericError"),
+                );
                 setSubmitting(false);
                 return;
             }

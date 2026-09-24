@@ -248,7 +248,7 @@ export function TRSidePanel({
                                 }
                             }}
                             disabled={regenerating}
-                            title="Regenerate"
+                            title={t("regenerate")}
                             className="rounded-lg p-1.5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground disabled:opacity-40"
                         >
                             {regenerating ? (
@@ -351,12 +351,13 @@ function CitationBadge({
     citation: ParsedCitation;
     onClick: (c: { quote: string; page: number }) => void;
 }) {
+    const t = useTranslations("tabularReview");
     return (
         <button
             type="button"
             data-page={citation.page}
             data-quote={citation.quote}
-            title={`Page ${citation.page}: "${citation.quote}"`}
+            title={t("citationTooltip", { page: citation.page, quote: citation.quote })}
             onClick={() =>
                 onClick({ quote: citation.quote, page: citation.page })
             }

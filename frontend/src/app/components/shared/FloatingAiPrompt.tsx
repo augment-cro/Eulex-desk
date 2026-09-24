@@ -43,6 +43,8 @@ function normalizeFormat(raw: string | undefined): ColumnFormat {
 type WorkflowProps = {
     variant: "workflow";
     workflowId: string;
+    /** Current columns, for the destructive-change confirm (issue #123). */
+    columns?: ColumnConfig[];
     onApplied: (next: {
         title: string;
         prompt_md: string;
@@ -343,6 +345,32 @@ export function FloatingAiPrompt(props: Props) {
                         ? c.tags.filter((x) => typeof x === "string")
                         : undefined,
                 }));
+                // Same destructive-change guard the tabular-review branch
+                // has (issue #123): a refine that drops columns from a
+                // tabular workflow silently overwrote the stored config.
+                const prevCols = props.columns ?? [];
+                if (prevCols.length > 0) {
+                    const afterNames = new Set(
+                        columns.map((c) => c.name.trim().toLowerCase()),
+                    );
+                    const removed = prevCols.filter(
+                        (c) => !afterNames.has(c.name.trim().toLowerCase()),
+                    );
+                    if (removed.length > 0) {
+                        const ok = await confirm({
+                            title: t("confirmDeleteTitle"),
+                            message: t("confirmDeleteBody", {
+                                names: removed.map((c) => c.name).join(", "),
+                            }),
+                            confirmLabel: t("confirmDeleteApply"),
+                            destructive: true,
+                        });
+                        if (!ok) {
+                            setText(instruction);
+                            return;
+                        }
+                    }
+                }
                 await updateWorkflow(props.workflowId, {
                     title: out.title,
                     prompt_md: out.prompt_md,

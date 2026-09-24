@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { X } from "lucide-react";
 import { DocPanel, type DocPanelMode } from "../shared/DocPanel";
 import { LegalSourcePanel } from "../shared/LegalSourcePanel";
@@ -154,6 +155,7 @@ export function AssistantSidePanel({
     onSaved,
     onDraftEditApplied,
 }: Props) {
+    const t = useTranslations("assistant.sidePanel");
     const panelRef = useRef<HTMLDivElement>(null);
     const [panelWidth, setPanelWidth] = useState(() =>
         typeof window !== "undefined"
@@ -264,7 +266,7 @@ export function AssistantSidePanel({
                 <button
                     onClick={onCloseAll}
                     className="shrink-0 mb-1 ml-1 rounded-lg p-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-                    title="Close panel"
+                    title={t("closePanel")}
                 >
                     <X className="h-4 w-4" />
                 </button>

@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { supabase } from "@/lib/supabase";
 import type { MikeEditAnnotation } from "../shared/types";
 
+import { API_BASE } from "@/app/lib/apiBase";
 function normalizeText(s: string) {
     return s.replace(/\s+/g, " ").trim();
 }
@@ -246,8 +247,7 @@ export function EditCard({
                 data: { session },
             } = await supabase.auth.getSession();
             const token = session?.access_token;
-            const apiBase =
-                process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
+            const apiBase = API_BASE;
             const resp = await fetch(
                 `${apiBase}/single-documents/${annotation.document_id}/edits/${annotation.edit_id}/${verb}`,
                 {
@@ -288,8 +288,8 @@ export function EditCard({
                 versionId: annotation.version_id ?? null,
                 message:
                     verb === "accept"
-                        ? "Couldn't save accept — reverted."
-                        : "Couldn't save reject — reverted.",
+                        ? t("acceptSaveError")
+                        : t("rejectSaveError"),
             });
         } finally {
             setBusy(false);

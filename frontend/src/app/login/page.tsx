@@ -33,6 +33,9 @@ export default function LoginPage() {
     const [magicLinkSent, setMagicLinkSent] = useState(false);
     const [otpCode, setOtpCode] = useState("");
     const [verifyingOtp, setVerifyingOtp] = useState(false);
+    const [passwordMode, setPasswordMode] = useState(false);
+    const [password, setPassword] = useState("");
+    const [pwSigningIn, setPwSigningIn] = useState(false);
 
     useEffect(() => {
         if (typeof window === "undefined") return;
@@ -42,6 +45,30 @@ export default function LoginPage() {
         // Prefill from an eulex.ai hero hand-off: /login?email=…
         const prefill = params.get("email");
         if (prefill) setEmail(prefill);
+        // Hidden email+password mode (/login?method=password). The public
+        // flow stays passwordless; this serves accounts provisioned with a
+        // fixed password (external reviewers, e.g. connector-directory
+        // review) and WP-migrated users who set one via /auth/reset-password.
+        // Sticky for the rest of the browser session: the OAuth consent page
+        // bounces unauthenticated users to /login?next=… and would otherwise
+        // drop this flag mid-flow, stranding a password-only account on the
+        // magic-link form.
+        if (params.get("method") === "password") {
+            setPasswordMode(true);
+            try {
+                sessionStorage.setItem("eulexLoginMethod", "password");
+            } catch {
+                /* private mode — flag simply won't persist */
+            }
+        } else {
+            try {
+                if (sessionStorage.getItem("eulexLoginMethod") === "password") {
+                    setPasswordMode(true);
+                }
+            } catch {
+                /* ignore */
+            }
+        }
     }, []);
 
     useEffect(() => {
@@ -122,6 +149,36 @@ export default function LoginPage() {
         } catch {
             setError(t("otpInvalid"));
             setVerifyingOtp(false);
+        }
+    };
+
+    /**
+     * Email + password sign-in (passwordMode only). On success
+     * mirrorSupabaseSession primes the legacy token store and AuthContext's
+     * isAuthenticated effect performs the redirect — same as the OTP flow.
+     */
+    const handlePasswordSignIn = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!supabaseAuthEnabled || pwSigningIn) return;
+        const addr = email.trim();
+        if (!addr || !password) return;
+        setPwSigningIn(true);
+        setError(null);
+        try {
+            const { data, error: sbError } =
+                await getSupabase().auth.signInWithPassword({
+                    email: addr,
+                    password,
+                });
+            if (sbError || !data.session) {
+                setError(t("invalidCredentials"));
+                setPwSigningIn(false);
+                return;
+            }
+            mirrorSupabaseSession(data.session);
+        } catch {
+            setError(t("invalidCredentials"));
+            setPwSigningIn(false);
         }
     };
 
@@ -283,6 +340,62 @@ export default function LoginPage() {
                         <>
                             {supabaseAuthEnabled && (
                                 <>
+                                    {passwordMode ? (
+                                        <form
+                                            onSubmit={handlePasswordSignIn}
+                                            className="space-y-3"
+                                        >
+                                            <input
+                                                type="email"
+                                                autoComplete="email"
+                                                required
+                                                value={email}
+                                                onChange={(e) =>
+                                                    setEmail(e.target.value)
+                                                }
+                                                placeholder={t("emailLabel")}
+                                                aria-label={t("emailLabel")}
+                                                className={inputClass}
+                                            />
+                                            <input
+                                                type="password"
+                                                autoComplete="current-password"
+                                                required
+                                                value={password}
+                                                onChange={(e) =>
+                                                    setPassword(e.target.value)
+                                                }
+                                                placeholder={t("passwordLabel")}
+                                                aria-label={t("passwordLabel")}
+                                                className={inputClass}
+                                            />
+                                            <button
+                                                type="submit"
+                                                disabled={pwSigningIn}
+                                                className="eu-btn eu-btn-brand w-full gap-2"
+                                            >
+                                                {pwSigningIn ? (
+                                                    <span className="flex items-center gap-2">
+                                                        <span className="animate-spin rounded-full h-4 w-4 border-2 border-ink border-t-transparent" />
+                                                        {t("logIn")}
+                                                    </span>
+                                                ) : (
+                                                    <>
+                                                        {t("logIn")}
+                                                        <ArrowRight className="w-4 h-4" />
+                                                    </>
+                                                )}
+                                            </button>
+                                            <p className="text-center text-xs">
+                                                <Link
+                                                    href="/forgot-password"
+                                                    className="text-ink-60 underline decoration-ink-40 underline-offset-2 hover:text-ink"
+                                                >
+                                                    {t("forgotPasswordLink")}
+                                                </Link>
+                                            </p>
+                                        </form>
+                                    ) : (
                                     <form
                                         onSubmit={handleMagicLink}
                                         className="space-y-3"
@@ -317,6 +430,7 @@ export default function LoginPage() {
                                             )}
                                         </button>
                                     </form>
+                                    )}
 
                                     <div className="my-5 flex items-center gap-3">
                                         <span className="h-px flex-1 bg-divider" />

@@ -7,6 +7,7 @@ import type {
     NormalizedToolCall,
     NormalizedToolResult,
 } from "./types";
+import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
 import { toClaudeTools } from "./tools";
 
 const DEBUG_LLM_STREAM = process.env.DEBUG_LLM_STREAM === "true";
@@ -62,19 +63,78 @@ function shouldAttachNativeWebSearch(flag: boolean | undefined): boolean {
     return false;
 }
 
+// SDK defaults to maxRetries = 2 with exponential backoff, which is
+// not enough for the transient `UND_ERR_SOCKET: other side closed`
+// failures we see on Cloud Run mid-stream (revision swaps, idle
+// socket resets — see https://github.com/anthropics/claude-code/issues/37930).
+// Bumped to 5 + a generous per-request timeout (10 min) so the SDK
+// re-establishes the stream before the user-visible "load failed".
+const CLIENT_OPTS = { maxRetries: 5, timeout: 600_000 } as const;
+
+function serverEnvKey(): string {
+    return (
+        process.env.ANTHROPIC_API_KEY?.trim() ||
+        process.env.CLAUDE_API_KEY?.trim() ||
+        ""
+    );
+}
+
+function isVertexEnabled(): boolean {
+    return process.env.CLAUDE_PROVIDER?.trim().toLowerCase() === "vertex";
+}
+
+/**
+ * Claude provider routing. `CLAUDE_PROVIDER=vertex` sends platform traffic
+ * to Claude on Vertex AI (GCP ADC auth — no API key; region via
+ * `VERTEX_CLAUDE_REGION`, default "eu" multi-region for EU data residency;
+ * project via `VERTEX_CLAUDE_PROJECT`). Unset/anything else keeps the direct
+ * Anthropic API — the OSS default. No project IDs are hardcoded here: a
+ * deployment opts in purely through environment variables, and Vertex auth
+ * is GCP IAM, so one deployment's routing can never bill another's project.
+ *
+ * BYOK: a key the USER pasted in Settings always talks to the direct
+ * Anthropic API — a customer key cannot authenticate against the platform's
+ * Vertex project. `getUserApiKeys` folds the server env key into
+ * `apiKeys.claude` as a fallback, so "user's own key" is detected as
+ * "override differs from the server env key".
+ */
 function client(override?: string | null): Anthropic {
-    const apiKey = override?.trim() || process.env.ANTHROPIC_API_KEY || "";
-    // SDK defaults to maxRetries = 2 with exponential backoff, which is
-    // not enough for the transient `UND_ERR_SOCKET: other side closed`
-    // failures we see on Cloud Run mid-stream (revision swaps, idle
-    // socket resets — see https://github.com/anthropics/claude-code/issues/37930).
-    // Bumped to 5 + a generous per-request timeout (10 min) so the SDK
-    // re-establishes the stream before the user-visible "load failed".
-    return new Anthropic({
-        apiKey,
-        maxRetries: 5,
-        timeout: 600_000,
-    });
+    const key = override?.trim() || serverEnvKey();
+    const isByok = !!override?.trim() && override.trim() !== serverEnvKey();
+    if (!isByok && isVertexEnabled()) {
+        return new AnthropicVertex({
+            projectId: process.env.VERTEX_CLAUDE_PROJECT,
+            region: process.env.VERTEX_CLAUDE_REGION?.trim() || "eu",
+            ...CLIENT_OPTS,
+            // Structurally compatible for everything this module touches
+            // (`messages.stream` / `messages.create`); nominal types differ.
+        }) as unknown as Anthropic;
+    }
+    return new Anthropic({ apiKey: key, ...CLIENT_OPTS });
+}
+
+/** Direct Anthropic API client — the fallback target when Vertex is down. */
+function directClient(override?: string | null): Anthropic {
+    const apiKey = override?.trim() || serverEnvKey();
+    return new Anthropic({ apiKey, ...CLIENT_OPTS });
+}
+
+/**
+ * Vertex-side failures worth retrying on the direct Anthropic API:
+ * connection drops and 403/404/429/5xx/529 (IAM, Model Garden enablement,
+ * quota, capacity). 400/422 are NOT here — a bad request fails identically
+ * on both providers.
+ */
+function isInfraError(err: unknown): boolean {
+    if (err instanceof Anthropic.APIConnectionError) return true;
+    if (err instanceof Anthropic.APIError) {
+        const status = (err as { status?: number }).status;
+        return (
+            typeof status === "number" &&
+            [403, 404, 429, 500, 502, 503, 529].includes(status)
+        );
+    }
+    return false;
 }
 
 function toNativeMessages(
@@ -226,10 +286,12 @@ export async function streamClaude(
         enableThinking,
         enableWebSearch,
         reasoningEffort,
+        abortSignal,
     } = params;
     const effort: "low" | "medium" | "high" = reasoningEffort ?? "high";
     const maxIter = params.maxIterations ?? 10;
-    const anthropic = client(apiKeys?.claude);
+    let anthropic = client(apiKeys?.claude);
+    let usingVertex = anthropic instanceof AnthropicVertex;
     const claudeTools = toClaudeTools(tools);
 
     // Optionally append Anthropic's native web search tool. Kept separate
@@ -286,12 +348,16 @@ export async function streamClaude(
     const cachedSystem = toCachedSystem(systemPrompt, params.systemDynamicSuffix);
 
     for (let iter = 0; iter < maxIter; iter++) {
+        // Client disconnected (Stop / tab close) — end before spending another
+        // request or running more tools (issue #92).
+        if (abortSignal?.aborted) break;
         // On every iteration (including tool-call follow-ups) inject
         // cache breakpoints into the growing message history so
         // Anthropic can cache the completed exchange prefix.
         const cachedMessages = withCacheBreakpoints(messages);
 
-        const stream = anthropic.messages.stream({
+        const stream = anthropic.messages.stream(
+          {
             model,
             system: cachedSystem as unknown as Anthropic.TextBlockParam[],
             messages: cachedMessages as Anthropic.MessageParam[],
@@ -317,11 +383,26 @@ export async function streamClaude(
                       thinking: { type: "adaptive", display: "summarized" },
                       output_config: { effort },
                   } as unknown as Record<string, unknown>)
-                : {}),
+                : // Explicit off. On Sonnet 5 OMITTING `thinking` silently runs
+                  // ADAPTIVE thinking (4.6 ran without) — so an explicit
+                  // disabled is required for the flag to mean what it says.
+                  // Unreachable in the main chat today (enableThinking is
+                  // hardcoded true — thinking on for better answers), but
+                  // future callers must get what they ask for.
+                  ({ thinking: { type: "disabled" } } as unknown as Record<
+                      string,
+                      unknown
+                  >)),
             // Extended thinking requires temperature to be default (omitted).
-        });
+          },
+          abortSignal ? { signal: abortSignal } : undefined,
+        );
 
         let sawThinking = false;
+        // Tracks whether THIS iteration already streamed visible output —
+        // the Vertex→direct fallback below must never replay a stream the
+        // user has partially seen (it would duplicate text).
+        let emittedThisIter = false;
 
         stream.on("streamEvent", (event) => {
             if (DEBUG_LLM_STREAM) {
@@ -330,16 +411,46 @@ export async function streamClaude(
         });
 
         stream.on("text", (delta) => {
+            emittedThisIter = true;
             callbacks.onContentDelta?.(delta);
         });
         if (enableThinking) {
             stream.on("thinking", (delta) => {
                 sawThinking = true;
+                emittedThisIter = true;
                 callbacks.onReasoningDelta?.(delta);
             });
         }
 
-        const final = await stream.finalMessage();
+        let final: Awaited<ReturnType<typeof stream.finalMessage>>;
+        try {
+            final = await stream.finalMessage();
+        } catch (streamErr) {
+            // An aborted request (client Stop) surfaces here as an
+            // APIUserAbortError — end the turn cleanly with the usage/text
+            // gathered so far rather than throwing out of the loop (#92).
+            if (abortSignal?.aborted) break;
+            // Vertex infra failure BEFORE any visible output for this
+            // iteration → retry the same iteration once on the direct
+            // Anthropic API, and stay on it for the rest of the turn.
+            // Mid-stream failures (output already emitted) are not retried —
+            // replaying would duplicate content the user has already seen.
+            if (
+                usingVertex &&
+                !emittedThisIter &&
+                isInfraError(streamErr) &&
+                serverEnvKey()
+            ) {
+                console.warn(
+                    `[claude] Vertex request failed (${(streamErr as Error)?.name ?? "error"}) — falling back to the direct Anthropic API for this turn`,
+                );
+                anthropic = directClient(apiKeys?.claude);
+                usingVertex = false;
+                iter--;
+                continue;
+            }
+            throw streamErr;
+        }
         if (sawThinking) callbacks.onReasoningBlockEnd?.();
         const stopReason = final.stop_reason;
         const assistantBlocks = final.content as ContentBlock[];
@@ -419,6 +530,10 @@ export async function streamClaude(
             break;
         }
 
+        // Client disconnected during tool execution — don't start another
+        // model request with the tool results (issue #92).
+        if (abortSignal?.aborted) break;
+
         // Record the assistant turn (preserving the original content blocks,
         // which Claude requires on the follow-up) and the user turn that
         // carries the tool_result blocks.
@@ -444,7 +559,12 @@ export async function completeClaudeText(params: {
     apiKeys?: { claude?: string | null };
 }): Promise<{ text: string; usage?: LlmUsage }> {
     const anthropic = client(params.apiKeys?.claude);
-    const resp = await anthropic.messages.create({
+    // `thinking` deliberately omitted: on Sonnet 5 that means ADAPTIVE
+    // thinking — the model decides per request. For these short structured
+    // tasks (titles, selection edits, enrichment) it thinks little or not at
+    // all, and product policy is thinking-on-everywhere for answer quality.
+    const createOnce = (c: Anthropic) =>
+        c.messages.create({
         model: params.model,
         max_tokens: params.maxTokens ?? 512,
         // cache=false: these are short, usually one-off completions (title
@@ -453,6 +573,24 @@ export async function completeClaudeText(params: {
         system: toCachedSystem(params.systemPrompt, undefined, false) as unknown as Anthropic.TextBlockParam[],
         messages: [{ role: "user", content: params.user }],
     });
+    let resp: Awaited<ReturnType<typeof createOnce>>;
+    try {
+        resp = await createOnce(anthropic);
+    } catch (err) {
+        // Same Vertex→direct fallback policy as streamClaude; non-streaming,
+        // so a full retry can never duplicate user-visible output.
+        if (
+            !(anthropic instanceof AnthropicVertex) ||
+            !isInfraError(err) ||
+            !serverEnvKey()
+        ) {
+            throw err;
+        }
+        console.warn(
+            `[claude] Vertex request failed (${(err as Error)?.name ?? "error"}) — falling back to the direct Anthropic API`,
+        );
+        resp = await createOnce(directClient(params.apiKeys?.claude));
+    }
     const text = resp.content
         .filter((b): b is Anthropic.TextBlock => b.type === "text")
         .map((b) => b.text)

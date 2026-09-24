@@ -27,11 +27,16 @@ describe("buildUsageEvent", () => {
         assert.equal(ev.duration_ms, 1234);
         // cost_usd = computeCostUsd(model, usage) + webSearchCostUsd; computeCostUsd
         // prices claude-sonnet-4-6 > 0, so the sum must exceed the search cost alone.
-        assert.ok(ev.cost_usd > 0.01);
+        assert.ok(ev.cost_usd != null && ev.cost_usd > 0.01);
     });
-    it("tolerates unknown models (computeCostUsd falls back to 0) and no search cost", () => {
-        const ev = buildUsageEvent({ usage, model: "unknown-model", durationMs: 10 });
-        assert.equal(ev.cost_usd, 0);
+    it("marks unknown-model cost as unavailable", () => {
+        const ev = buildUsageEvent({
+            usage,
+            model: "unknown-model",
+            durationMs: 10,
+        });
+        assert.equal(ev.cost_usd, null);
+        assert.equal(ev.cost_complete, false);
         assert.equal(ev.web_search_cost_usd, 0);
     });
 });

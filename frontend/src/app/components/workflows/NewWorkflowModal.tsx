@@ -5,6 +5,7 @@ import { X, MessageSquare, Table2 } from "lucide-react";
 import { createWorkflow, updateWorkflow } from "@/app/lib/mikeApi";
 import type { MikeWorkflow } from "../shared/types";
 import { PRACTICE_OPTIONS } from "./practices";
+import { getLocalizedPractice } from "./builtinWorkflows";
 import { useTranslations } from "next-intl";
 
 interface Props {
@@ -18,6 +19,7 @@ interface Props {
 export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpdated }: Props) {
     const t = useTranslations("newWorkflow");
     const tCommon = useTranslations("common");
+    const tBuiltinPractices = useTranslations("builtinPractices");
     const [title, setTitle] = useState("");
     const [type, setType] = useState<"assistant" | "tabular">("assistant");
     const [practice, setPractice] = useState<string>("");
@@ -176,7 +178,7 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
                                                 : "border-border text-muted-foreground hover:bg-accent"
                                         }`}
                                     >
-                                        {p}
+                                        {getLocalizedPractice(p, tBuiltinPractices)}
                                     </button>
                                 ))}
                             </div>

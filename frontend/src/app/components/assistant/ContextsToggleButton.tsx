@@ -13,6 +13,11 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
 import { useContexts } from "@/app/contexts/ContextsContext";
 import { contextsServiceEnabled } from "@/app/lib/mikeApi";
@@ -43,38 +48,49 @@ export function ContextsToggleButton() {
         setLimitHit(res.limited === true);
     }
 
+    // shrink-0: the composer's left cluster relies on overflow-x scroll
+    // for crowding — a shrinkable child gets crushed and its label paints
+    // under the next opaque sibling (issue #128).
     return (
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex shrink-0 items-center gap-1.5">
             <DropdownMenu
                 onOpenChange={(o) => {
                     setOpen(o);
                     if (!o) setLimitHit(false);
                 }}
             >
-                <DropdownMenuTrigger asChild>
-                    <button
-                        type="button"
-                        aria-label={t("composerAria")}
-                        title={t("title")}
-                        className={cn(
-                            "flex items-center gap-1.5 rounded-lg px-2 h-8 text-sm transition-colors",
-                            activeCount > 0
-                                ? "bg-brand text-brand-foreground hover:bg-brand/90"
-                                : cn(
-                                      "text-foreground hover:bg-accent",
-                                      open && "bg-secondary",
-                                  ),
-                        )}
-                    >
-                        <Layers className="h-3.5 w-3.5" />
-                        <span className="hidden sm:inline">{t("title")}</span>
-                        {activeCount > 0 && (
-                            <span className="text-xs font-medium text-brand-foreground">
-                                {activeCount}
-                            </span>
-                        )}
-                    </button>
-                </DropdownMenuTrigger>
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <DropdownMenuTrigger asChild>
+                            <button
+                                type="button"
+                                aria-label={t("composerAria")}
+                                className={cn(
+                                    "flex shrink-0 items-center gap-1.5 rounded-lg px-2 h-8 text-sm transition-colors",
+                                    activeCount > 0
+                                        ? "bg-brand text-brand-foreground hover:bg-brand/90"
+                                        : cn(
+                                              "text-foreground hover:bg-accent",
+                                              open && "bg-secondary",
+                                          ),
+                                )}
+                            >
+                                <Layers className="h-3.5 w-3.5 shrink-0" />
+                                <span className="hidden @[46rem]/composer:inline">
+                                    {t("title")}
+                                </span>
+                                {activeCount > 0 && (
+                                    <span className="text-xs font-medium text-brand-foreground">
+                                        {activeCount}
+                                    </span>
+                                )}
+                            </button>
+                        </DropdownMenuTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-60">
+                        {t("composerTooltip")}
+                    </TooltipContent>
+                </Tooltip>
                 <DropdownMenuContent align="start" className="w-72 p-1">
                     <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">
                         {t("title")}

@@ -30,6 +30,7 @@ export {
     effectiveMode,
     piiActive,
     isStrict,
+    failsClosed,
     requiresUserReview,
 } from "./gate";
 export type { EffectiveMode, UserPiiPrefs } from "./gate";

@@ -137,6 +137,28 @@ export function getDefaultExcludedDomains(): string[] {
 }
 
 /**
+ * Does this URL point at a domain whose content we already hold in our
+ * own corpus (`excluded_domains` — EUR-Lex, CURIA)? Search uses that
+ * list to keep web copies out of results; extraction uses it to refuse
+ * to fetch the document at all. Matched at HOST level on purpose: the
+ * JSON pins a path (`eur-lex.europa.eu/legal-content`) because that is
+ * the shape search returns, but every URL shape on those hosts resolves
+ * to a document we already have.
+ */
+export function isExcludedDomainUrl(url: string): boolean {
+    let host: string;
+    try {
+        host = new URL(url).hostname.toLowerCase();
+    } catch {
+        return false;
+    }
+    return getDefaultExcludedDomains().some((d) => {
+        const domain = d.toLowerCase();
+        return host === domain || host.endsWith(`.${domain}`);
+    });
+}
+
+/**
  * Return the set of source keys (slugs) the LLM is allowed to mention
  * in a `source_keys` web_search argument. Used to render a compact
  * description in the tool schema so the model doesn't invent slugs.

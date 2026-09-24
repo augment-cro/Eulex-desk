@@ -9,6 +9,7 @@ import {
     LinkIcon,
 } from "lucide-react";
 import { IntegrationIcon } from "../shared/IntegrationIcon";
+import { UploadFailuresAlert } from "../shared/UploadFailuresAlert";
 import { useTranslations } from "next-intl";
 import {
     DropdownMenu,
@@ -18,13 +19,19 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
     listIntegrations,
     startIntegrationOAuth,
     uploadStandaloneDocument,
     type IntegrationProviderId,
     type IntegrationProviderStatus,
 } from "@/app/lib/mikeApi";
-import { track, fileTypeOf } from "@/app/lib/analytics";
+import { uploadFilesBulk, type UploadFailure } from "@/app/lib/bulkUpload";
+import { SUPPORTED_UPLOAD_ACCEPT } from "@/app/lib/supportedFileTypes";
 import type { MikeDocument } from "../shared/types";
 
 interface Props {
@@ -43,8 +50,8 @@ interface Props {
     // -----------------------------------------------------------------
     // PII Shield review hook (plan §1.1 phase 4 — see also
     // `DocumentAnonymizationPreviewModal`). The parent supplies this
-    // when the user's mode is strict_legal/strict or they enabled
-    // `pii_review_required`. When set, the upload path forwards the
+    // when the user's mode is strict (#14 — review is strict-only).
+    // When set, the upload path forwards the
     // freshly-uploaded document so the parent can call
     // `piiPreviewDocument()` and open the modal before the doc
     // appears in the chat composer chip-list.
@@ -67,6 +74,9 @@ export function AddDocButton({
 }: Props) {
     const [isOpen, setIsOpen] = useState(false);
     const [uploading, setUploading] = useState(false);
+    const [uploadFailures, setUploadFailures] = useState<UploadFailure[]>(
+        [],
+    );
     const [integrations, setIntegrations] =
         useState<IntegrationProviderStatus[] | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -114,28 +124,15 @@ export function AddDocButton({
         const files = Array.from(e.target.files || []);
         if (!files.length) return;
         setUploading(true);
+        setUploadFailures([]);
         try {
-            const uploaded = await Promise.all(
-                files.map(async (f) => {
-                    const fileType = fileTypeOf(f);
-                    try {
-                        const doc = await uploadStandaloneDocument(f);
-                        track("document_uploaded", {
-                            surface: "standalone",
-                            file_type: fileType,
-                            result: "success",
-                        });
-                        return doc;
-                    } catch (err) {
-                        track("document_uploaded", {
-                            surface: "standalone",
-                            file_type: fileType,
-                            result: "error",
-                        });
-                        throw err;
-                    }
-                }),
-            );
+            // allSettled semantics: the files that did upload are attached
+            // even when others fail; the failures get their own notice.
+            const { uploaded, failures } = await uploadFilesBulk(files, {
+                upload: uploadStandaloneDocument,
+                surface: "standalone",
+            });
+            setUploadFailures(failures);
             for (const doc of uploaded) {
                 if (onPiiReview) {
                     // PII Shield gate (plan §1.1 phase 4). Parent decides
@@ -159,36 +156,43 @@ export function AddDocButton({
             <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.docx,.doc"
+                accept={SUPPORTED_UPLOAD_ACCEPT}
                 multiple
                 className="hidden"
                 onChange={handleUpload}
             />
+            <UploadFailuresAlert
+                failures={uploadFailures}
+                onDismiss={() => setUploadFailures([])}
+                floating
+            />
             <DropdownMenu onOpenChange={setIsOpen}>
-                <DropdownMenuTrigger asChild>
-                    <button
-                        className={`flex items-center gap-1 px-2 h-8 rounded-lg text-sm transition-colors cursor-pointer ${
-                            selectedDocIds.length > 0
-                                ? "text-foreground hover:bg-accent"
-                                : "text-foreground hover:bg-accent"
-                        } ${isOpen ? "bg-secondary" : ""}`}
-                        title={t("addDocuments")}
-                        aria-label={t("addDocuments")}
-                    >
-                        {selectedDocIds.length > 0 ? (
-                            <span className="font-medium tabular-nums">{selectedDocIds.length}</span>
-                        ) : (
-                            <PlusIcon
-                                className={`h-4 w-4 shrink-0 transition-transform duration-300 ${isOpen ? "rotate-[135deg]" : ""}`}
-                            />
-                        )}
-                        <span className="hidden sm:inline">
-                            {selectedDocIds.length === 1
-                                ? t("documentLabel")
-                                : t("documentsLabel")}
-                        </span>
-                    </button>
-                </DropdownMenuTrigger>
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <DropdownMenuTrigger asChild>
+                            <button
+                                className={`flex shrink-0 items-center gap-1 px-2 h-8 rounded-lg text-sm transition-colors cursor-pointer text-foreground hover:bg-accent ${isOpen ? "bg-secondary" : ""}`}
+                                aria-label={t("addDocuments")}
+                            >
+                                {selectedDocIds.length > 0 ? (
+                                    <span className="font-medium tabular-nums">{selectedDocIds.length}</span>
+                                ) : (
+                                    <PlusIcon
+                                        className={`h-4 w-4 shrink-0 transition-transform duration-300 ${isOpen ? "rotate-[135deg]" : ""}`}
+                                    />
+                                )}
+                                <span className="hidden @[46rem]/composer:inline">
+                                    {selectedDocIds.length === 1
+                                        ? t("documentLabel")
+                                        : t("documentsLabel")}
+                                </span>
+                            </button>
+                        </DropdownMenuTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-60">
+                        {t("addDocumentsTooltip")}
+                    </TooltipContent>
+                </Tooltip>
                 <DropdownMenuContent
                     className="w-56 z-50"
                     side="bottom"

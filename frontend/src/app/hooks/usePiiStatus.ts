@@ -54,12 +54,13 @@ export interface UsePiiStatusResult {
 export function usePiiStatus(opts: UsePiiStatusOptions = {}): UsePiiStatusResult {
     const { profile } = useUserProfile();
     const userDefault = profile?.piiDefaultMode ?? "off";
-    const userReviewRequired = !!profile?.piiReviewRequired;
 
     const mode: PiiMode = (opts.chatMode ?? userDefault) as PiiMode;
     const active = mode !== "off";
+    // Review is a property of the mode alone since #14 (strict_legal is
+    // the retired legacy alias of strict).
     const requiresReview =
-        active && (mode === "strict_legal" || mode === "strict" || userReviewRequired);
+        active && (mode === "strict_legal" || mode === "strict");
 
     const [meta, setMeta] = useState<PiiSessionMeta | null>(null);
     const stepRef = useRef(0);

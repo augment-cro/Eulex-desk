@@ -31,7 +31,12 @@ import {
     type McpServerTestResult,
     type BuiltinMcpServer,
 } from "@/app/lib/mikeApi";
-import { CountryFlag, connectorFlagCode } from "@/app/components/shared/CountryFlag";
+import {
+    ConnectorEmblem,
+    CountryFlag,
+    connectorEmblem,
+    connectorFlagCode,
+} from "@/app/components/shared/CountryFlag";
 import { track } from "@/app/lib/analytics";
 
 type DraftHeader = { key: string; value: string };
@@ -465,6 +470,7 @@ function BuiltinServerCard({
     const t = useTranslations("connectors");
     const tc = useTranslations("common");
     const flag = connectorFlagCode(server.slug);
+    const emblem = connectorEmblem(server.slug);
     return (
         <div className="border border-border rounded-lg overflow-hidden">
             <div className="flex items-start justify-between gap-3 p-4">
@@ -473,8 +479,11 @@ function BuiltinServerCard({
                         {flag && (
                             <CountryFlag code={flag} label={server.name} className="text-base" />
                         )}
+                        {!flag && emblem && (
+                            <ConnectorEmblem src={emblem.src} label={server.name} className="text-base" />
+                        )}
                         <h3 className="font-medium text-foreground truncate">
-                            {flag ? flag.toUpperCase() : server.name}
+                            {flag ? flag.toUpperCase() : emblem ? emblem.short : server.name}
                         </h3>
                         <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-accent text-foreground border border-border">
                             {t("card.defaultBadge")}

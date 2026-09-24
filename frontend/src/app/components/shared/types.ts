@@ -59,6 +59,17 @@ export interface MikeChat {
   user_id: string;
   title: string | null;
   created_at: string;
+  // Sidebar history management (backend migration 132). 'deleted' chats
+  // are never sent to the client, so status is a two-value union here.
+  group_id: string | null;
+  pinned: boolean;
+  status: "active" | "archived";
+}
+
+export interface MikeChatGroup {
+  id: string;
+  name: string;
+  status: "active" | "archived";
 }
 
 export interface MikeEditAnnotation {
@@ -232,18 +243,20 @@ export type AssistantEvent =
   | { type: "content"; text: string; isStreaming?: boolean };
 
 /**
- * Unified legal-source citation shape for the three legal MCP servers
- * (EU/EUR-Lex, Croatian, French). Built backend-side by `harvestLegalSources`.
+ * Unified legal-source citation shape for the legal MCP servers
+ * (EU/EUR-Lex, Croatian, French, Slovenian, German). Built backend-side by
+ * `harvestLegalSources`.
  */
 export interface LegalSource {
-  /** Stable id a citation references (HR/FR own id, EU "@eu/celex/…"). */
+  /** Stable id a citation references (national scopes: own id, EU "@eu/celex/…"). */
   id: string;
-  scope: "@eu" | "@hr" | "@fr";
+  scope: "@eu" | "@hr" | "@fr" | "@si" | "@de";
   title: string;
   citation?: string | null;
   /** Cited passage text harvested from the tool output (best effort). */
   snippet?: string | null;
-  /** Public canonical URL: eur-lex / narodne-novine / legifrance. */
+  /** Public canonical URL: eur-lex / narodne-novine / legifrance / pisrs /
+   *  gesetze-im-internet. */
   externalUrl?: string | null;
   articleLabel?: string | null;
   /** In-app fetch path for the full document (Phase 2 proxy). */
@@ -251,6 +264,12 @@ export interface LegalSource {
   /** EU only — drives the /legal-docs/eu/{celex} proxy. */
   celex?: string | null;
   inForce?: boolean | null;
+  /** Source class: statute/regulation (default) vs court decision. */
+  kind?: "regulation" | "caselaw";
+  /** Caselaw only — the court's case number ("Revr 123/2019"). */
+  caseNumber?: string | null;
+  /** Caselaw only — ECLI identifier parsed from the citation. */
+  ecli?: string | null;
 }
 
 export interface MikeMessage {
@@ -278,6 +297,15 @@ export interface MikeMessage {
    * omitted/true keeps them available (subject to provider config).
    */
   webSearch?: boolean;
+  /**
+   * PII preview session created BEFORE the chat existed (strict-mode
+   * review on the fresh assistant page, #16 follow-up). `handleNewChat`
+   * attaches it to the freshly created chat via `piiAttachChat` so the
+   * turn's anonymization reuses the reviewed session (and the user's
+   * disclosure approvals) instead of spawning a new one. Never sent to
+   * the chat message API itself.
+   */
+  piiSessionId?: string;
   annotations?: MikeAnnotation[];
   events?: AssistantEvent[];
   /** Set when streaming failed; rendered as a red error block. */
@@ -341,6 +369,28 @@ export interface LegalDocument {
   citation?: string | null;
   /** All NN gazette references for the regulation's versions, newest first. */
   gazetteRefs?: string[];
+}
+
+/**
+ * One stop on a regulation's version timeline (`/legal-docs/versions`).
+ * HR: one entry per NN objava across the regulation's whole lineage,
+ * chronological (oldest first).
+ */
+export interface LegalDocumentVersion {
+  /** regulation_versions.id — sent back as `version_id` to view this text. */
+  id: string;
+  /** Owning regulation id — may differ from the cited regulation when the
+   *  law is fragmented across legacy rows (lineage). */
+  regulationId: string;
+  versionNumber: number | null;
+  /** not_in_force | in_force | future */
+  status: string | null;
+  enterIntoForce: string | null;
+  applicationDate: string | null;
+  endDate: string | null;
+  /** "NN 64/2023" — the gazette issue that introduced this version. */
+  nnReference: string | null;
+  eliUrl: string | null;
 }
 
 /**
@@ -475,6 +525,14 @@ export interface TabularCell {
     summary: string;
     flag?: "green" | "grey" | "yellow" | "red";
     reasoning?: string;
+    /**
+     * Citation verification (tracker #22) — set at generation time when at
+     * least one [[page:N||quote:…]] marker could not be located in the
+     * document text. `unverified_citations` holds marker ordinals per field,
+     * in the order the badges render. Absent on older cells.
+     */
+    unverified?: boolean;
+    unverified_citations?: { summary?: number[]; reasoning?: number[] };
   } | null;
   status: "pending" | "generating" | "done" | "error";
   created_at: string;

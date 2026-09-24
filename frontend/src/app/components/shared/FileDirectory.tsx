@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import {
     Check,
     ChevronDown,
@@ -14,9 +14,11 @@ import {
 import type { MikeDocument, MikeProject } from "./types";
 import { VersionChip } from "./VersionChip";
 
-function formatDate(iso: string | null) {
+function formatDate(iso: string | null, locale?: string) {
     if (!iso) return null;
-    return new Date(iso).toLocaleDateString(undefined, {
+    // hr → hr-HR so a hr user on an en-US browser sees Croatian dates (#105).
+    const bcp47 = locale === "hr" ? "hr-HR" : locale;
+    return new Date(iso).toLocaleDateString(bcp47, {
         day: "numeric",
         month: "short",
         year: "numeric",
@@ -56,6 +58,7 @@ export function FileDirectory({
 }: FileDirectoryProps) {
     const tSidebar = useTranslations("sidebar");
     const t = useTranslations("documents");
+    const locale = useLocale();
     // Callers can pass an explicit override (e.g. picker modes that
     // need a project-specific empty state). Falling back to the
     // localized defaults keeps existing call sites correct without
@@ -227,7 +230,7 @@ export function FileDirectory({
                             <VersionChip n={doc.latest_version_number} />
                             {doc.created_at && (
                                 <span className="shrink-0 text-muted-foreground/70">
-                                    {formatDate(doc.created_at)}
+                                    {formatDate(doc.created_at, locale)}
                                 </span>
                             )}
                         </button>
@@ -325,6 +328,7 @@ export function FileDirectory({
                                                         <span className="shrink-0 text-muted-foreground/70">
                                                             {formatDate(
                                                                 doc.created_at,
+                                                                locale,
                                                             )}
                                                         </span>
                                                     )}

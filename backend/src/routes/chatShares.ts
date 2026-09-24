@@ -23,6 +23,7 @@ import crypto from "crypto";
 import { requireAuth } from "../middleware/auth";
 import { requireEntitlement } from "../lib/entitlements";
 import { createServerSupabase } from "../lib/supabase";
+import { query } from "../lib/db";
 import { checkProjectAccess } from "../lib/access";
 import { getEmailProvider } from "../lib/email/provider";
 import { renderChatShareEmail } from "../lib/email/templates/chatShare";
@@ -82,6 +83,19 @@ function normalizeEmail(raw: unknown): string | null {
     const e = raw.trim().toLowerCase();
     if (!EMAIL_RE.test(e) || e.length > 254) return null;
     return e;
+}
+
+/**
+ * Mask an email for a "wrong account" hint without disclosing the full
+ * invited address to any token holder (issue #98). `bob@firm.hr` → `b***@firm.hr`.
+ */
+export function maskEmail(email: string): string {
+    const at = email.indexOf("@");
+    if (at <= 0) return "***";
+    const local = email.slice(0, at);
+    const domain = email.slice(at + 1);
+    const head = local[0] ?? "";
+    return `${head}***@${domain}`;
 }
 
 function generateToken(): { token: string; hash: string } {
@@ -153,10 +167,12 @@ async function loadChatForShare(
     | { ok: false; status: number; detail: string }
 > {
     const db = createServerSupabase();
+    // Soft-deleted chats (migration 132) are 404 on every share path too.
     const { data: chat } = await db
         .from("chats")
         .select("id, user_id, project_id, title")
         .eq("id", chatId)
+        .neq("status", "deleted")
         .single();
     if (!chat) return { ok: false, status: 404, detail: "Chat not found" };
     const c = chat as {
@@ -500,6 +516,7 @@ chatSharesRouter.get("/share/:token/preview", async (req, res) => {
         .from("chats")
         .select("id, title")
         .eq("id", s.chat_id)
+        .neq("status", "deleted")
         .single();
     if (!chat) {
         return void res
@@ -595,10 +612,13 @@ chatSharesRouter.get(
                 .json({ detail: "Share has expired", code: "expired" });
         }
         if (s.shared_with_email.toLowerCase() !== callerEmail) {
+            // Don't disclose the full invited email to any token holder who
+            // opens a forwarded link — mask it (GDPR, issue #98).
+            const masked = maskEmail(s.shared_with_email);
             return void res.status(403).json({
                 detail: "This share is bound to a different email",
                 code: "email_mismatch",
-                expectedEmail: s.shared_with_email,
+                expectedEmail: masked,
             });
         }
 
@@ -606,6 +626,7 @@ chatSharesRouter.get(
             .from("chats")
             .select("id, project_id, title, created_at")
             .eq("id", s.chat_id)
+            .neq("status", "deleted")
             .single();
         if (!chat) {
             return void res
@@ -703,33 +724,32 @@ chatSharesRouter.post(
                     code: "email_mismatch",
                 });
 
-        // Append the recipient's email to chats.shared_with (jsonb array).
-        // Read-modify-write because the dbShim doesn't expose
-        // jsonb_array_append directly, and the array is small (<=100s).
-        const { data: chat } = await db
-            .from("chats")
-            .select("id, project_id, shared_with")
-            .eq("id", s.chat_id)
-            .single();
-        if (!chat)
+        // Append the recipient's email to chats.shared_with ATOMICALLY.
+        // The old read-modify-write (SELECT array → push → write whole array)
+        // dropped a concurrent accept — two recipients accepting at once
+        // could overwrite each other (issue #98). Do the dedup append in one
+        // jsonb UPDATE so no read window exists. Only touches non-deleted
+        // chats; RETURNING lets us 404 a missing/deleted chat.
+        const { rows: updatedRows } = await query<{
+            id: string;
+            project_id: string | null;
+        }>(
+            `UPDATE public.chats
+                SET shared_with = COALESCE((
+                    SELECT jsonb_agg(DISTINCT e)
+                    FROM jsonb_array_elements_text(
+                        COALESCE(shared_with, '[]'::jsonb) || to_jsonb($2::text)
+                    ) AS e
+                ), '[]'::jsonb)
+              WHERE id = $1 AND status <> 'deleted'
+              RETURNING id, project_id`,
+            [s.chat_id, callerEmail],
+        );
+        if (updatedRows.length === 0)
             return void res
                 .status(404)
                 .json({ detail: "Chat not found", code: "chat_missing" });
-
-        const current = Array.isArray(
-            (chat as { shared_with?: unknown }).shared_with,
-        )
-            ? ((chat as { shared_with: string[] }).shared_with.map((e) =>
-                  (e ?? "").toLowerCase(),
-              ) as string[])
-            : [];
-        if (!current.includes(callerEmail)) {
-            current.push(callerEmail);
-            await db
-                .from("chats")
-                .update({ shared_with: current })
-                .eq("id", s.chat_id);
-        }
+        const chat = updatedRows[0];
 
         if (!s.accepted_at) {
             await db

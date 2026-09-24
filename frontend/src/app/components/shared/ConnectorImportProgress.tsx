@@ -33,6 +33,11 @@ interface Props {
     total: number;
     done: number;
     failed: number;
+    /**
+     * Formats the backend rejected (`code: "unsupported_file_type"`),
+     * e.g. ["XLSX"] — named in the toast so a failure isn't generic.
+     */
+    unsupportedTypes?: string[];
 }
 
 export function ConnectorImportProgress({
@@ -41,6 +46,7 @@ export function ConnectorImportProgress({
     total,
     done,
     failed,
+    unsupportedTypes = [],
 }: Props) {
     const t = useTranslations("documents");
     const [mounted, setMounted] = useState(false);
@@ -60,13 +66,18 @@ export function ConnectorImportProgress({
         return () => clearTimeout(tid);
     }, [total, provider]);
 
-    // Auto-fade ~1.5s after settle.
+    // Auto-fade ~1.5s after settle — longer when something failed, so the
+    // failure (and any unsupported format) can actually be read.
     const settled = total > 0 && done + failed >= total;
+    const hasFailures = failed > 0;
     useEffect(() => {
         if (!settled) return;
-        const tid = setTimeout(() => setVisible(false), 1500);
+        const tid = setTimeout(
+            () => setVisible(false),
+            hasFailures ? 6000 : 1500,
+        );
         return () => clearTimeout(tid);
-    }, [settled]);
+    }, [settled, hasFailures]);
 
     if (!mounted || provider === null || total === 0) return null;
 
@@ -106,11 +117,20 @@ export function ConnectorImportProgress({
                                   total,
                               })}
                     </div>
+                    {unsupportedTypes.length > 0 && (
+                        <div className="text-xs text-destructive mt-0.5">
+                            {t("importing.unsupported", {
+                                types: unsupportedTypes.join(", "),
+                            })}
+                        </div>
+                    )}
                 </div>
                 <div className="shrink-0 mt-0.5">
                     {allDone ? (
                         <Check className="h-4 w-4 text-success" />
-                    ) : allFailed ? (
+                    ) : settled ? (
+                        // Settled with at least one failure (was a spinner
+                        // that never stopped for a mixed result).
                         <AlertCircle className="h-4 w-4 text-destructive" />
                     ) : (
                         <Loader2 className="h-4 w-4 animate-spin text-foreground" />

@@ -42,6 +42,12 @@ export function connectorFlagCode(slug: string): string | null {
             return "hr";
         case "eulex-fr":
             return "fr";
+        case "eulex-si":
+            return "si";
+        case "eulex-de":
+            return "de";
+        case "eulex-nl":
+            return "nl";
         case "ris-at":
             return "at";
         case "legal-it":
@@ -51,4 +57,41 @@ export function connectorFlagCode(slug: string): string | null {
         default:
             return null;
     }
+}
+
+/**
+ * Sub-national connectors (cities, regions) have no ISO flag — they get a
+ * bundled emblem image instead. `short` is the compact label rendered next
+ * to the emblem, analogous to `flag.toUpperCase()` for country connectors.
+ */
+export function connectorEmblem(
+    slug: string,
+): { src: string; short: string } | null {
+    switch (slug.replace(/^sys-/, "")) {
+        case "sggz":
+            return { src: "/emblems/zagreb.svg", short: "ZAGREB" };
+        default:
+            return null;
+    }
+}
+
+/** Renders a bundled emblem image sized like a CountryFlag (1em height). */
+export function ConnectorEmblem({
+    src,
+    label,
+    className,
+}: {
+    src: string;
+    label?: string;
+    className?: string;
+}) {
+    return (
+        // eslint-disable-next-line @next/next/no-img-element -- tiny bundled svg, next/image overhead not worth it
+        <img
+            src={src}
+            alt={label ?? ""}
+            title={label}
+            className={cn("h-[1em] w-auto shrink-0", className)}
+        />
+    );
 }

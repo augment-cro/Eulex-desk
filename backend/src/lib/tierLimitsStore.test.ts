@@ -5,6 +5,7 @@ import { query } from "./db";
 import {
     _resetTierLimitsStoreForTesting,
     _setTierLimitsDepsForTesting,
+    assertTierSourceConfigAtBoot,
     getAllTierLimits,
     getTierLimitsRow,
     tiersFromSupabase,
@@ -109,6 +110,32 @@ describe("tierLimitsStore", () => {
         assert.equal(q.calls.select, 1);
         assert.deepEqual(await getTierLimitsRow(3), NORMALIZED);
         assert.equal(await getTierLimitsRow(99), null);
+    });
+
+    it("boot guard (issue #69): flag set without Supabase admin env → throws", () => {
+        process.env.TIERS_FROM_SUPABASE = "1";
+        _setTierLimitsDepsForTesting({ isSupabaseConfigured: () => false });
+        assert.throws(
+            () => assertTierSourceConfigAtBoot(),
+            /TIERS_FROM_SUPABASE.*NOT configured/s,
+        );
+    });
+
+    it("boot guard (issue #69): consistent configurations pass", () => {
+        // flag on + Supabase configured → Supabase source, no throw
+        process.env.TIERS_FROM_SUPABASE = "1";
+        _setTierLimitsDepsForTesting({ isSupabaseConfigured: () => true });
+        assert.doesNotThrow(() => assertTierSourceConfigAtBoot());
+        // flag unset (mike-DB source) — with and without Supabase env
+        delete process.env.TIERS_FROM_SUPABASE;
+        assert.doesNotThrow(() => assertTierSourceConfigAtBoot());
+        _setTierLimitsDepsForTesting({ isSupabaseConfigured: () => false });
+        assert.doesNotThrow(() => assertTierSourceConfigAtBoot());
+        // explicit "off" spellings normalize to off even without Supabase env
+        for (const off of ["0", "false", "off"]) {
+            process.env.TIERS_FROM_SUPABASE = off;
+            assert.doesNotThrow(() => assertTierSourceConfigAtBoot());
+        }
     });
 
     it("flag on but supabase unconfigured → still legacy", async () => {

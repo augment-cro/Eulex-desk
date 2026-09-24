@@ -1,5 +1,5 @@
 import type { LlmUsage } from "./llm/types";
-import { computeCostUsd } from "./llmUsage";
+import { priceUsage } from "./llmPricing";
 
 /**
  * Terminal `usage` SSE event for /chat (answer-neutral observability enabler,
@@ -15,6 +15,7 @@ export function buildUsageEvent(args: {
     durationMs: number;
 }) {
     const webSearchCostUsd = args.webSearchCostUsd ?? 0;
+    const cost = priceUsage(args.model, args.usage, webSearchCostUsd);
     return {
         type: "usage" as const,
         model: args.model,
@@ -22,7 +23,9 @@ export function buildUsageEvent(args: {
         output_tokens: args.usage.outputTokens,
         cache_creation_input_tokens: args.usage.cacheCreationInputTokens ?? 0,
         cache_read_input_tokens: args.usage.cacheReadInputTokens ?? 0,
-        cost_usd: computeCostUsd(args.model, args.usage) + webSearchCostUsd,
+        cost_usd: cost.costUsd,
+        cost_complete: cost.complete,
+        known_cost_usd: cost.knownCostUsd,
         web_search_cost_usd: webSearchCostUsd,
         duration_ms: args.durationMs,
     };

@@ -12,9 +12,7 @@ import { useTranslations } from "next-intl";
 import { getStoredTokens } from "@/lib/oauth";
 import { track } from "@/app/lib/analytics";
 
-const API_BASE =
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
-
+import { API_BASE } from "@/app/lib/apiBase";
 type Pack = {
     id: string;
     tokens: number;
@@ -37,6 +35,7 @@ export function TopupModal({
     onClose: () => void;
 }) {
     const t = useTranslations("rateLimit");
+    const tc = useTranslations("common");
     const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -50,7 +49,8 @@ export function TopupModal({
             setError(null);
             try {
                 const tokens = getStoredTokens();
-                if (!tokens?.access_token) throw new Error("Not authenticated");
+                if (!tokens?.access_token)
+                    throw new Error(t("notSignedIn"));
                 const res = await fetch(`${API_BASE}/billing/topup/packs`, {
                     headers: {
                         Authorization: `Bearer ${tokens.access_token}`,
@@ -69,7 +69,7 @@ export function TopupModal({
         return () => {
             cancelled = true;
         };
-    }, [open, catalog]);
+    }, [open, catalog, t]);
 
     async function startCheckout(packId: string) {
         setRedirecting(packId);
@@ -77,7 +77,7 @@ export function TopupModal({
         track("topup_started");
         try {
             const tokens = getStoredTokens();
-            if (!tokens?.access_token) throw new Error("Not authenticated");
+            if (!tokens?.access_token) throw new Error(t("notSignedIn"));
             const res = await fetch(
                 `${API_BASE}/billing/topup/create-session`,
                 {
@@ -121,7 +121,7 @@ export function TopupModal({
                     <button
                         onClick={onClose}
                         className="rounded p-1 text-muted-foreground/70 hover:text-foreground"
-                        aria-label="Close"
+                        aria-label={tc("close")}
                     >
                         ✕
                     </button>

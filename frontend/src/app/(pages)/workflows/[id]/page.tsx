@@ -521,6 +521,7 @@ export default function WorkflowDetailPage({ params }: Props) {
                 <FloatingAiPrompt
                     variant="workflow"
                     workflowId={id}
+                    columns={columns}
                     onApplied={({ title, prompt_md, columns: nextCols }) => {
                         setWorkflow((w) =>
                             w

@@ -9,6 +9,7 @@ import {
     refreshAccessToken,
     clearTokens,
 } from "@/lib/oauth";
+import { API_BASE } from "@/app/lib/apiBase";
 import {
     pushFromResponseHeaders,
     pushFromRateLimitedError,
@@ -16,10 +17,12 @@ import {
 import type {
     AssistantEvent,
     LegalDocument,
+    LegalDocumentVersion,
     LegalSource,
     MikeAnnotation,
     MikeChat,
     MikeChatDetailOut,
+    MikeChatGroup,
     MikeDocument,
     MikeFolder,
     MikeMessage,
@@ -45,15 +48,6 @@ interface ServerChatDetailOut {
     chat: MikeChat;
     messages: ServerMessage[];
 }
-
-// `??` only coalesces on null/undefined — a blank env var (which happened
-// once when the Dockerfile exported `ENV NEXT_PUBLIC_API_BASE_URL=` even
-// without a build-arg) would slip through and make API_BASE = "", which
-// silently routed every backend call to the frontend origin and surfaced
-// as 404 page-not-found HTML for /chat, /user/profile, /auth/pair/start.
-// Treat whitespace-only values as unset too.
-const API_BASE =
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
 
 function getAuthHeader(): Record<string, string> {
     const tokens = getStoredTokens();
@@ -254,8 +248,17 @@ export async function removeTeamMember(
 // Projects
 // ---------------------------------------------------------------------------
 
-export async function listProjects(): Promise<MikeProject[]> {
-    return apiRequest<MikeProject[]>("/projects");
+export async function listProjects(options?: {
+    /**
+     * Ask the backend to attach each project's `documents` array (one
+     * batched query server-side). Replaces the old listProjects() +
+     * getProject()-per-project fan-out in the directory modal (#26).
+     */
+    includeDocuments?: boolean;
+}): Promise<MikeProject[]> {
+    return apiRequest<MikeProject[]>(
+        options?.includeDocuments ? "/projects?include=documents" : "/projects",
+    );
 }
 
 export async function createProject(
@@ -283,6 +286,42 @@ export async function createBillingPortalSession(): Promise<{ url: string }> {
     return apiRequest<{ url: string }>("/billing/portal", { method: "POST" });
 }
 
+/** Stripe subscription snapshot from GET /billing/plus/status. */
+export interface BillingSubscriptionView {
+    id: string;
+    status: string;
+    cancel_at_period_end: boolean;
+    /** Unix seconds; null when Stripe omitted it. */
+    current_period_end: number | null;
+}
+
+export interface BillingStatus {
+    plan: string;
+    subscription: BillingSubscriptionView | null;
+}
+
+/**
+ * Current plan + live Stripe subscription snapshot (renewal date,
+ * cancel-at-period-end flag). `subscription` is null for users without
+ * an active Stripe subscription (free tier, bank transfer, comped).
+ */
+export async function getBillingStatus(): Promise<BillingStatus> {
+    return apiRequest<BillingStatus>("/billing/plus/status");
+}
+
+/**
+ * Cancel the renewal of the active subscription (any paid plan). The
+ * plan stays active until the already-paid period ends — no proration,
+ * no refund. Idempotent: repeating the call returns the current state.
+ */
+export async function cancelSubscriptionRenewal(): Promise<{
+    ok: boolean;
+    cancel_at_period_end: boolean;
+    current_period_end: number | null;
+}> {
+    return apiRequest("/billing/cancel", { method: "POST" });
+}
+
 export async function getProject(projectId: string): Promise<MikeProject> {
     return apiRequest<MikeProject>(`/projects/${projectId}`);
 }
@@ -291,7 +330,8 @@ export async function updateProject(
     projectId: string,
     payload: {
         name?: string;
-        cm_number?: string;
+        /** `null` clears the CM number; omit the key to leave it unchanged. */
+        cm_number?: string | null;
         shared_with?: string[];
     },
 ): Promise<MikeProject> {
@@ -506,6 +546,21 @@ export async function renameDocumentVersion(
     );
 }
 
+/**
+ * Non-2xx answer from a multipart document upload. `message` stays the raw
+ * response body (as before); `status` lets callers tell a 413 (file too
+ * large) from other failures — see `classifyUploadError` in `bulkUpload.ts`.
+ */
+export class UploadHttpError extends Error {
+    readonly status: number;
+
+    constructor(status: number, body: string) {
+        super(body || `API error: ${status}`);
+        this.name = "UploadHttpError";
+        this.status = status;
+    }
+}
+
 export async function uploadProjectDocument(
     projectId: string,
     file: File,
@@ -521,7 +576,8 @@ export async function uploadProjectDocument(
             body: form,
         },
     );
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok)
+        throw new UploadHttpError(response.status, await response.text());
     return response.json() as Promise<MikeDocument>;
 }
 
@@ -536,7 +592,8 @@ export async function uploadStandaloneDocument(
         headers: { ...authHeaders },
         body: form,
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok)
+        throw new UploadHttpError(response.status, await response.text());
     return response.json() as Promise<MikeDocument>;
 }
 
@@ -627,12 +684,14 @@ export async function createChat(payload?: {
     });
 }
 
-export async function listChats(): Promise<MikeChat[]> {
+export async function listChats(
+    status: "active" | "archived" = "active",
+): Promise<MikeChat[]> {
     // Request the backend max (500) instead of the default 100 so users with
     // long histories — including chats backfilled from the old WordPress
-    // assistant — see all their conversations. The sidebar has no pagination;
-    // 500 covers every current user (max ~294).
-    return apiRequest<MikeChat[]>("/chat?limit=500");
+    // assistant — see all their conversations. The sidebar caps rendering
+    // client-side ("Show more"); 500 covers every current user (max ~294).
+    return apiRequest<MikeChat[]>(`/chat?limit=500&status=${status}`);
 }
 
 export async function listProjectChats(projectId: string): Promise<MikeChat[]> {
@@ -646,10 +705,38 @@ export async function listProjectChats(projectId: string): Promise<MikeChat[]> {
  */
 export async function getLegalDocument(
     source: LegalSource,
+    temporal?: { versionId?: string; asOf?: string },
 ): Promise<LegalDocument | null> {
     if (!source.fetchPath) return null;
-    const qs = `?scope=${encodeURIComponent(source.scope)}&path=${encodeURIComponent(source.fetchPath)}`;
+    let qs = `?scope=${encodeURIComponent(source.scope)}&path=${encodeURIComponent(source.fetchPath)}`;
+    // Point-in-time view (HR): a specific version beats a date.
+    if (temporal?.versionId) {
+        qs += `&version_id=${encodeURIComponent(temporal.versionId)}`;
+    } else if (temporal?.asOf) {
+        qs += `&as_of=${encodeURIComponent(temporal.asOf)}`;
+    }
     return apiRequest<LegalDocument>(`/legal-docs${qs}`);
+}
+
+/**
+ * Version timeline (NN history) for a cited regulation — one entry per
+ * version, oldest first. HR regulations only for now; other scopes 404 →
+ * treated as "no timeline" (returns []). Never throws for the 404 case so the
+ * panel renders normally without a timeline.
+ */
+export async function getLegalDocumentVersions(
+    scope: LegalSource["scope"],
+    regulationPath: string,
+): Promise<LegalDocumentVersion[]> {
+    const qs = `?scope=${encodeURIComponent(scope)}&path=${encodeURIComponent(regulationPath)}`;
+    try {
+        const resp = await apiRequest<{ versions: LegalDocumentVersion[] }>(
+            `/legal-docs/versions${qs}`,
+        );
+        return Array.isArray(resp?.versions) ? resp.versions : [];
+    } catch {
+        return [];
+    }
 }
 
 export async function getChat(chatId: string): Promise<MikeChatDetailOut> {
@@ -704,16 +791,63 @@ export async function setMessageFlag(
     });
 }
 
-export async function renameChat(chatId: string, title: string): Promise<void> {
+export interface ChatUpdatePatch {
+    title?: string;
+    group_id?: string | null;
+    pinned?: boolean;
+    status?: "active" | "archived";
+}
+
+export async function updateChat(
+    chatId: string,
+    patch: ChatUpdatePatch,
+): Promise<void> {
     await apiRequest(`/chat/${chatId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title }),
+        body: JSON.stringify(patch),
     });
 }
 
+export async function renameChat(chatId: string, title: string): Promise<void> {
+    await updateChat(chatId, { title });
+}
+
+// Soft delete — the backend flips status to 'deleted' (invisible, kept).
 export async function deleteChat(chatId: string): Promise<void> {
     await apiRequest(`/chat/${chatId}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Chat groups (sidebar history management — backend/routes/chatGroups.ts)
+// ---------------------------------------------------------------------------
+
+export async function listChatGroups(): Promise<MikeChatGroup[]> {
+    return apiRequest<MikeChatGroup[]>("/chat/groups");
+}
+
+export async function createChatGroup(name: string): Promise<MikeChatGroup> {
+    return apiRequest<MikeChatGroup>("/chat/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+    });
+}
+
+export async function updateChatGroup(
+    groupId: string,
+    patch: { name?: string; status?: "active" | "archived" },
+): Promise<MikeChatGroup> {
+    return apiRequest<MikeChatGroup>(`/chat/groups/${groupId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+    });
+}
+
+// Soft delete; cascades to every conversation in the group.
+export async function deleteChatGroup(groupId: string): Promise<void> {
+    await apiRequest(`/chat/groups/${groupId}`, { method: "DELETE" });
 }
 
 // ---------------------------------------------------------------------------
@@ -974,8 +1108,24 @@ async function streamFetch(
     url: string,
     init: RequestInit,
 ): Promise<Response> {
-    const response = await fetch(url, init);
+    let response = await fetch(url, init);
     pushFromResponseHeaders(response);
+    // Streaming endpoints previously had no 401 refresh-retry (unlike
+    // apiRequest), so a send right after laptop sleep/resume surfaced the
+    // "session expired" banner even though the session was refreshable (#91).
+    if (response.status === 401) {
+        const refreshed = await refreshAccessToken().catch(() => null);
+        if (refreshed) {
+            response = await fetch(url, {
+                ...init,
+                headers: {
+                    ...(init.headers as Record<string, string> | undefined),
+                    Authorization: `Bearer ${refreshed.access_token}`,
+                },
+            });
+            pushFromResponseHeaders(response);
+        }
+    }
     if (response.status === 429) {
         try {
             const body = await response.clone().json();
@@ -1562,13 +1712,29 @@ export function contextsServiceEnabled(): boolean {
     return contextsServiceUrl().length > 0;
 }
 
-let contextsServiceToken: { token: string; expiresAt: number } | null = null;
+// Keyed by the core access token that minted it. A sign-out or in-place
+// account switch (AuthContext swaps the user with no page reload) changes
+// the core token but NOT this module cache — so without the key check the
+// previous user's still-valid service token would be reused and the
+// contexts service would return THEIR contexts to the new user (issue #124).
+let contextsServiceToken: {
+    token: string;
+    expiresAt: number;
+    ownerToken: string;
+} | null = null;
+
+/** Clear the cached service token (call on sign-out / user change). */
+export function clearContextsServiceToken(): void {
+    contextsServiceToken = null;
+}
 
 async function getContextsServiceToken(force = false): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
+    const ownerToken = getStoredTokens()?.access_token ?? "";
     if (
         !force &&
         contextsServiceToken &&
+        contextsServiceToken.ownerToken === ownerToken &&
         contextsServiceToken.expiresAt - now > 60
     ) {
         return contextsServiceToken.token;
@@ -1579,6 +1745,7 @@ async function getContextsServiceToken(force = false): Promise<string> {
     contextsServiceToken = {
         token: res.token,
         expiresAt: now + (res.expires_in ?? 3600),
+        ownerToken,
     };
     return res.token;
 }
@@ -2203,6 +2370,50 @@ export async function piiPreviewDocument(args: {
 }
 
 /**
+ * Run a typed composer message through the shield for the review modal
+ * (#16 — strict mode reviews every input, not just documents). Same
+ * endpoint as `piiPreviewDocument` but with no `document_version_id`;
+ * the backend then records the analysis with `source: "user_input"`.
+ * Ties to the chat's session when `chat_id` is present, so the
+ * placeholders match what the actual send will produce.
+ */
+export async function piiPreviewText(args: {
+    chat_id?: string | null;
+    /** Reuse an existing standalone session (fresh assistant page) so
+     *  every pre-chat preview accumulates into ONE session that the
+     *  chat later adopts via `piiAttachChat`. */
+    session_id?: string | null;
+    text: string;
+    mode?: Exclude<PiiMode, "off">;
+    language?: "hr" | "en";
+}): Promise<PiiPreviewResult> {
+    return apiRequest<PiiPreviewResult>("/pii/sessions/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+    });
+}
+
+/**
+ * Adopt a standalone preview session as THE session of a freshly
+ * created chat (#16 follow-up). Call right after `/chat/create` when
+ * the first turn went through the review modal on a fresh assistant
+ * page — without it the turn's anonymization spawns a second session
+ * and the user's disclosure approvals are silently dropped (entities
+ * stay masked). 409 = too late; treat as non-fatal.
+ */
+export async function piiAttachChat(
+    sessionId: string,
+    chatId: string,
+): Promise<{ session_id: string; chat_id: string }> {
+    return apiRequest(`/pii/sessions/${sessionId}/attach-chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId }),
+    });
+}
+
+/**
  * Run a stored document through the shield by id. Backend resolves
  * the current version, downloads + extracts text server-side, then
  * calls the sidecar. The browser never sees the raw text — only the
@@ -2221,6 +2432,8 @@ export async function piiPreviewDocumentById(
     documentId: string,
     args: {
         chat_id?: string | null;
+        /** See `piiPreviewText.session_id` — same fresh-page threading. */
+        session_id?: string | null;
         mode?: Exclude<PiiMode, "off">;
         language?: "hr" | "en";
     } = {},
@@ -2238,12 +2451,16 @@ export async function piiPreviewDocumentById(
 /**
  * Persist the user's modal choices. `masked_placeholders` is the list
  * of placeholders the user wants to KEEP masked, `approved_for_disclosure`
- * is the list they explicitly want to reveal. Both lists are audited.
+ * is the list they explicitly want to reveal. Both lists are audited;
+ * `disclosure_reasons` carries the per-placeholder justification the
+ * modal collects, so the bulk path is audited like the single
+ * disclose-placeholder path (#55).
  */
 export async function piiApplyOverrides(args: {
     session_id: string;
     masked_placeholders: string[];
     approved_for_disclosure: string[];
+    disclosure_reasons?: Record<string, string>;
     text?: string;
 }): Promise<PiiApplyOverridesResult> {
     const { session_id, ...body } = args;

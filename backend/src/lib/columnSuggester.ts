@@ -400,6 +400,17 @@ export async function streamColumnSuggestion(args: {
     write: (event: ColumnSuggesterEvent) => void;
     reviewTitle?: string | null;
     projectName?: string | null;
+    /**
+     * PII Shield hook (routes/tabular.ts). When the review owner has an
+     * active PII mode the route pre-anonymizes every input this function
+     * receives (instruction, columns, titles) and passes this hook so the
+     * TERMINAL outputs — the suggested columns / explanation and the
+     * clarify question, which are stored in columns_config and shown in
+     * the UI — get de-anonymized server-side before they are emitted.
+     * Fail-safe: the hook returns its input unchanged on shield errors,
+     * so placeholders are kept rather than leaking or crashing the turn.
+     */
+    deanonymizeOutput?: (value: unknown) => Promise<unknown>;
 }): Promise<{
     /**
      * Total USD billed by web search providers across every web_search
@@ -427,6 +438,7 @@ export async function streamColumnSuggestion(args: {
         write,
         reviewTitle,
         projectName,
+        deanonymizeOutput,
     } = args;
 
     // Running tally of provider USD across every web_search tool call
@@ -739,10 +751,20 @@ export async function streamColumnSuggestion(args: {
         | { kind: "apply"; columns: ColumnDraft[]; explanation?: string }
         | { kind: "clarify"; question: string };
     if (t.kind === "apply") {
+        let columns = t.columns;
+        let explanation = t.explanation ?? null;
+        if (deanonymizeOutput) {
+            const restored = (await deanonymizeOutput({
+                columns,
+                explanation,
+            })) as { columns?: ColumnDraft[]; explanation?: string | null };
+            columns = restored?.columns ?? columns;
+            explanation = restored?.explanation ?? explanation;
+        }
         write({
             type: "result",
-            columns: t.columns,
-            explanation: t.explanation ?? null,
+            columns,
+            explanation,
         });
     } else {
         if (!t.question) {
@@ -751,7 +773,10 @@ export async function streamColumnSuggestion(args: {
                 message: "Model asked for clarification but did not provide a question.",
             });
         } else {
-            write({ type: "clarify", question: t.question });
+            const question = deanonymizeOutput
+                ? String((await deanonymizeOutput(t.question)) ?? t.question)
+                : t.question;
+            write({ type: "clarify", question });
         }
     }
     write({ type: "done" });

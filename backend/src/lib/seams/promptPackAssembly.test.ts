@@ -138,6 +138,18 @@ describe("prompt assembly with a pinned pack", () => {
         assert.ok(!withoutEulex.includes("FIXTURE ROUTING")); // needs >1 jurisdiction
     });
 
+    it("appends connected servers' own instructions under the wrapper block", () => {
+        const withNotes = buildMcpPromptAddenda([
+            { ...zakonServer, instructions: "HR NOTE: query in Croatian." },
+            eulexServer,
+        ]);
+        assert.ok(withNotes.includes("SOURCE USAGE NOTES"));
+        assert.ok(withNotes.includes("[Zakon.hr]\nHR NOTE: query in Croatian."));
+
+        const withoutNotes = buildMcpPromptAddenda([eulexServer, zakonServer]);
+        assert.ok(!withoutNotes.includes("SOURCE USAGE NOTES"));
+    });
+
     it("inserts the locale legal halves into the locale block", () => {
         assert.ok(localeContextForLlm("hr").includes("FIXTURE HR LEGAL"));
         assert.ok(localeContextForLlm("en").includes("FIXTURE EN LEGAL"));

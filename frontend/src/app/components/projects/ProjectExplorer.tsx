@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import {
     FileText,
     File,
@@ -57,6 +58,8 @@ export function ProjectExplorer({
     onMoveDoc,
     onMoveFolder,
 }: Props) {
+    const t = useTranslations("projectPage");
+    const tCommon = useTranslations("common");
     const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [creatingIn, setCreatingIn] = useState<string | null | undefined>(undefined);
@@ -184,7 +187,7 @@ export function ProjectExplorer({
                             ref={newFolderInputRef}
                             autoFocus
                             className="flex-1 min-w-0 text-xs bg-transparent outline-none border-b border-input text-foreground"
-                            placeholder="Folder name"
+                            placeholder={t("folderName")}
                             value={newFolderName}
                             onChange={(e) => setNewFolderName(e.target.value)}
                             onKeyDown={(e) => {
@@ -353,7 +356,7 @@ export function ProjectExplorer({
 
             {/* Empty state */}
             {documents.length === 0 && folders.length === 0 && creatingIn === undefined && (
-                <li className="px-4 py-2 text-xs text-muted-foreground/70">No documents in this project.</li>
+                <li className="px-4 py-2 text-xs text-muted-foreground/70">{t("noDocumentsInProject")}</li>
             )}
 
             {/* Context menu */}
@@ -378,7 +381,7 @@ export function ProjectExplorer({
                             }}
                         >
                             <FolderPlus className="h-3.5 w-3.5 text-muted-foreground/70" />
-                            New subfolder
+                            {t("newSubfolder")}
                         </button>
                     )}
                     {contextMenu.folderId && onRenameFolder && (
@@ -391,7 +394,7 @@ export function ProjectExplorer({
                                 setContextMenu(null);
                             }}
                         >
-                            Rename
+                            {tCommon("rename")}
                         </button>
                     )}
                     {contextMenu.folderId && onDeleteFolder && (
@@ -403,7 +406,7 @@ export function ProjectExplorer({
                             }}
                         >
                             <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                            Delete folder
+                            {t("deleteFolder")}
                         </button>
                     )}
                     {contextMenu.docId && onDeleteDoc && (
@@ -415,7 +418,7 @@ export function ProjectExplorer({
                             }}
                         >
                             <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                            Delete file
+                            {t("deleteFile")}
                         </button>
                     )}
                 </div>

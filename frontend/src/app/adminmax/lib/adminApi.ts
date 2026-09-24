@@ -6,8 +6,7 @@
  * and is only sent on /adminmax/* fetches.
  */
 
-const API_BASE =
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
+import { API_BASE } from "@/app/lib/apiBase";
 
 const TOKEN_KEY = "adminmax_token";
 const TOKEN_EXPIRES_KEY = "adminmax_token_expires_at";
@@ -155,6 +154,12 @@ export interface AdminUsersResponse {
         new_users_since: string;
         /** All registered users, regardless of the date-range filter. */
         total_users: number;
+        /** Distinct Stripe customers with an active subscription (null if Stripe unreachable). */
+        paid_users_count: number | null;
+        /** Active Stripe subscriptions backing paid_users_count. */
+        paid_subs_count: number | null;
+        /** Monthly run-rate of active Stripe subscriptions, in cents. */
+        paid_mrr_cents: number | null;
     };
     users: AdminUserSummary[];
 }
@@ -223,7 +228,8 @@ export interface AdminUsageRow {
     output_tokens: number;
     cache_creation_input_tokens: number;
     cache_read_input_tokens: number;
-    cost_usd: string | number;
+    cost_usd: string | number | null;
+    cost_breakdown?: { complete: boolean; knownCostUsd: number } | null;
     duration_ms: number | null;
     status: string;
     error_message: string | null;
@@ -338,9 +344,9 @@ export function listMessages(
 /** Per-answer cost/token rollup, joined from llm_usage. Present on
  *  assistant turns that have a usage row; null otherwise (user turns,
  *  or assistant turns recorded before usage tracking). cost_usd may be
- *  0 for unpriced models even when token counts are non-zero. */
+ *  null when any contributing call has unknown or incomplete usage. */
 export interface AdminChatThreadUsage {
-    cost_usd: number;
+    cost_usd: number | null;
     input_tokens: number;
     output_tokens: number;
     cache_creation_input_tokens: number;
@@ -398,6 +404,80 @@ export function getChatThread(
     return adminFetch<AdminChatThreadResponse>(`/chats/${chatId}/full${q}`);
 }
 
+// ── global chat list ─────────────────────────────────────────────────────
+
+/** One row in the workspace-wide chat list (GET /adminmax/chats). */
+export interface AdminChatListRow {
+    id: string;
+    title: string | null;
+    project_id: string | null;
+    created_at: string;
+    user_id: string;
+    email: string | null;
+    display_name: string | null;
+    message_count: number;
+    /** Newest message timestamp; chat creation for empty chats. */
+    last_activity_at: string;
+    cost_usd_total: number;
+    request_count: number;
+    error_count: number;
+}
+
+export function listChats(opts?: {
+    from?: string;
+    to?: string;
+    /** Matches chat title, owner email/name, or message content. */
+    q?: string;
+    limit?: number;
+    offset?: number;
+}): Promise<PaginatedRows<AdminChatListRow>> {
+    const params = new URLSearchParams();
+    if (opts?.from) params.set("from", opts.from);
+    if (opts?.to) params.set("to", opts.to);
+    if (opts?.q) params.set("q", opts.q);
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    if (opts?.offset) params.set("offset", String(opts.offset));
+    const s = params.toString();
+    return adminFetch<PaginatedRows<AdminChatListRow>>(
+        `/chats${s ? `?${s}` : ""}`,
+    );
+}
+
+// ── admin audit trail ────────────────────────────────────────────────────
+
+/** One row in the admin action audit trail (GET /adminmax/audit). */
+export interface AdminAuditRow {
+    id: string;
+    actor: string;
+    /** Dot-namespaced verb, e.g. "user.tier.set", "credits.grant". */
+    action: string;
+    target_type: string | null;
+    target_id: string | null;
+    payload: Record<string, unknown> | null;
+    ip: string | null;
+    created_at: string;
+}
+
+export function listAudit(opts?: {
+    from?: string;
+    to?: string;
+    /** Matches action, target id/type, or actor. */
+    q?: string;
+    limit?: number;
+    offset?: number;
+}): Promise<PaginatedRows<AdminAuditRow>> {
+    const params = new URLSearchParams();
+    if (opts?.from) params.set("from", opts.from);
+    if (opts?.to) params.set("to", opts.to);
+    if (opts?.q) params.set("q", opts.q);
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    if (opts?.offset) params.set("offset", String(opts.offset));
+    const s = params.toString();
+    return adminFetch<PaginatedRows<AdminAuditRow>>(
+        `/audit${s ? `?${s}` : ""}`,
+    );
+}
+
 // ── tier_limits ──────────────────────────────────────────────────────────
 
 /** Resolved per-tier feature flags. bool entitlements → boolean,
@@ -428,6 +508,12 @@ export interface AdminTierLimit {
     entitlements: TierEntitlements;
     /** May be `{}` before defaults are seeded; the editor normalises it. */
     marketing: PlanMarketing | Record<string, never>;
+    /** Public monthly price string (hr, e.g. "€399,00"); read-only enrichment
+     *  from the same source as /billing/plans. null for tiers with no plan. */
+    price?: string | null;
+    /** Env-driven Stripe product id for this tier; null when unset (free,
+     *  enterprise, foundation, …). Read-only enrichment. */
+    stripe_product_id?: string | null;
     updated_at: string;
     /** Users currently on this tier via a live override (0 = empty). */
     user_count?: number;
@@ -480,6 +566,77 @@ export function createTier(input: {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
     });
+}
+
+// ── promo codes (Stripe coupons + promotion codes) ───────────────────────
+
+export interface AdminPromoStats {
+    /** Paid subscription invoices attributed to this code. */
+    invoices: number;
+    /** Distinct paying subscribers attributed to this code. */
+    subscribers: number;
+    revenue_cents: number;
+}
+
+export interface AdminPromoCode {
+    id: string;
+    code: string;
+    active: boolean;
+    coupon_id: string | null;
+    coupon_valid: boolean | null;
+    percent_off: number | null;
+    amount_off: number | null;
+    currency: string | null;
+    duration: "forever" | "once" | "repeating" | null;
+    duration_in_months: number | null;
+    /** Tier slugs the code is restricted to; empty = all products. */
+    plans: string[];
+    expires_at: string | null;
+    max_redemptions: number | null;
+    /** Stripe's aggregate redemption counter. */
+    times_redeemed: number;
+    created_at: string;
+    /** billing_revenue attribution (null = no attributed invoices yet). */
+    stats: AdminPromoStats | null;
+}
+
+export function listPromos(): Promise<{
+    configured: boolean;
+    promos: AdminPromoCode[];
+}> {
+    return adminFetch<{ configured: boolean; promos: AdminPromoCode[] }>(
+        `/promos`,
+    );
+}
+
+export function createPromo(input: {
+    code: string;
+    percent_off: number;
+    duration?: "forever" | "once" | "repeating";
+    duration_in_months?: number;
+    plans?: string[];
+    expires_at?: string;
+    max_redemptions?: number;
+}): Promise<{ ok: true; id: string; code: string }> {
+    return adminFetch<{ ok: true; id: string; code: string }>(`/promos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+}
+
+export function setPromoActive(
+    id: string,
+    active: boolean,
+): Promise<{ ok: true; id: string; active: boolean }> {
+    return adminFetch<{ ok: true; id: string; active: boolean }>(
+        `/promos/${encodeURIComponent(id)}`,
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ active }),
+        },
+    );
 }
 
 // ── user_token_credits (top-up) ──────────────────────────────────────────
@@ -690,6 +847,15 @@ export interface AnalyticsResponse {
             churned_cents: number;
         };
     };
+    /** Usage split by product surface (llm_usage.client), cost-desc.
+     *  "unknown" = rows written before call sites tagged themselves. */
+    surfaces: Array<{
+        surface: string;
+        requests: number;
+        users: number;
+        cost_usd: number;
+        tokens: number;
+    }>;
 }
 
 export function getAnalytics(range?: {
@@ -705,6 +871,54 @@ export function sendWeeklySummary(): Promise<{
     stats: Record<string, number>;
 }> {
     return adminFetch(`/weekly-summary/send`, { method: "POST" });
+}
+
+// ── bugfix status ────────────────────────────────────────────────────────
+
+/**
+ * Server-derived status: merged PR > open PR > raw issue state.
+ * "merged" = fix waiting for LIVE; "live" = fix promoted to stable but
+ * the issue is still open (awaiting closure).
+ */
+export type BugfixIssueStatus =
+    | "open"
+    | "pr_open"
+    | "merged"
+    | "live"
+    | "closed";
+
+export interface BugfixLinkedPr {
+    number: number;
+    state: "open" | "closed";
+    mergedAt: string | null;
+    htmlUrl: string;
+}
+
+export interface BugfixIssue {
+    number: number;
+    title: string;
+    state: "open" | "closed";
+    labels: string[];
+    createdAt: string;
+    closedAt: string | null;
+    htmlUrl: string;
+    linkedPr: BugfixLinkedPr | null;
+    status: BugfixIssueStatus;
+}
+
+/** `configured: false` = no GitHub token on the backend (private repo). */
+export type BugfixStatusResponse =
+    | { configured: false; repo: string }
+    | {
+          configured: true;
+          repo: string;
+          deploy: { mainAheadOfStable: number | null };
+          issues: BugfixIssue[];
+          fetchedAt: string;
+      };
+
+export function getBugfixStatus(): Promise<BugfixStatusResponse> {
+    return adminFetch<BugfixStatusResponse>(`/bugfix/status`);
 }
 
 /**
@@ -738,4 +952,80 @@ export async function triggerCsvDownload(
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+}
+
+// ── databases inventory ───────────────────────────────────────────────────
+
+export type DbLayerStatus = "ok" | "partial" | "empty" | "error" | "unconfigured";
+export type DbStatValue = number | string | boolean | null;
+
+export type DbLayer = {
+    status: DbLayerStatus;
+    source: string;
+    stats: Record<string, DbStatValue>;
+    notes: string[];
+    error?: string;
+};
+
+export type DbJurisdiction = {
+    code: string;
+    flag: string;
+    name: string;
+    tier: number;
+    sql: DbLayer;
+    vector: DbLayer;
+    graph: DbLayer;
+    services: { api: string | null; mcp: string | null; scope: string | null };
+};
+
+export type DbSource = {
+    key: string;
+    kind: "postgres" | "neo4j" | "pinecone";
+    label: string;
+    status: "ok" | "error" | "unconfigured";
+    latency_ms: number | null;
+    error?: string;
+    details: Record<string, DbStatValue>;
+};
+
+export type DbSnapshotMeta = {
+    id: number;
+    taken_at: string;
+    trigger: "manual" | "cron" | "boot";
+    scan_ms: number;
+};
+
+export type DatabasesOverview = {
+    /** false when the backend has no external ops-inventory service configured. */
+    available?: boolean;
+    detail?: string;
+    generated_at: string;
+    cached: boolean;
+    scan_ms: number;
+    snapshot: DbSnapshotMeta | null;
+    history: DbSnapshotMeta[];
+    schedule: string;
+    sources: DbSource[];
+    jurisdictions: DbJurisdiction[];
+    totals: {
+        jurisdictions: number;
+        tier3: number;
+        tier2: number;
+        tier1: number;
+        sql_documents: number;
+        vectors: number;
+        graph_nodes: number;
+    };
+    scan: { scanning: boolean; schedule: string };
+};
+
+/** Generic proxy to the external ops-inventory service. Without `refresh`
+ *  it returns that service's latest stored snapshot; with `refresh` the
+ *  service scans now (can take minutes) and stores a new one. */
+export async function getDatabasesOverview(
+    refresh = false,
+): Promise<DatabasesOverview> {
+    return adminFetch<DatabasesOverview>(
+        `/databases${refresh ? "?refresh=1" : ""}`,
+    );
 }

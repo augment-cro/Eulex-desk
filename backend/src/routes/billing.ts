@@ -19,6 +19,7 @@
  */
 
 import { Router } from "express";
+import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
 import express from "express";
 import type { Request, Response } from "express";
 import { requireAuth } from "../middleware/auth";
@@ -36,13 +37,21 @@ import {
     isStripeConfigured,
     planDefByKeyOrSlug,
     planForProductId,
+    resolvePackPriceId,
     resolvePriceIdForPlan,
     stripeWebhookSecret,
+    syncCustomerInvoiceDetails,
     type PaidPlan,
     type PlanDef,
 } from "../lib/stripe";
-import { can, getEntitlements, tierKeyForLevelId } from "../lib/entitlements";
+import {
+    can,
+    getEntitlements,
+    tierKeyForLevelId,
+    TIER_RANK,
+} from "../lib/entitlements";
 import { ensureTeamForOwner } from "../lib/teams";
+import { parseUiLocale, type UiLocale } from "../lib/uiLocale";
 import { getPlanCatalog } from "../lib/planCatalog";
 import {
     clearLocalTierOverride,
@@ -50,6 +59,7 @@ import {
     getFreeTierLevelId,
     isPartnerPushConfigured,
     pushMembershipChange,
+    rememberCheckoutCountry,
     rememberStripeCustomer,
     replaceUmpUserLevels,
     setLocalTierActive,
@@ -93,6 +103,7 @@ type StripeSubscriptionLite = {
         data?: Array<{
             price?: { id?: string; product?: string | { id?: string } };
             quantity?: number;
+            current_period_end?: number;
         }>;
     };
     metadata?: Record<string, string> | null;
@@ -144,6 +155,17 @@ type StripeInvoiceLite = {
     id: string;
     customer: string;
     subscription?: string | null;
+    /**
+     * API ≥ 2025-03-31.basil moved the subscription off the invoice root:
+     * it now lives at parent.subscription_details.subscription (string or
+     * expanded object). Keep both shapes — webhook payload shape follows
+     * the endpoint's pinned API version.
+     */
+    parent?: {
+        subscription_details?: {
+            subscription?: string | { id: string } | null;
+        } | null;
+    } | null;
     status?: string | null;
     /** Cents actually collected — 0 for trial/credit-balance invoices. */
     amount_paid?: number | null;
@@ -151,24 +173,174 @@ type StripeInvoiceLite = {
     /** Unix seconds the invoice was created (≈ payment time for paid). */
     created?: number | null;
     metadata?: Record<string, string> | null;
+    /**
+     * Discount ids (unexpanded in webhook payloads). Only used as a
+     * cheap "was this invoice discounted?" signal — the promo code
+     * itself is resolved via an expanded re-retrieve.
+     */
+    discounts?: unknown[] | null;
 };
+
+/** Subscription id from either invoice shape (pre-/post-Basil). */
+function invoiceSubscriptionId(inv: StripeInvoiceLite): string | null {
+    if (typeof inv.subscription === "string" && inv.subscription) {
+        return inv.subscription;
+    }
+    const s = inv.parent?.subscription_details?.subscription ?? null;
+    if (typeof s === "string" && s) return s;
+    if (s && typeof s === "object" && typeof s.id === "string") return s.id;
+    return null;
+}
 
 export const billingRouter = Router();
 
 /**
- * Create a Plus subscription, preferring `automatic_tax: enabled`.
+ * Billing country is REQUIRED at checkout (tracker #33).
  *
- * On a brand-new Stripe customer Stripe will throw when it can't
- * derive a tax location (no address on file, no IP geolocation match)
- * — we don't collect billing address until Stripe Elements renders,
- * so this is the common case for first-time checkout. We catch that
- * specific class of failure and retry without `automatic_tax`. The
- * webhook will re-enable tax on the next renewal once the address is
- * known.
+ * History: this used to try `automatic_tax` and, when Stripe could not
+ * resolve a tax location (no address on the customer — the common case,
+ * because checkout never asked for a country), silently retry WITHOUT
+ * tax. The docblock promised "the webhook will re-enable tax on the next
+ * renewal" — no such webhook ever existed, so a subscription created that
+ * way stayed VAT-free on every renewal. Audit 2026-08-31: 15 of 43 paid
+ * invoices and 6 of 15 active subscriptions had no VAT.
  *
- * Any other Stripe error bubbles up unchanged so the caller still
- * surfaces the original message to the user.
+ * Now the country arrives from the checkout modal, is validated here, is
+ * written to the Stripe customer BEFORE the subscription exists, and
+ * `automatic_tax` is mandatory. If Stripe still cannot resolve a location
+ * the error surfaces to the user as `TAX_LOCATION_UNRESOLVED` — the
+ * checkout fails loudly instead of issuing an invoice without VAT.
  */
+const ISO2 = /^[A-Z]{2}$/;
+
+/** Normalise + validate a body `country` field. Null when unusable. */
+function parseCountry(raw: unknown): string | null {
+    if (typeof raw !== "string") return null;
+    const c = raw.trim().toUpperCase();
+    return ISO2.test(c) ? c : null;
+}
+
+/** Trimmed non-empty string, else null. Length-capped for DB/Stripe. */
+function parseText(raw: unknown, max = 120): string | null {
+    if (typeof raw !== "string") return null;
+    const s = raw.trim();
+    return s ? s.slice(0, max) : null;
+}
+
+/**
+ * Billing details the checkout modal collects (tracker #33 / #35).
+ *
+ * Natural person: `name` + `country` mandatory.
+ * Business (`business: true`, or a VAT ID / company name given): Zakon o
+ * PDV-u čl. 79. st. 1. t. 3. requires the buyer's name, ADDRESS and
+ * OIB / VAT ID on the invoice — so `organisation`, `addressLine1`,
+ * `addressCity` and `vatNumber` are all mandatory. Postal code and phone
+ * are optional for everyone (tracker #37) — čl. 79. does not ask for a
+ * phone; we take it only if the user offers it. The route handlers
+ * validate; runCheckout persists + pushes everything to the Stripe
+ * customer before sub.create.
+ */
+type BillingDetails = {
+    name: string;
+    country: string;
+    business: boolean;
+    organisation: string | null;
+    vatNumber: string | null;
+    addressLine1: string | null;
+    addressCity: string | null;
+    addressPostalCode: string | null;
+    /** Optional contact phone (tracker #37) — never required. */
+    phone: string | null;
+};
+
+/** Parse + validate billing details from a request body. */
+function parseBillingDetails(
+    body: Record<string, unknown>,
+): { ok: true; details: BillingDetails } | { ok: false; code: string; detail: string } {
+    const country = parseCountry(body.country);
+    if (!country) {
+        return { ok: false, code: "COUNTRY_REQUIRED", detail: "Billing country is required" };
+    }
+    const name = parseText(body.name);
+    if (!name) {
+        return { ok: false, code: "NAME_REQUIRED", detail: "Billing name is required" };
+    }
+    const organisation = parseText(body.organisation);
+    const vatNumber = parseText(body.vat_number, 40);
+    const addressLine1 = parseText(body.address_line1, 200);
+    const addressCity = parseText(body.address_city, 120);
+    const addressPostalCode = parseText(body.address_postal_code, 20);
+    const business = body.business === true || !!organisation || !!vatNumber;
+    if (business) {
+        if (!organisation) {
+            return { ok: false, code: "ORGANISATION_REQUIRED", detail: "Company name is required for a business invoice" };
+        }
+        if (!vatNumber) {
+            return { ok: false, code: "VAT_ID_REQUIRED", detail: "OIB or VAT ID is required for a business invoice" };
+        }
+        if (!addressLine1 || !addressCity) {
+            return { ok: false, code: "ADDRESS_REQUIRED", detail: "Street and city are required for a business invoice" };
+        }
+    }
+    return {
+        ok: true,
+        details: {
+            name,
+            country,
+            business,
+            organisation,
+            vatNumber,
+            addressLine1,
+            addressCity,
+            addressPostalCode,
+            phone: parseText(body.phone, 40),
+        },
+    };
+}
+
+/**
+ * Persist what the user typed at checkout so Settings → General shows
+ * the same values and later renewals / plan changes resolve the same
+ * tax location. display_name + organisation live on user_profiles
+ * (DML is fine for the IAM user — only ALTER is postgres-owned); country,
+ * vat_number and the billing address on user_tier_state. Country is the
+ * one write that must succeed (it gates automatic_tax); the rest are
+ * best-effort.
+ */
+async function persistBillingDetails(
+    userId: string,
+    d: BillingDetails,
+): Promise<void> {
+    await rememberCheckoutCountry(userId, d.country);
+    try {
+        await query(
+            `INSERT INTO public.user_tier_state
+                (user_id, vat_number, address_line1, address_city, address_postal_code, phone, active_tier_synced_at)
+                  VALUES ($1, $2, $3, $4, $5, $6, now())
+             ON CONFLICT (user_id) DO UPDATE SET
+                vat_number = EXCLUDED.vat_number,
+                address_line1 = EXCLUDED.address_line1,
+                address_city = EXCLUDED.address_city,
+                address_postal_code = EXCLUDED.address_postal_code,
+                phone = COALESCE(EXCLUDED.phone, public.user_tier_state.phone)`,
+            [userId, d.vatNumber, d.addressLine1, d.addressCity, d.addressPostalCode, d.phone],
+        );
+        await query(
+            `INSERT INTO public.user_profiles (user_id, display_name, organisation)
+                  VALUES ($1, $2, $3)
+             ON CONFLICT (user_id) DO UPDATE SET
+                display_name = EXCLUDED.display_name,
+                organisation = EXCLUDED.organisation`,
+            [userId, d.name, d.organisation],
+        );
+    } catch (err) {
+        console.warn(
+            "[billing/checkout] billing-details persist (non-country) failed:",
+            err instanceof Error ? err.message : err,
+        );
+    }
+}
+
 function isTaxLocationError(err: unknown): boolean {
     const msg =
         err instanceof Error
@@ -185,7 +357,27 @@ function isTaxLocationError(err: unknown): boolean {
     );
 }
 
-async function createSubscriptionWithTaxFallback(
+/** Thrown when Stripe cannot derive a tax location even with a country set. */
+class TaxLocationError extends Error {
+    readonly code = "TAX_LOCATION_UNRESOLVED";
+    constructor(cause: unknown) {
+        super(
+            cause instanceof Error
+                ? cause.message
+                : "Stripe could not resolve a tax location",
+        );
+        this.name = "TaxLocationError";
+    }
+}
+
+/**
+ * Create the subscription with `automatic_tax` — no fallback. Callers
+ * have already written a validated country onto the customer, so a
+ * tax-location rejection here is a real fault (Stripe Tax not enabled
+ * for that country, malformed address…) and must reach the user, never
+ * be papered over with a VAT-free invoice.
+ */
+async function createSubscriptionWithTax(
     stripe: ReturnType<typeof getStripe>,
     baseParams: Record<string, unknown>,
 ): Promise<unknown> {
@@ -195,14 +387,8 @@ async function createSubscriptionWithTaxFallback(
             automatic_tax: { enabled: true },
         } as Parameters<typeof stripe.subscriptions.create>[0]);
     } catch (err) {
-        if (!isTaxLocationError(err)) throw err;
-        console.warn(
-            "[billing/plus/checkout] automatic_tax failed (no address yet), retrying without:",
-            err instanceof Error ? err.message : err,
-        );
-        return await stripe.subscriptions.create(
-            baseParams as Parameters<typeof stripe.subscriptions.create>[0],
-        );
+        if (isTaxLocationError(err)) throw new TaxLocationError(err);
+        throw err;
     }
 }
 
@@ -289,13 +475,19 @@ billingRouter.post(
         }
         const userId = res.locals.userId as string;
         const userEmail = res.locals.userEmail as string | undefined;
-        const successBase =
-            process.env.FRONTEND_URL?.trim() ?? "https://max.eulex.ai";
+        const successBase = billingFrontendBaseUrl();
         try {
+            // #76: the env slot may hold a product id (prod_…) — resolve
+            // it to the product's default price; Checkout only accepts
+            // price_… in line_items[].price.
+            const packPriceId = await resolvePackPriceId(pack);
             const session = await getStripe().checkout.sessions.create({
                 mode: "payment",
+                // Stripe-hosted page follows the app UI language instead
+                // of the browser locale.
+                locale: parseUiLocale(req),
                 payment_method_types: ["card"],
-                line_items: [{ price: pack.priceId, quantity: 1 }],
+                line_items: [{ price: packPriceId, quantity: 1 }],
                 customer_email: userEmail,
                 client_reference_id: userId,
                 // Critical: these flow into the webhook so we can
@@ -421,7 +613,12 @@ async function runCheckout(
     plan: PaidPlan,
     seats: number,
     res: Response,
-    opts: { promoCode?: string } = {},
+    opts: {
+        promoCode?: string;
+        locale?: UiLocale;
+        /** Validated by the route handler — see parseBillingDetails. */
+        billing?: BillingDetails;
+    } = {},
 ): Promise<void> {
     const planDef = getPlanDef(plan);
     if (!isStripeConfigured() || !planDef?.productId) {
@@ -434,6 +631,14 @@ async function runCheckout(
         const userId = res.locals.userId as string;
         const userEmail = res.locals.userEmail as string | undefined;
         const wpUserId = res.locals.wpUserId as number | undefined;
+        // Funnel signal (migration 210): checkout started. Completion is
+        // recorded by the Stripe webhook (subscription.* via recordTierChange).
+        void recordAuditEvent({
+            userId,
+            eventType: "checkout.started",
+            metadata: { plan, seats, promo: Boolean(opts.promoCode) },
+        });
+        void recordFeatureUse({ userId, feature: "checkout" });
         try {
             const stripe = getStripe();
             const priceId = await resolvePriceIdForPlan(plan);
@@ -460,24 +665,94 @@ async function runCheckout(
             //    a tax location on the very first invoice. Without it
             //    Stripe rejects sub.create with "customer's location
             //    isn't recognized" and we fall back to no-VAT pricing
-            //    (see createSubscriptionWithTaxFallback).
+            //    (see createSubscriptionWithTax — no VAT-free fallback).
             const u = await query<{
                 stripe_customer_id: string | null;
                 country: string | null;
+                vat_number: string | null;
             }>(
-                `SELECT s.stripe_customer_id, s.country
+                `SELECT s.stripe_customer_id, s.country, s.vat_number
                    FROM public.user_tier_state s
                   WHERE s.user_id = $1`,
                 [userId],
             );
-            const country = (u.rows[0]?.country ?? "").trim();
-            const hasCountry = /^[A-Z]{2}$/.test(country);
+            // Company name for the invoice's "Bill to" block. Separate
+            // query (not a JOIN above): user_tier_state and user_profiles
+            // rows come into existence independently, and a missing
+            // profiles row must not hide an existing stripe_customer_id
+            // (that would mint a duplicate customer).
+            let organisation: string | null = null;
+            try {
+                const p = await query<{ organisation: string | null }>(
+                    `SELECT organisation FROM public.user_profiles WHERE user_id = $1`,
+                    [userId],
+                );
+                organisation = p.rows[0]?.organisation ?? null;
+            } catch (err) {
+                console.warn(
+                    "[billing/plus/checkout] organisation lookup failed (non-fatal):",
+                    err instanceof Error ? err.message : err,
+                );
+            }
+            // Billing details — name + country REQUIRED (tracker #33).
+            // The checkout modal sends what the user confirmed; that wins
+            // over anything stored. Older clients that send nothing fall
+            // back to the stored country, and still cannot proceed
+            // without one: the country must sit on the Stripe customer
+            // BEFORE sub.create so the very first invoice carries VAT,
+            // and it is persisted so renewals and plan changes keep
+            // resolving the same tax location.
+            const storedCountry = parseCountry(u.rows[0]?.country ?? null);
+            const country = opts.billing?.country ?? storedCountry;
+            if (!country) {
+                res.status(400).json({
+                    detail: "Billing country is required",
+                    code: "COUNTRY_REQUIRED",
+                });
+                return;
+            }
+            if (opts.billing) {
+                await persistBillingDetails(userId, opts.billing);
+                if (opts.billing.organisation !== null || opts.billing.name) {
+                    organisation = opts.billing.organisation ?? organisation;
+                }
+            } else if (country !== storedCountry) {
+                await rememberCheckoutCountry(userId, country);
+            }
+            const vatNumber = opts.billing
+                ? opts.billing.vatNumber
+                : (u.rows[0]?.vat_number ?? null);
+            // Stripe has ONE name field — the invoice "Bill to" line. A
+            // company name takes it when given; otherwise the person's.
+            const invoiceName = opts.billing
+                ? (opts.billing.organisation ?? opts.billing.name)
+                : organisation;
             let customerId = u.rows[0]?.stripe_customer_id ?? null;
             if (!customerId) {
                 const customer = await stripe.customers.create({
                     email: userEmail ?? undefined,
-                    ...(hasCountry
-                        ? { address: { country } }
+                    // Drives the language of Stripe-sent invoices,
+                    // receipts and the portal's "auto" locale.
+                    ...(opts.locale
+                        ? { preferred_locales: [opts.locale] }
+                        : {}),
+                    // Full billing address when the modal supplied one
+                    // (mandatory for a business — čl. 79. ZPDV); country
+                    // alone for a natural person.
+                    address: {
+                        country,
+                        ...(opts.billing?.addressLine1
+                            ? { line1: opts.billing.addressLine1 }
+                            : {}),
+                        ...(opts.billing?.addressCity
+                            ? { city: opts.billing.addressCity }
+                            : {}),
+                        ...(opts.billing?.addressPostalCode
+                            ? { postal_code: opts.billing.addressPostalCode }
+                            : {}),
+                    },
+                    ...(opts.billing?.phone
+                        ? { phone: opts.billing.phone }
                         : {}),
                     metadata: {
                         max_user_id: userId,
@@ -486,33 +761,87 @@ async function runCheckout(
                 });
                 customerId = customer.id;
                 await rememberStripeCustomer(userId, customerId);
-            } else if (hasCountry) {
-                // Existing customer that may have been created before we
-                // started capturing country. Patch the address only if
-                // it's not already set so we never overwrite Stripe
-                // Elements' captured billing address.
-                try {
-                    const existing = (await stripe.customers.retrieve(
-                        customerId,
-                    )) as unknown as {
-                        address?: { country?: string | null } | null;
-                    };
-                    const existingCountry =
-                        existing?.address?.country?.toUpperCase() ?? "";
-                    if (existingCountry !== country) {
-                        await stripe.customers.update(customerId, {
-                            address: { country },
-                        });
-                    }
-                } catch (lookupErr) {
-                    console.warn(
-                        "[billing/plus/checkout] customer address sync failed (non-fatal):",
-                        lookupErr instanceof Error
-                            ? lookupErr.message
-                            : lookupErr,
-                    );
+            } else {
+                // Guard (tracker #34): a customer who already has a live
+                // subscription must NOT get a second one. The in-app
+                // upgrade path used to land here and mint a duplicate —
+                // one customer ended up paying Pro AND Legal Pro for the
+                // same weeks. Plan changes belong to /change-plan, which
+                // prorates an upgrade immediately and schedules a
+                // downgrade for the period end. Tell the client to go
+                // there; create nothing.
+                const live = await stripe.subscriptions.list({
+                    customer: customerId,
+                    status: "all",
+                    limit: 20,
+                });
+                const liveSub = live.data.find((s) =>
+                    ["active", "trialing", "past_due"].includes(s.status),
+                );
+                if (liveSub) {
+                    res.status(409).json({
+                        detail: "An active subscription already exists — change the plan instead",
+                        code: "ACTIVE_SUBSCRIPTION_EXISTS",
+                        action: "change_plan",
+                        subscriptionId: liveSub.id,
+                    });
+                    return;
+                }
+                // Existing customer: make sure the country the user just
+                // chose is what Stripe will tax against. This is NOT
+                // best-effort — if the address write fails, automatic_tax
+                // below fails too, and that error must reach the user
+                // rather than be swallowed here.
+                const existing = (await stripe.customers.retrieve(
+                    customerId,
+                )) as unknown as {
+                    address?: {
+                        country?: string | null;
+                        line1?: string | null;
+                        city?: string | null;
+                        postal_code?: string | null;
+                    } | null;
+                };
+                const ea = existing?.address ?? {};
+                const wanted = {
+                    country,
+                    ...(opts.billing?.addressLine1
+                        ? { line1: opts.billing.addressLine1 }
+                        : {}),
+                    ...(opts.billing?.addressCity
+                        ? { city: opts.billing.addressCity }
+                        : {}),
+                    ...(opts.billing?.addressPostalCode
+                        ? { postal_code: opts.billing.addressPostalCode }
+                        : {}),
+                };
+                const differs =
+                    (ea.country?.toUpperCase() ?? "") !== country ||
+                    (wanted.line1 !== undefined && ea.line1 !== wanted.line1) ||
+                    (wanted.city !== undefined && ea.city !== wanted.city) ||
+                    (wanted.postal_code !== undefined &&
+                        ea.postal_code !== wanted.postal_code);
+                if (differs) {
+                    await stripe.customers.update(customerId, { address: wanted });
                 }
             }
+
+            // 1b. Company name + VAT onto the customer BEFORE the
+            //     subscription exists — the first invoice snapshots
+            //     customer_name/customer_tax_ids at finalization, so a
+            //     later sync would only fix the *next* invoice.
+            //     Best-effort inside; never blocks checkout.
+            await syncCustomerInvoiceDetails(customerId, {
+                name: invoiceName,
+                vatNumber,
+                address: {
+                    country,
+                    line1: opts.billing?.addressLine1 ?? null,
+                    city: opts.billing?.addressCity ?? null,
+                    postal_code: opts.billing?.addressPostalCode ?? null,
+                },
+                phone: opts.billing?.phone ?? null,
+            });
 
             // 2. Cancel any stale incomplete subscriptions so we don't
             //    pile up unpaid drafts when a user restarts checkout.
@@ -538,13 +867,10 @@ async function runCheckout(
             //    so the client must complete the PaymentIntent inside
             //    Stripe Elements before activation.
             //
-            //    Tax handling: try with automatic_tax first; if Stripe
-            //    rejects because the customer has no recognised address
-            //    (very common on first checkout — we never collect
-            //    address before this call), retry without automatic_tax
-            //    so the user can actually pay. Tax is then resolved on
-            //    the next renewal once Stripe's PaymentElement has
-            //    captured the billing address.
+            //    Tax: `automatic_tax` is mandatory. The customer already
+            //    carries a validated billing country (above), so Stripe
+            //    resolves the tax location on THIS invoice. There is no
+            //    VAT-free fallback any more — see createSubscriptionWithTax.
             const trialDays = getTrialDays();
 
             const subParams = {
@@ -575,7 +901,7 @@ async function runCheckout(
                     ...(planDef.perSeat ? { seats: String(seats) } : {}),
                 },
             };
-            const subscription = (await createSubscriptionWithTaxFallback(
+            const subscription = (await createSubscriptionWithTax(
                 stripe,
                 subParams,
             )) as unknown as {
@@ -625,6 +951,12 @@ async function runCheckout(
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.error(`[billing/checkout:${plan}]`, msg);
+            if (err instanceof TaxLocationError) {
+                // Loud, typed, and NOT a subscription: the old code
+                // answered this by creating one without VAT.
+                res.status(400).json({ detail: msg, code: err.code });
+                return;
+            }
             res.status(500).json({ detail: msg });
         }
     }
@@ -640,7 +972,7 @@ billingRouter.post(
     "/checkout",
     requireAuth,
     async (req: Request, res: Response) => {
-        const body = (req.body ?? {}) as {
+        const body = (req.body ?? {}) as Record<string, unknown> & {
             plan?: string;
             seats?: unknown;
             promo_code?: unknown;
@@ -650,10 +982,19 @@ billingRouter.post(
             res.status(400).json({ detail: "Unknown or missing plan" });
             return;
         }
+        const billing = parseBillingDetails(body);
+        if (!billing.ok) {
+            res.status(400).json({ detail: billing.detail, code: billing.code });
+            return;
+        }
         const seats = clampSeats(planDef, body.seats);
         const promoCode =
             typeof body.promo_code === "string" ? body.promo_code : undefined;
-        await runCheckout(planDef.plan, seats, res, { promoCode });
+        await runCheckout(planDef.plan, seats, res, {
+            promoCode,
+            locale: parseUiLocale(req),
+            billing: billing.details,
+        });
     },
 );
 
@@ -665,13 +1006,35 @@ billingRouter.post(
     "/plus/checkout",
     requireAuth,
     async (req: Request, res: Response) => {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const billing = parseBillingDetails(body);
+        if (!billing.ok) {
+            res.status(400).json({ detail: billing.detail, code: billing.code });
+            return;
+        }
         const promoCode =
-            typeof req.body?.promo_code === "string"
-                ? req.body.promo_code
-                : undefined;
-        await runCheckout("plus", 1, res, { promoCode });
+            typeof body.promo_code === "string" ? body.promo_code : undefined;
+        await runCheckout("plus", 1, res, {
+            promoCode,
+            locale: parseUiLocale(req),
+            billing: billing.details,
+        });
     },
 );
+
+/**
+ * Period end of a subscription. Since Stripe API 2025-03-31 (Basil) —
+ * and our pinned 2025-09-30.clover — `current_period_end` lives on the
+ * subscription *item*, not the subscription object itself. All our
+ * plans are single-item subscriptions, so the first item's period end
+ * is the subscription's. Typed structurally so it accepts the SDK's
+ * Subscription without a cast.
+ */
+function subscriptionPeriodEnd(sub: {
+    items?: { data?: { current_period_end?: number }[] };
+}): number | null {
+    return sub.items?.data?.[0]?.current_period_end ?? null;
+}
 
 /**
  * GET /billing/plus/status — quick view used by the account/billing
@@ -716,9 +1079,7 @@ billingRouter.get(
                         id: active.id,
                         status: active.status,
                         cancel_at_period_end: active.cancel_at_period_end,
-                        current_period_end:
-                            (active as unknown as { current_period_end?: number })
-                                .current_period_end ?? null,
+                        current_period_end: subscriptionPeriodEnd(active),
                     };
                 }
             } catch (err) {
@@ -739,12 +1100,16 @@ billingRouter.get(
 );
 
 /**
- * POST /billing/plus/cancel — flag the active subscription to end at
- * the period boundary. We never cancel immediately so the user keeps
- * Plus until the date they already paid for.
+ * POST /billing/cancel — flag the caller's active subscription to end
+ * at the period boundary. Works for every paid plan (the lookup is by
+ * Stripe customer, not by product). We never cancel immediately so the
+ * user keeps the plan until the date they already paid for; there is
+ * no proration or refund. Idempotent: an already-cancelled renewal
+ * returns the current state instead of an error.
+ * `/plus/cancel` is kept as a backward-compatible alias.
  */
 billingRouter.post(
-    "/plus/cancel",
+    ["/cancel", "/plus/cancel"],
     requireAuth,
     async (_req: Request, res: Response) => {
         if (!isStripeConfigured()) {
@@ -767,25 +1132,372 @@ billingRouter.post(
             const stripe = getStripe();
             const subs = await stripe.subscriptions.list({
                 customer: customerId,
-                status: "active",
-                limit: 5,
+                status: "all",
+                // 20, not 5: a pile of abandoned `incomplete` checkouts must
+                // not push the one running subscription off the first page.
+                limit: 20,
             });
-            const active = subs.data[0];
+            // Same "still running" statuses the /plus/status view uses, so
+            // a trialing/past_due subscription can also stop its renewal.
+            const active = subs.data.find((s) =>
+                ["active", "trialing", "past_due"].includes(s.status),
+            );
             if (!active) {
                 res.status(404).json({ detail: "No active subscription" });
                 return;
             }
-            const updated = (await stripe.subscriptions.update(active.id, {
+            if (active.cancel_at_period_end) {
+                // Already flagged — report the current state, don't error.
+                res.json({
+                    ok: true,
+                    cancel_at_period_end: true,
+                    current_period_end: subscriptionPeriodEnd(active),
+                });
+                return;
+            }
+            const updated = await stripe.subscriptions.update(active.id, {
                 cancel_at_period_end: true,
-            })) as unknown as { current_period_end?: number };
+            });
             res.json({
                 ok: true,
                 cancel_at_period_end: true,
-                current_period_end: updated.current_period_end ?? null,
+                current_period_end: subscriptionPeriodEnd(updated),
             });
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            console.error("[billing/plus/cancel]", msg);
+            console.error("[billing/cancel]", msg);
+            res.status(500).json({ detail: msg });
+        }
+    },
+);
+
+// ── plan change (upgrade / downgrade with proration) ────────────────────────
+
+/** Slice of a Stripe subscription item the change-plan route reads. */
+type StripeSubItemLite = {
+    id: string;
+    quantity?: number | null;
+    price?: {
+        id?: string;
+        product?: string | { id?: string } | null;
+    } | null;
+};
+
+/**
+ * POST /billing/change-plan — switch the caller's ACTIVE subscription
+ * to another paid plan (#28). Body: { tier: PaidPlan, seats?: number }
+ * (seats only meaningful for per-seat plans; clamped like checkout).
+ *
+ * Semantics, per Stripe's recommended flows:
+ *   • UPGRADE (target ranks above the current plan) — update the
+ *     subscription item in place with `proration_behavior:
+ *     "always_invoice"` + `payment_behavior: "error_if_incomplete"`:
+ *     the prorated difference is invoiced and charged immediately, and
+ *     the `customer.subscription.updated` webhook activates the new
+ *     tier right away (product → tier mapping already in place).
+ *   • DOWNGRADE — never claw back entitlements the user already paid
+ *     for: a subscription schedule (`create({ from_subscription })`,
+ *     then a two-phase `update` with `end_behavior: "release"`) keeps
+ *     the current price until the period end and flips to the new
+ *     price at renewal. `proration_behavior: "none"` on both phases —
+ *     no credits, no partial charges.
+ *
+ * VAT/tax mirrors checkout: upgrades try `automatic_tax` and retry
+ * without it on tax-location errors (same class of failure
+ * createSubscriptionWithTax enforces); the schedule path
+ * inherits the subscription's own settings via `from_subscription`.
+ *
+ * Responses:
+ *   200 { ok, action: "upgraded",  plan, effective: "now",        current_period_end }
+ *   200 { ok, action: "scheduled", plan, effective: "period_end", current_period_end }
+ *   200 { ok, action: "checkout" } — no active subscription; the client
+ *       falls back to the normal checkout flow.
+ *   400 { code: "UNKNOWN_PLAN" | "SAME_PLAN" }, 503 not configured.
+ */
+billingRouter.post(
+    "/change-plan",
+    requireAuth,
+    async (req: Request, res: Response) => {
+        if (!isStripeConfigured()) {
+            res.status(503).json({ detail: "Stripe not configured" });
+            return;
+        }
+        const body = (req.body ?? {}) as {
+            tier?: string;
+            seats?: unknown;
+            country?: unknown;
+        };
+        const planDef = getPlanDef(String(body.tier ?? ""));
+        if (!planDef) {
+            res.status(400).json({
+                detail: "Unknown or missing tier",
+                code: "UNKNOWN_PLAN",
+            });
+            return;
+        }
+        if (!planDef.productId) {
+            res.status(503).json({
+                detail: `${planDef.plan} subscription is not configured`,
+            });
+            return;
+        }
+        const userId = res.locals.userId as string;
+        try {
+            const stripe = getStripe();
+            const u = await query<{
+                stripe_customer_id: string | null;
+                country: string | null;
+            }>(
+                `SELECT s.stripe_customer_id, s.country
+                   FROM public.user_tier_state s
+                  WHERE s.user_id = $1`,
+                [userId],
+            );
+            const customerId = u.rows[0]?.stripe_customer_id ?? null;
+            if (!customerId) {
+                res.json({ ok: true, action: "checkout" });
+                return;
+            }
+            // Country is REQUIRED for a plan change too (tracker #33): the
+            // prorated upgrade invoice is taxed the same way as checkout.
+            // Body wins (the client may collect it); stored is the fallback.
+            const storedCountry = parseCountry(u.rows[0]?.country ?? null);
+            const country = parseCountry(body.country) ?? storedCountry;
+            if (!country) {
+                res.status(400).json({
+                    detail: "Billing country is required",
+                    code: "COUNTRY_REQUIRED",
+                });
+                return;
+            }
+            if (country !== storedCountry) {
+                await rememberCheckoutCountry(userId, country);
+            }
+            const subs = await stripe.subscriptions.list({
+                customer: customerId,
+                status: "all",
+                // Same rationale as /cancel: don't let abandoned
+                // `incomplete` drafts push the live sub off page one.
+                limit: 20,
+            });
+            const active = subs.data.find((s) =>
+                ["active", "trialing", "past_due"].includes(s.status),
+            );
+            if (!active) {
+                res.json({ ok: true, action: "checkout" });
+                return;
+            }
+            const item = (active.items?.data?.[0] ??
+                null) as StripeSubItemLite | null;
+            if (!item) {
+                throw new Error(`Subscription ${active.id} has no items`);
+            }
+            const rawProduct = item.price?.product;
+            const currentProductId =
+                typeof rawProduct === "string"
+                    ? rawProduct
+                    : rawProduct && typeof rawProduct === "object"
+                      ? (rawProduct.id ?? null)
+                      : null;
+            const currentDef =
+                planForProductId(currentProductId) ??
+                planDefByKeyOrSlug(
+                    (active.metadata as Record<string, string> | null)?.plan,
+                );
+            if (currentDef?.plan === planDef.plan) {
+                res.status(400).json({
+                    detail: "Already on this plan",
+                    code: "SAME_PLAN",
+                });
+                return;
+            }
+            const newPriceId = await resolvePriceIdForPlan(planDef.plan);
+            const seats = clampSeats(
+                planDef,
+                body.seats ?? item.quantity ?? undefined,
+            );
+            // Unknown current plan (legacy/manual product) → treat as an
+            // upgrade: charge now, activate now. Never silently defer.
+            const isUpgrade =
+                !currentDef ||
+                TIER_RANK[planDef.plan] > TIER_RANK[currentDef.plan];
+
+            // A pending downgrade schedule blocks direct item updates and
+            // must not survive a new decision either way — release it
+            // (keeps the subscription running on its current phase).
+            const rawSchedule = (
+                active as unknown as {
+                    schedule?: string | { id?: string } | null;
+                }
+            ).schedule;
+            const scheduleId =
+                typeof rawSchedule === "string"
+                    ? rawSchedule
+                    : (rawSchedule?.id ?? null);
+            if (scheduleId) {
+                try {
+                    await stripe.subscriptionSchedules.release(scheduleId);
+                } catch (relErr) {
+                    console.warn(
+                        "[billing/change-plan] schedule release failed (continuing):",
+                        relErr instanceof Error ? relErr.message : relErr,
+                    );
+                }
+            }
+
+            if (isUpgrade) {
+                const updateParams = {
+                    items: [
+                        {
+                            id: item.id,
+                            price: newPriceId,
+                            quantity: planDef.perSeat ? seats : 1,
+                        },
+                    ],
+                    proration_behavior: "always_invoice" as const,
+                    // Fail the update if the prorated charge can't be
+                    // collected — the user keeps their current plan
+                    // instead of landing in past_due on the new one.
+                    payment_behavior: "error_if_incomplete" as const,
+                    cancel_at_period_end: false,
+                    metadata: {
+                        max_user_id: userId,
+                        plan: planDef.plan,
+                        ...(planDef.perSeat ? { seats: String(seats) } : {}),
+                    },
+                };
+                // Country onto the customer BEFORE the update so Stripe
+                // taxes the prorated invoice. Not best-effort — a failure
+                // here must surface, never be swallowed.
+                const cust = (await stripe.customers.retrieve(
+                    customerId,
+                )) as unknown as {
+                    address?: { country?: string | null } | null;
+                };
+                if ((cust?.address?.country?.toUpperCase() ?? "") !== country) {
+                    await stripe.customers.update(customerId, {
+                        address: { country },
+                    });
+                }
+                // automatic_tax is mandatory; no VAT-free retry (tracker #33).
+                // This also repairs legacy subscriptions created without
+                // tax: enabling it here means every renewal from now on
+                // carries VAT.
+                let updated;
+                try {
+                    updated = await stripe.subscriptions.update(active.id, {
+                        ...updateParams,
+                        automatic_tax: { enabled: true },
+                    });
+                } catch (taxErr) {
+                    if (isTaxLocationError(taxErr)) {
+                        res.status(400).json({
+                            detail:
+                                taxErr instanceof Error
+                                    ? taxErr.message
+                                    : "Stripe could not resolve a tax location",
+                            code: "TAX_LOCATION_UNRESOLVED",
+                        });
+                        return;
+                    }
+                    throw taxErr;
+                }
+                res.json({
+                    ok: true,
+                    action: "upgraded",
+                    plan: planDef.plan,
+                    effective: "now",
+                    current_period_end: subscriptionPeriodEnd(updated),
+                });
+                return;
+            }
+
+            // Downgrade — schedule the flip at period end. A pending
+            // cancel-renewal is superseded by the explicit plan choice.
+            if (active.cancel_at_period_end) {
+                await stripe.subscriptions.update(active.id, {
+                    cancel_at_period_end: false,
+                });
+            }
+            const schedule = (await stripe.subscriptionSchedules.create({
+                from_subscription: active.id,
+            })) as unknown as {
+                id: string;
+                phases: Array<{
+                    start_date: number;
+                    end_date: number;
+                    items: Array<{
+                        price: string | { id: string };
+                        quantity?: number | null;
+                    }>;
+                }>;
+            };
+            const phase0 = schedule.phases[0];
+            if (!phase0) {
+                throw new Error(`Schedule ${schedule.id} has no phases`);
+            }
+            // The new phase must state its duration (Basil replaced
+            // `iterations` with `duration`); one billing cycle of the
+            // new price, taken from the price's own recurrence.
+            const newPrice = (await stripe.prices.retrieve(
+                newPriceId,
+            )) as unknown as {
+                recurring?: {
+                    interval?: "day" | "week" | "month" | "year";
+                    interval_count?: number;
+                } | null;
+            };
+            const phaseDuration = {
+                interval: newPrice.recurring?.interval ?? "month",
+                interval_count: newPrice.recurring?.interval_count ?? 1,
+            };
+            await stripe.subscriptionSchedules.update(schedule.id, {
+                // After one cycle on the new price the schedule releases
+                // and the subscription keeps renewing on that price.
+                end_behavior: "release",
+                phases: [
+                    {
+                        // Mirror the running phase exactly — current price
+                        // until the period end the user already paid for.
+                        items: phase0.items.map((it) => ({
+                            price:
+                                typeof it.price === "string"
+                                    ? it.price
+                                    : it.price.id,
+                            ...(it.quantity != null
+                                ? { quantity: it.quantity }
+                                : {}),
+                        })),
+                        start_date: phase0.start_date,
+                        end_date: phase0.end_date,
+                        proration_behavior: "none" as const,
+                    },
+                    {
+                        items: [
+                            planDef.perSeat
+                                ? { price: newPriceId, quantity: seats }
+                                : { price: newPriceId },
+                        ],
+                        duration: phaseDuration,
+                        proration_behavior: "none" as const,
+                        metadata: {
+                            max_user_id: userId,
+                            plan: planDef.plan,
+                        },
+                    },
+                ],
+            });
+            res.json({
+                ok: true,
+                action: "scheduled",
+                plan: planDef.plan,
+                effective: "period_end",
+                current_period_end:
+                    phase0.end_date ?? subscriptionPeriodEnd(active),
+            });
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error("[billing/change-plan]", msg);
             res.status(500).json({ detail: msg });
         }
     },
@@ -802,7 +1514,7 @@ billingRouter.post(
 billingRouter.post(
     "/portal",
     requireAuth,
-    async (_req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
         if (!isStripeConfigured()) {
             res.status(503).json({ detail: "Stripe not configured" });
             return;
@@ -822,10 +1534,26 @@ billingRouter.post(
             });
             return;
         }
+        const locale = parseUiLocale(req);
         try {
+            // Backfill preferred_locales on customers created before we
+            // started setting it, so Stripe invoices/receipts follow the
+            // app language too. Best-effort — the portal session below
+            // gets an explicit locale either way.
+            try {
+                await getStripe().customers.update(customerId, {
+                    preferred_locales: [locale],
+                });
+            } catch (syncErr) {
+                console.warn(
+                    "[billing/portal] preferred_locales sync failed (non-fatal):",
+                    syncErr instanceof Error ? syncErr.message : syncErr,
+                );
+            }
             const session = await getStripe().billingPortal.sessions.create({
                 customer: customerId,
-                return_url: `${billingFrontendBaseUrl()}/account?tab=billing`,
+                locale,
+                return_url: `${billingFrontendBaseUrl()}/account/billing`,
             });
             res.json({ url: session.url });
         } catch (err) {
@@ -916,10 +1644,11 @@ export async function stripeWebhookHandler(req: Request, res: Response): Promise
                 // subscription and replay the same handler so the local
                 // override gets a fresh `until` after each renewal.
                 const inv = event.data.object as StripeInvoiceLite;
-                if (inv.subscription) {
+                const invSubId = invoiceSubscriptionId(inv);
+                if (invSubId) {
                     try {
                         const sub = (await getStripe().subscriptions.retrieve(
-                            inv.subscription,
+                            invSubId,
                         )) as unknown as StripeSubscriptionLite;
                         await applySubscriptionEvent(event.type, event.id, sub);
                         // Revenue ledger — subscriptions only live in
@@ -933,13 +1662,17 @@ export async function stripeWebhookHandler(req: Request, res: Response): Promise
                             err instanceof Error ? err.message : err,
                         );
                     }
+                } else {
+                    console.log(
+                        `[stripe/webhook] ${event.type} invoice=${inv.id} has no subscription (one-off) — skipped`,
+                    );
                 }
                 break;
             }
             case "invoice.payment_failed": {
                 const inv = event.data.object as StripeInvoiceLite;
                 console.warn(
-                    `[stripe/webhook] invoice.payment_failed customer=${inv.customer} sub=${inv.subscription ?? "—"}`,
+                    `[stripe/webhook] invoice.payment_failed customer=${inv.customer} sub=${invoiceSubscriptionId(inv) ?? "—"}`,
                 );
                 // Dunning nudge — Stripe retries the charge on its own
                 // schedule; we tell the user their card failed so they can
@@ -1008,9 +1741,10 @@ async function applySubscriptionEvent(
     }
 
     const isActive = ["active", "trialing"].includes(sub.status);
-    const periodEnd = sub.current_period_end
-        ? new Date(sub.current_period_end * 1000)
-        : null;
+    // Basil+ payloads carry the period end on the subscription item; the
+    // top-level field only survives on events from pre-Basil API versions.
+    const periodEndSec = subscriptionPeriodEnd(sub) ?? sub.current_period_end;
+    const periodEnd = periodEndSec ? new Date(periodEndSec * 1000) : null;
 
     // Which paid plan is this? Map the subscription's product → tier so
     // Pro/Team land on their own level instead of always Plus.
@@ -1431,6 +2165,47 @@ async function sendOrderConfirmationEmails(opts: {
 }
 
 /**
+ * Resolve the customer-facing promotion code (e.g. "HOK2026") that
+ * discounted an invoice, or null when the invoice carries no discount.
+ * Webhook payloads only embed discount IDs, so a discounted invoice is
+ * re-retrieved with the promotion code expanded (one extra API call,
+ * discounted invoices only). Falls back to the coupon id when the
+ * discount was applied directly via coupon (no promotion code).
+ * Best-effort: attribution must never fail the revenue insert.
+ */
+async function resolveInvoicePromoCode(
+    inv: StripeInvoiceLite,
+): Promise<string | null> {
+    if (!Array.isArray(inv.discounts) || inv.discounts.length === 0) {
+        return null;
+    }
+    try {
+        const full = await getStripe().invoices.retrieve(inv.id, {
+            expand: ["discounts.promotion_code"],
+        });
+        for (const d of full.discounts ?? []) {
+            if (typeof d === "string" || !("promotion_code" in d)) continue;
+            const pc = d.promotion_code;
+            if (pc && typeof pc === "object" && pc.code) return pc.code;
+            // Discount without a promotion code (coupon attached
+            // directly) — API ≥ clover nests it under source.coupon.
+            const coupon = d.source?.coupon;
+            if (coupon && typeof coupon === "object") {
+                return coupon.name ?? coupon.id;
+            }
+            if (typeof coupon === "string") return coupon;
+        }
+        return null;
+    } catch (err) {
+        console.error(
+            "[stripe/webhook] promo-code resolve failed (non-fatal):",
+            err instanceof Error ? err.message : err,
+        );
+        return null;
+    }
+}
+
+/**
  * Persist a paid subscription invoice into the revenue ledger
  * (public.billing_revenue). Idempotent via the UNIQUE stripe_invoice_id
  * — Stripe replays both invoice.paid and invoice.payment_succeeded for
@@ -1442,20 +2217,22 @@ async function sendOrderConfirmationEmails(opts: {
 async function recordSubscriptionRevenue(
     inv: StripeInvoiceLite,
     sub: StripeSubscriptionLite,
-): Promise<void> {
+): Promise<boolean> {
     const amount = Math.floor(Number(inv.amount_paid ?? 0));
-    if (!Number.isFinite(amount) || amount <= 0) return;
+    if (!Number.isFinite(amount) || amount <= 0) return false;
     try {
         const planDef = resolveSubscriptionPlan(sub);
         const user = await findUserByStripeCustomer(inv.customer);
         const paidAt = inv.created
             ? new Date(inv.created * 1000).toISOString()
             : new Date().toISOString();
+        const promoCode = await resolveInvoicePromoCode(inv);
         const result = await query<{ id: string }>(
             `INSERT INTO public.billing_revenue (
                 user_id, stripe_customer_id, stripe_invoice_id,
-                stripe_subscription_id, plan, amount_cents, currency, paid_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                stripe_subscription_id, plan, amount_cents, currency,
+                paid_at, promo_code
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (stripe_invoice_id) DO NOTHING
              RETURNING id`,
             [
@@ -1467,19 +2244,91 @@ async function recordSubscriptionRevenue(
                 amount,
                 (inv.currency ?? "eur").toLowerCase(),
                 paidAt,
+                promoCode,
             ],
         );
         if (result.rows.length > 0) {
             console.log(
                 `[stripe/webhook] revenue recorded invoice=${inv.id} plan=${planDef.plan} amount=${amount} ${inv.currency ?? "eur"}`,
             );
+            return true;
         }
+        return false;
     } catch (err) {
         console.error(
             "[stripe/webhook] revenue ledger insert failed (non-fatal):",
             err instanceof Error ? err.message : err,
         );
+        return false;
     }
+}
+
+/**
+ * One-shot repair: walk paid Stripe invoices from the last `days` days
+ * and insert any subscription revenue missing from billing_revenue
+ * (idempotent — same ON CONFLICT path the webhook uses). Exists because
+ * the Basil API change (invoice.subscription → parent.subscription_details)
+ * silently disabled the webhook's ledger insert for a while. Exposed via
+ * POST /adminmax/billing/backfill-revenue.
+ */
+export async function backfillSubscriptionRevenue(days: number): Promise<{
+    scanned: number;
+    inserted: number;
+    skipped_no_subscription: number;
+    skipped_zero_amount: number;
+    failed: number;
+}> {
+    const stripe = getStripe();
+    const since = Math.floor(Date.now() / 1000) - days * 86400;
+    const subCache = new Map<string, StripeSubscriptionLite>();
+    let scanned = 0;
+    let inserted = 0;
+    let skippedNoSub = 0;
+    let skippedZero = 0;
+    let failed = 0;
+    for await (const raw of stripe.invoices.list({
+        status: "paid",
+        created: { gte: since },
+        limit: 100,
+    })) {
+        scanned += 1;
+        const inv = raw as unknown as StripeInvoiceLite;
+        const subId = invoiceSubscriptionId(inv);
+        if (!subId) {
+            skippedNoSub += 1;
+            continue;
+        }
+        if (!inv.amount_paid || inv.amount_paid <= 0) {
+            skippedZero += 1;
+            continue;
+        }
+        try {
+            let sub = subCache.get(subId);
+            if (!sub) {
+                sub = (await stripe.subscriptions.retrieve(
+                    subId,
+                )) as unknown as StripeSubscriptionLite;
+                subCache.set(subId, sub);
+            }
+            if (await recordSubscriptionRevenue(inv, sub)) inserted += 1;
+        } catch (err) {
+            failed += 1;
+            console.error(
+                `[billing/backfill-revenue] invoice=${inv.id} failed:`,
+                err instanceof Error ? err.message : err,
+            );
+        }
+    }
+    console.log(
+        `[billing/backfill-revenue] days=${days} scanned=${scanned} inserted=${inserted} no_sub=${skippedNoSub} zero=${skippedZero} failed=${failed}`,
+    );
+    return {
+        scanned,
+        inserted,
+        skipped_no_subscription: skippedNoSub,
+        skipped_zero_amount: skippedZero,
+        failed,
+    };
 }
 
 /**

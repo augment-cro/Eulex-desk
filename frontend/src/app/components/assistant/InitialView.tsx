@@ -26,7 +26,7 @@ export function InitialView({ onSubmit }: InitialViewProps) {
     const [projectModalOpen, setProjectModalOpen] = useState(false);
 
     const username =
-        profile?.displayName?.trim() || user?.email?.split("@")[0] || "there";
+        profile?.displayName?.trim() || user?.email?.split("@")[0] || null;
 
     // Composer stays disabled and the compass icon stays spinning until
     // all the boot-time dependent data is in memory: the user profile
@@ -63,8 +63,13 @@ export function InitialView({ onSubmit }: InitialViewProps) {
                                     opacity: loaded ? 1 : 0,
                                 }}
                             >
-                                <h1 className="text-4xl font-serif font-light text-foreground whitespace-nowrap pt-1">
-                                    {t("greeting", { username })}
+                                <h1
+                                    data-testid="chat-greeting"
+                                    className="text-4xl font-serif font-light text-foreground whitespace-nowrap pt-1"
+                                >
+                                    {username
+                                        ? t("greeting", { username })
+                                        : t("greetingAnonymous")}
                                 </h1>
                             </div>
                         </div>
@@ -75,6 +80,7 @@ export function InitialView({ onSubmit }: InitialViewProps) {
                         onCancel={() => {}}
                         isLoading={false}
                         disabled={isInitialLoading}
+                        variant="hero"
                         onProjectsClick={() => setProjectModalOpen(true)}
                     />
 

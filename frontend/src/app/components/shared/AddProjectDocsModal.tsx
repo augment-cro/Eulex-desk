@@ -5,11 +5,13 @@ import { createPortal } from "react-dom";
 import { Check, Loader2, Search, Upload, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { getProject, uploadProjectDocument } from "@/app/lib/mikeApi";
-import { track, fileTypeOf } from "@/app/lib/analytics";
+import { uploadFilesBulk, type UploadFailure } from "@/app/lib/bulkUpload";
+import { SUPPORTED_UPLOAD_ACCEPT } from "@/app/lib/supportedFileTypes";
 import type { MikeDocument } from "./types";
 import { DocFileIcon } from "./FileDirectory";
 import { VersionChip } from "./VersionChip";
 import { ConnectorsButton } from "./ConnectorsButton";
+import { UploadFailuresAlert } from "./UploadFailuresAlert";
 
 interface Props {
     open: boolean;
@@ -47,12 +49,16 @@ export function AddProjectDocsModal({
     const [search, setSearch] = useState("");
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [uploading, setUploading] = useState(false);
+    const [uploadFailures, setUploadFailures] = useState<UploadFailure[]>(
+        [],
+    );
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         if (!open) return;
         setSearch("");
         setSelectedIds(new Set());
+        setUploadFailures([]);
         let cancelled = false;
         setLoading(true);
         getProject(projectId)
@@ -102,36 +108,19 @@ export function AddProjectDocsModal({
         const files = Array.from(e.target.files || []);
         if (!files.length) return;
         setUploading(true);
+        setUploadFailures([]);
         try {
-            const uploaded = await Promise.all(
-                files.map(async (f) => {
-                    const fileType = fileTypeOf(f);
-                    try {
-                        const doc = await uploadProjectDocument(projectId, f);
-                        track("document_uploaded", {
-                            surface: "project",
-                            file_type: fileType,
-                            result: "success",
-                        });
-                        return doc;
-                    } catch (err) {
-                        track("document_uploaded", {
-                            surface: "project",
-                            file_type: fileType,
-                            result: "error",
-                        });
-                        throw err;
-                    }
-                }),
-            );
-            setDocs((prev) => [...uploaded, ...prev]);
-            setSelectedIds((prev) => {
-                const next = new Set(prev);
-                uploaded.forEach((d) => next.add(d.id));
-                return next;
+            // Each document is listed + pre-selected as soon as it lands,
+            // so one failed file never hides the others.
+            const { failures } = await uploadFilesBulk(files, {
+                upload: (f) => uploadProjectDocument(projectId, f),
+                surface: "project",
+                onUploaded: (doc) => {
+                    setDocs((prev) => [doc, ...prev]);
+                    setSelectedIds((prev) => new Set(prev).add(doc.id));
+                },
             });
-        } catch (err) {
-            console.error("Upload failed:", err);
+            setUploadFailures(failures);
         } finally {
             setUploading(false);
             if (fileInputRef.current) fileInputRef.current.value = "";
@@ -284,13 +273,19 @@ export function AddProjectDocsModal({
                     )}
                 </div>
 
+                <UploadFailuresAlert
+                    failures={uploadFailures}
+                    onDismiss={() => setUploadFailures([])}
+                    className="mx-4 mb-2 w-auto"
+                />
+
                 {/* Footer */}
                 <div className="border-t border-border px-4 py-3 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                         <input
                             ref={fileInputRef}
                             type="file"
-                            accept=".pdf,.docx,.doc"
+                            accept={SUPPORTED_UPLOAD_ACCEPT}
                             multiple
                             className="hidden"
                             onChange={handleUpload}

@@ -3,8 +3,8 @@
 /**
  * Document anonymization review modal.
  *
- * Shown after upload in `strict_legal` / `strict` mode, or whenever
- * `pii_review_required` is true on the user's profile. Lets the user:
+ * Shown after upload in `strict` mode (#14 — review is a property of
+ * the mode alone). Lets the user:
  *   - Browse the entities Presidio detected, grouped by type.
  *   - Toggle "keep masked" (default) or "approve for disclosure" per
  *     entity. Approved entities will be sent to the LLM in plaintext.
@@ -143,16 +143,33 @@ export default function DocumentAnonymizationPreviewModal(props: Props) {
             }
             const masked = rows.filter((r) => r.keepMasked).map((r) => r.placeholder);
             const approved = rows.filter((r) => !r.keepMasked).map((r) => r.placeholder);
+            // Per-placeholder audit justification (#55) — only approved
+            // rows with a non-empty reason are transmitted.
+            const disclosureReasons: Record<string, string> = {};
+            for (const r of rows) {
+                if (!r.keepMasked && r.disclosureReason.trim()) {
+                    disclosureReasons[r.placeholder] = r.disclosureReason.trim();
+                }
+            }
             const res = await piiApplyOverrides({
                 session_id: props.preview.session_id,
                 masked_placeholders: masked,
                 approved_for_disclosure: approved,
+                disclosure_reasons: disclosureReasons,
                 text: props.preview.preview_text,
             });
             props.onConfirm?.(props.preview.session_id, res.entity_summary ?? {});
             props.onClose();
         } catch (err) {
-            setError(err instanceof Error ? err.message : String(err));
+            // Raw error text is English/technical — keep it in the console
+            // for diagnostics, show localized copy in the modal (issue #90).
+            console.error("[pii/previewModal] apply-overrides failed", err);
+            setError(
+                t("submitError", {
+                    default:
+                        "Spremanje odabira nije uspjelo. Pokušajte ponovno.",
+                }),
+            );
         } finally {
             setSubmitting(false);
         }
@@ -160,9 +177,17 @@ export default function DocumentAnonymizationPreviewModal(props: Props) {
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40">
-            <div className="w-full max-w-3xl rounded-lg bg-background border border-border">
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="pii-preview-modal-title"
+                className="w-full max-w-3xl rounded-lg bg-background border border-border"
+            >
                 <div className="border-b px-6 py-4">
-                    <h2 className="text-lg font-semibold">
+                    <h2
+                        id="pii-preview-modal-title"
+                        className="text-lg font-semibold"
+                    >
                         {t("title", { default: "Pregled anonimizacije" })}
                     </h2>
                     {props.filename && (

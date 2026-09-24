@@ -157,9 +157,7 @@ export function PeopleModal({
             setNewEmail("");
         } catch (e) {
             setError(
-                e instanceof Error
-                    ? e.message
-                    : "Couldn't add the member. Try again.",
+                e instanceof Error ? e.message : t("couldntAdd"),
             );
         } finally {
             setBusy(null);
@@ -178,9 +176,7 @@ export function PeopleModal({
             await onSharedWithChange(next);
         } catch (e) {
             setError(
-                e instanceof Error
-                    ? e.message
-                    : "Couldn't remove the member. Try again.",
+                e instanceof Error ? e.message : t("couldntRemove"),
             );
         } finally {
             setBusy(null);

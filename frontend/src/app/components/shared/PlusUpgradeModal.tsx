@@ -18,9 +18,13 @@ import { loadStripe } from "@stripe/stripe-js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { getStoredTokens } from "@/lib/oauth";
+import { COUNTRIES } from "@/lib/countries";
+import { cn } from "@/lib/utils";
 import { track } from "@/app/lib/analytics";
 import { refreshRateLimitStatus } from "../../hooks/useRateLimitStatus";
+import { useUserProfile } from "@/contexts/UserProfileContext";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
     Dialog,
     DialogContent,
@@ -29,9 +33,7 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 
-const API_BASE =
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
-
+import { API_BASE } from "@/app/lib/apiBase";
 type ConfigResponse = {
     plusEnabled: boolean;
     proEnabled?: boolean;
@@ -67,11 +69,15 @@ function authHeaders(): Record<string, string> {
     return { Authorization: `Bearer ${tokens.access_token}` };
 }
 
-function formatPrice(amountCents?: number, currency = "EUR"): string {
-    if (!amountCents) return `€19/mj`;
+function formatPrice(
+    amountCents: number | undefined,
+    currency: string,
+    perMonthSuffix: string,
+): string {
+    if (!amountCents) return `€19${perMonthSuffix}`;
     const amount = amountCents / 100;
     const symbol = currency === "EUR" ? "€" : currency;
-    return `${symbol}${amount.toFixed(amount % 1 === 0 ? 0 : 2)}/mj`;
+    return `${symbol}${amount.toFixed(amount % 1 === 0 ? 0 : 2)}${perMonthSuffix}`;
 }
 
 let _stripeCache: { key: string; promise: Promise<StripeClient | null> } | null =
@@ -105,6 +111,9 @@ export function PlusUpgradeModal({
 }) {
     const t = useTranslations("rateLimit");
     const tPlan = useTranslations("account.plan");
+    // Localised country names live under "countries.<CODE>" (same table
+    // the Settings page uses); lib/countries.ts labels are the fallback.
+    const tCountries = useTranslations("countries");
     const locale = useLocale();
     // Team tiers are per-seat (min 5). No seat picker yet — default to the
     // floor; Plus/Pro/Legal Pro are single-quantity.
@@ -128,6 +137,87 @@ export function PlusUpgradeModal({
     // at mount — changing it unmounts+remounts the whole payment form.
     const stableClientSecret = useRef<string | null>(null);
 
+    // ── billing details (tracker #33) ───────────────────────────────
+    // Name + country are MANDATORY before the subscription is created:
+    // the backend writes them onto the Stripe customer ahead of
+    // sub.create so the very first invoice carries VAT. Organisation and
+    // VAT ID are optional (a company name takes the invoice "Bill to"
+    // line; an EU VAT ID enables reverse charge cross-border). Prefilled
+    // from Settings → General; the step is shown only while a required
+    // field is missing, and whatever the user confirms is saved back to
+    // the profile by the backend.
+    const { profile } = useUserProfile();
+    const [billingName, setBillingName] = useState("");
+    const [billingCountry, setBillingCountry] = useState("");
+    const [billingOrg, setBillingOrg] = useState("");
+    const [billingVat, setBillingVat] = useState("");
+    // Business invoice (tracker #35). Zakon o PDV-u čl. 79. st. 1. t. 3.:
+    // the invoice must carry the buyer's name, ADDRESS and OIB / VAT ID —
+    // so once the user says "invoice to a company" the company name,
+    // street, city and OIB/VAT ID all become mandatory. Postal code and
+    // phone stay optional.
+    const [billingBusiness, setBillingBusiness] = useState(false);
+    const [billingLine1, setBillingLine1] = useState("");
+    const [billingCity, setBillingCity] = useState("");
+    const [billingPostal, setBillingPostal] = useState("");
+    // Optional for everyone (tracker #37) — čl. 79. ZPDV does not ask for
+    // a phone; we take it only if the user wants it on the account.
+    const [billingPhone, setBillingPhone] = useState("");
+    // Flips true once the user submits a complete billing step (or the
+    // profile already had name + country). Gates the checkout call.
+    const [billingReady, setBillingReady] = useState(false);
+    const [billingTouched, setBillingTouched] = useState(false);
+    // Set when /change-plan handled the request itself (tracker #34): an
+    // existing subscriber's upgrade is prorated and applied at once, a
+    // downgrade is scheduled for the period end. No payment form then —
+    // Stripe charged the saved card for the prorated difference.
+    const [changeDone, setChangeDone] = useState<{
+        action: "upgraded" | "scheduled";
+        periodEnd: number | null;
+    } | null>(null);
+    const billingBusinessComplete =
+        !billingBusiness ||
+        (billingOrg.trim().length > 0 &&
+            billingVat.trim().length > 0 &&
+            billingLine1.trim().length > 0 &&
+            billingCity.trim().length > 0);
+    const billingComplete =
+        billingName.trim().length > 0 &&
+        /^[A-Z]{2}$/.test(billingCountry) &&
+        billingBusinessComplete;
+
+    useEffect(() => {
+        if (!open) return;
+        const name = (profile?.displayName ?? "").trim();
+        const country = (profile?.country ?? "").trim().toUpperCase();
+        setBillingName(name);
+        setBillingCountry(/^[A-Z]{2}$/.test(country) ? country : "");
+        const org = (profile?.organisation ?? "").trim();
+        const vat = (profile?.vatNumber ?? "").trim();
+        const line1 = (profile?.addressLine1 ?? "").trim();
+        const city = (profile?.addressCity ?? "").trim();
+        setBillingOrg(org);
+        setBillingVat(vat);
+        setBillingLine1(line1);
+        setBillingCity(city);
+        setBillingPostal((profile?.addressPostalCode ?? "").trim());
+        setBillingPhone((profile?.phone ?? "").trim());
+        // A stored company name or VAT ID means "business invoice" — and
+        // then the address is mandatory too, so the step reappears until
+        // street + city are on file.
+        const business = org.length > 0 || vat.length > 0;
+        setBillingBusiness(business);
+        const businessOk =
+            !business || (org.length > 0 && vat.length > 0 && line1.length > 0 && city.length > 0);
+        setBillingReady(
+            name.length > 0 && /^[A-Z]{2}$/.test(country) && businessOk,
+        );
+        setBillingTouched(false);
+        // Snapshot the profile when the modal opens; later profile
+        // refreshes must not clobber what the user is typing.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open]);
+
     useEffect(() => {
         if (!open) {
             setSub(null);
@@ -137,9 +227,15 @@ export function PlusUpgradeModal({
             setPromoInput("");
             setAppliedPromo(null);
             setPromoError(null);
+            setBillingReady(false);
+            setChangeDone(null);
             stableClientSecret.current = null;
             return;
         }
+        // Nothing is created server-side until billing details are in.
+        if (!billingReady) return;
+        // Already handled by /change-plan — don't start a checkout.
+        if (changeDone) return;
         let cancelled = false;
         (async () => {
             setLoading(true);
@@ -170,6 +266,55 @@ export function PlusUpgradeModal({
                     );
                     return;
                 }
+                // ── existing subscriber? change the plan, don't add one ──
+                // (tracker #34) /change-plan prorates an upgrade and
+                // applies it now, or schedules a downgrade for the period
+                // end. Only when it answers `action: "checkout"` (no live
+                // subscription) do we fall through and create one. Any
+                // other failure also falls through: checkout's own 409
+                // guard is the backstop against a duplicate.
+                try {
+                    const cpRes = await fetch(`${API_BASE}/billing/change-plan`, {
+                        method: "POST",
+                        headers: {
+                            ...authHeaders(),
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            tier: plan,
+                            ...(seats ? { seats } : {}),
+                            country: billingCountry,
+                        }),
+                    });
+                    const cp = (await cpRes.json()) as {
+                        action?: "upgraded" | "scheduled" | "checkout";
+                        current_period_end?: number | null;
+                    };
+                    if (
+                        cpRes.ok &&
+                        (cp.action === "upgraded" || cp.action === "scheduled")
+                    ) {
+                        if (cancelled) return;
+                        track("plan_change_completed", {
+                            tier: plan,
+                            action: cp.action,
+                        });
+                        setChangeDone({
+                            action: cp.action,
+                            periodEnd: cp.current_period_end ?? null,
+                        });
+                        try {
+                            await refreshRateLimitStatus();
+                        } catch {
+                            // best-effort
+                        }
+                        onUpgraded?.();
+                        return;
+                    }
+                } catch {
+                    // fall through to checkout
+                }
+
                 // Plus keeps its dedicated endpoint (live even before the
                 // multi-product backend deploys); Pro/Team go through the
                 // general checkout with the plan + seat count.
@@ -180,6 +325,18 @@ export function PlusUpgradeModal({
                 const checkoutBody = {
                     ...(plan === "plus" ? {} : { plan, seats }),
                     ...(appliedPromo ? { promo_code: appliedPromo } : {}),
+                    // Mandatory billing details (tracker #33) — the
+                    // backend refuses to create a subscription without
+                    // name + country, and persists all four to the profile.
+                    name: billingName.trim(),
+                    country: billingCountry,
+                    business: billingBusiness,
+                    organisation: billingBusiness ? billingOrg.trim() || null : null,
+                    vat_number: billingBusiness ? billingVat.trim() || null : null,
+                    address_line1: billingLine1.trim() || null,
+                    address_city: billingCity.trim() || null,
+                    address_postal_code: billingPostal.trim() || null,
+                    phone: billingPhone.trim() || null,
                 };
                 const subRes = await fetch(endpoint, {
                     method: "POST",
@@ -210,6 +367,37 @@ export function PlusUpgradeModal({
                                 : "Nepoznat ili neaktivan promo kod",
                         );
                         setAppliedPromo(null);
+                    }
+                    return;
+                }
+                // Backstop (tracker #34): the pre-flight above should have
+                // routed an existing subscriber to /change-plan; if the
+                // backend still refuses a second subscription, say so —
+                // never retry into a duplicate.
+                if (subRes.status === 409 && subBody.code === "ACTIVE_SUBSCRIPTION_EXISTS") {
+                    if (!cancelled) setError(t("billingActiveSubExists"));
+                    return;
+                }
+                // Billing-detail rejections (tracker #33) send the user
+                // back to the billing step instead of the generic error
+                // card — these are things they can fix in place.
+                if (
+                    subRes.status === 400 &&
+                    (subBody.code === "COUNTRY_REQUIRED" ||
+                        subBody.code === "NAME_REQUIRED" ||
+                        subBody.code === "ORGANISATION_REQUIRED" ||
+                        subBody.code === "VAT_ID_REQUIRED" ||
+                        subBody.code === "ADDRESS_REQUIRED" ||
+                        subBody.code === "TAX_LOCATION_UNRESOLVED")
+                ) {
+                    if (!cancelled) {
+                        setBillingReady(false);
+                        setBillingTouched(true);
+                        setError(
+                            subBody.code === "TAX_LOCATION_UNRESOLVED"
+                                ? t("billingTaxUnresolved")
+                                : t("billingRequired"),
+                        );
                     }
                     return;
                 }
@@ -246,7 +434,26 @@ export function PlusUpgradeModal({
         return () => {
             cancelled = true;
         };
-    }, [open, t, attempt, plan, seats, appliedPromo]);
+    }, [
+        open,
+        t,
+        attempt,
+        plan,
+        seats,
+        appliedPromo,
+        billingReady,
+        billingName,
+        billingCountry,
+        billingOrg,
+        billingVat,
+        billingBusiness,
+        billingLine1,
+        billingCity,
+        billingPostal,
+        billingPhone,
+        changeDone,
+        onUpgraded,
+    ]);
 
     function applyPromo() {
         const code = promoInput.trim();
@@ -291,7 +498,11 @@ export function PlusUpgradeModal({
                     </DialogTitle>
                     <DialogDescription>
                         {sub?.amountDue
-                            ? formatPrice(sub.amountDue, sub.currency ?? "EUR")
+                            ? formatPrice(
+                                  sub.amountDue,
+                                  sub.currency ?? "EUR",
+                                  t("perMonthSuffix"),
+                              )
                             : `${tPlan(`tiers.${plan}.price`)} ${tPlan(`tiers.${plan}.period`)}`}{" "}
                         ·{" "}
                         {t.has("plusUpgradeCancelAnytime")
@@ -319,6 +530,235 @@ export function PlusUpgradeModal({
                         ),
                     )}
                 </ul>
+
+                {/* ── billing details step (tracker #33) ─────────────
+                    Shown until name + country are confirmed. Nothing is
+                    created on the server before this passes. */}
+                {!billingReady && (
+                    <form
+                        className="mt-4 space-y-3 rounded-lg border border-border p-3"
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            setBillingTouched(true);
+                            if (!billingComplete) return;
+                            setError(null);
+                            setBillingReady(true);
+                        }}
+                        noValidate
+                    >
+                        <p className="text-sm font-medium text-foreground">
+                            {t("billingTitle")}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                            {t("billingHint")}
+                        </p>
+                        <div>
+                            <label
+                                htmlFor="checkout-billing-name"
+                                className="mb-1 block text-xs text-muted-foreground"
+                            >
+                                {t("billingName")} *
+                            </label>
+                            <Input
+                                id="checkout-billing-name"
+                                value={billingName}
+                                onChange={(e) => setBillingName(e.target.value)}
+                                autoComplete="name"
+                                required
+                                aria-invalid={
+                                    billingTouched && !billingName.trim()
+                                        ? true
+                                        : undefined
+                                }
+                            />
+                        </div>
+                        <div>
+                            <label
+                                htmlFor="checkout-billing-country"
+                                className="mb-1 block text-xs text-muted-foreground"
+                            >
+                                {t("billingCountry")} *
+                            </label>
+                            <select
+                                id="checkout-billing-country"
+                                value={billingCountry}
+                                onChange={(e) =>
+                                    setBillingCountry(e.target.value.toUpperCase())
+                                }
+                                required
+                                aria-invalid={
+                                    billingTouched && !billingCountry
+                                        ? true
+                                        : undefined
+                                }
+                                className={cn(
+                                    "h-10 w-full rounded-md border border-input bg-surface-elevated px-3 text-sm text-foreground",
+                                    "focus:outline-none focus:ring-2 focus:ring-ring/10",
+                                    billingTouched &&
+                                        !billingCountry &&
+                                        "border-destructive",
+                                )}
+                            >
+                                <option value="">{t("billingCountryPlaceholder")}</option>
+                                {COUNTRIES.map((c) => (
+                                    <option key={c.code} value={c.code}>
+                                        {tCountries.has(c.code)
+                                            ? tCountries(c.code)
+                                            : c.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label
+                                htmlFor="checkout-billing-phone"
+                                className="mb-1 block text-xs text-muted-foreground"
+                            >
+                                {t("billingPhone")}
+                            </label>
+                            <Input
+                                id="checkout-billing-phone"
+                                type="tel"
+                                value={billingPhone}
+                                onChange={(e) => setBillingPhone(e.target.value)}
+                                autoComplete="tel"
+                                placeholder={t("billingPhonePlaceholder")}
+                            />
+                        </div>
+                        {/* Business invoice toggle (tracker #35). Typing a
+                            company name or OIB/VAT ID switches it on too —
+                            either one makes the whole set mandatory
+                            (čl. 79. ZPDV: name, address, OIB/VAT ID). */}
+                        <label className="flex items-center gap-2 text-sm text-foreground">
+                            <input
+                                type="checkbox"
+                                checked={billingBusiness}
+                                onChange={(e) => setBillingBusiness(e.target.checked)}
+                                className="h-4 w-4 rounded border-input accent-primary"
+                            />
+                            {t("billingBusiness")}
+                        </label>
+                        {billingBusiness && (
+                            <div className="space-y-3 rounded-md border border-border bg-accent/40 p-3">
+                                <p className="text-xs text-muted-foreground">
+                                    {t("billingBusinessHint")}
+                                </p>
+                                <div>
+                                    <label
+                                        htmlFor="checkout-billing-org"
+                                        className="mb-1 block text-xs text-muted-foreground"
+                                    >
+                                        {t("billingOrganisation")} *
+                                    </label>
+                                    <Input
+                                        id="checkout-billing-org"
+                                        value={billingOrg}
+                                        onChange={(e) => setBillingOrg(e.target.value)}
+                                        autoComplete="organization"
+                                        required
+                                        aria-invalid={
+                                            billingTouched && !billingOrg.trim()
+                                                ? true
+                                                : undefined
+                                        }
+                                    />
+                                </div>
+                                <div>
+                                    <label
+                                        htmlFor="checkout-billing-vat"
+                                        className="mb-1 block text-xs text-muted-foreground"
+                                    >
+                                        {t("billingVatId")} *
+                                    </label>
+                                    <Input
+                                        id="checkout-billing-vat"
+                                        value={billingVat}
+                                        onChange={(e) =>
+                                            setBillingVat(e.target.value.toUpperCase())
+                                        }
+                                        placeholder={t("billingVatPlaceholder")}
+                                        className="uppercase placeholder:normal-case"
+                                        required
+                                        aria-invalid={
+                                            billingTouched && !billingVat.trim()
+                                                ? true
+                                                : undefined
+                                        }
+                                    />
+                                    <p className="mt-1 text-[11px] text-muted-foreground">
+                                        {t("billingVatHint")}
+                                    </p>
+                                </div>
+                                <div>
+                                    <label
+                                        htmlFor="checkout-billing-line1"
+                                        className="mb-1 block text-xs text-muted-foreground"
+                                    >
+                                        {t("billingAddressLine1")} *
+                                    </label>
+                                    <Input
+                                        id="checkout-billing-line1"
+                                        value={billingLine1}
+                                        onChange={(e) => setBillingLine1(e.target.value)}
+                                        autoComplete="street-address"
+                                        required
+                                        aria-invalid={
+                                            billingTouched && !billingLine1.trim()
+                                                ? true
+                                                : undefined
+                                        }
+                                    />
+                                </div>
+                                <div className="grid grid-cols-3 gap-2">
+                                    <div className="col-span-2">
+                                        <label
+                                            htmlFor="checkout-billing-city"
+                                            className="mb-1 block text-xs text-muted-foreground"
+                                        >
+                                            {t("billingAddressCity")} *
+                                        </label>
+                                        <Input
+                                            id="checkout-billing-city"
+                                            value={billingCity}
+                                            onChange={(e) => setBillingCity(e.target.value)}
+                                            autoComplete="address-level2"
+                                            required
+                                            aria-invalid={
+                                                billingTouched && !billingCity.trim()
+                                                    ? true
+                                                    : undefined
+                                            }
+                                        />
+                                    </div>
+                                    <div>
+                                        <label
+                                            htmlFor="checkout-billing-postal"
+                                            className="mb-1 block text-xs text-muted-foreground"
+                                        >
+                                            {t("billingAddressPostal")}
+                                        </label>
+                                        <Input
+                                            id="checkout-billing-postal"
+                                            value={billingPostal}
+                                            onChange={(e) => setBillingPostal(e.target.value)}
+                                            autoComplete="postal-code"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {billingTouched && !billingComplete && (
+                            <p className="text-xs text-destructive">
+                                {t("billingRequired")}
+                            </p>
+                        )}
+                        <div className="flex justify-end">
+                            <Button type="submit" disabled={loading}>
+                                {t("billingContinue")}
+                            </Button>
+                        </div>
+                    </form>
+                )}
 
                 {sub?.taxAmount != null && sub.taxAmount > 0 && sub.subtotal != null && (
                     <div className="mt-4 space-y-1 rounded-lg border border-border p-3 text-sm">
@@ -516,7 +956,36 @@ export function PlusUpgradeModal({
                     </div>
                 )}
 
-                {stableClientSecret.current && stripeP && (
+                {/* ── plan changed via /change-plan (tracker #34) ──
+                    Existing subscriber: no payment form. Upgrade was
+                    prorated and charged to the saved card; downgrade
+                    takes effect at the paid-through date. */}
+                {changeDone && (
+                    <div className="mt-5 space-y-3 rounded-xl border border-border bg-accent p-4 text-sm text-foreground">
+                        <p className="font-medium">
+                            {changeDone.action === "upgraded"
+                                ? t("billingPlanUpgraded", {
+                                      plan: tPlan(`tiers.${plan}.name`),
+                                  })
+                                : t("billingPlanScheduled", {
+                                      plan: tPlan(`tiers.${plan}.name`),
+                                      date: changeDone.periodEnd
+                                          ? new Intl.DateTimeFormat(
+                                                locale === "hr" ? "hr-HR" : "en-GB",
+                                                { dateStyle: "long" },
+                                            ).format(new Date(changeDone.periodEnd * 1000))
+                                          : "—",
+                                  })}
+                        </p>
+                        <div className="flex justify-end">
+                            <Button type="button" onClick={onClose}>
+                                {t("billingPlanClose")}
+                            </Button>
+                        </div>
+                    </div>
+                )}
+
+                {!changeDone && stableClientSecret.current && stripeP && (
                     <div className="mt-5">
                         <Elements
                             stripe={stripeP}

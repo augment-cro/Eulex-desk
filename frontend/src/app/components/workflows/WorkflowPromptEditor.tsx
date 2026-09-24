@@ -4,6 +4,7 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import { useEffect, useRef } from "react";
+import { useTranslations } from "next-intl";
 import {
     Bold,
     Heading1,
@@ -55,6 +56,7 @@ export function WorkflowPromptEditor({
     onChange,
     readOnly = false,
 }: Props) {
+    const tEditor = useTranslations("documents.editor");
     const lastEmittedRef = useRef(value);
 
     const editor = useEditor({
@@ -111,7 +113,7 @@ export function WorkflowPromptEditor({
                                 .run()
                         }
                         active={editor.isActive("heading", { level: 1 })}
-                        title="Heading 1"
+                        title={tEditor("heading1")}
                     >
                         <Heading1 className="h-4 w-4" />
                     </ToolbarBtn>
@@ -124,7 +126,7 @@ export function WorkflowPromptEditor({
                                 .run()
                         }
                         active={editor.isActive("heading", { level: 2 })}
-                        title="Heading 2"
+                        title={tEditor("heading2")}
                     >
                         <Heading2 className="h-4 w-4" />
                     </ToolbarBtn>
@@ -137,7 +139,7 @@ export function WorkflowPromptEditor({
                                 .run()
                         }
                         active={editor.isActive("heading", { level: 3 })}
-                        title="Heading 3"
+                        title={tEditor("heading3")}
                     >
                         <Heading3 className="h-4 w-4" />
                     </ToolbarBtn>
@@ -147,7 +149,7 @@ export function WorkflowPromptEditor({
                             editor.chain().focus().toggleBold().run()
                         }
                         active={editor.isActive("bold")}
-                        title="Bold"
+                        title={tEditor("bold")}
                     >
                         <Bold className="h-4 w-4" />
                     </ToolbarBtn>
@@ -156,7 +158,7 @@ export function WorkflowPromptEditor({
                             editor.chain().focus().toggleItalic().run()
                         }
                         active={editor.isActive("italic")}
-                        title="Italic"
+                        title={tEditor("italic")}
                     >
                         <Italic className="h-4 w-4" />
                     </ToolbarBtn>
@@ -166,7 +168,7 @@ export function WorkflowPromptEditor({
                             editor.chain().focus().toggleBulletList().run()
                         }
                         active={editor.isActive("bulletList")}
-                        title="Bullet list"
+                        title={tEditor("bulletList")}
                     >
                         <List className="h-4 w-4" />
                     </ToolbarBtn>
@@ -175,7 +177,7 @@ export function WorkflowPromptEditor({
                             editor.chain().focus().toggleOrderedList().run()
                         }
                         active={editor.isActive("orderedList")}
-                        title="Numbered list"
+                        title={tEditor("orderedList")}
                     >
                         <ListOrdered className="h-4 w-4" />
                     </ToolbarBtn>

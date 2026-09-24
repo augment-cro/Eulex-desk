@@ -361,8 +361,72 @@ export default function AdminMaxAnalyticsPage() {
                         )}
                     </div>
                 </ChartPanel>
+
+                {/* ── usage by product surface ───────────────────── */}
+                <SurfacesPanel surfaces={data?.surfaces ?? []} />
             </div>
         </div>
+    );
+}
+
+/** Croatian display labels per llm_usage.client surface tag. */
+const SURFACE_LABEL: Record<string, string> = {
+    web: "Chat (web)",
+    word: "Word add-in",
+    tabular: "Analiza (tablice)",
+    draft: "Draft mode",
+    workflow: "Workflowi",
+    search: "Pretraga izvora",
+    unknown: "Nepoznato (stariji zapisi)",
+};
+
+/**
+ * Cost/request split by product surface for the selected range. Bars are
+ * scaled to the most expensive surface; "unknown" collects rows written
+ * before the call sites tagged themselves.
+ */
+function SurfacesPanel({
+    surfaces,
+}: {
+    surfaces: AnalyticsResponse["surfaces"];
+}) {
+    const maxCost = Math.max(1e-9, ...surfaces.map((s) => s.cost_usd));
+    return (
+        <ChartPanel title="Potrošnja po značajki">
+            <div className="space-y-2 py-1">
+                {surfaces.map((s) => (
+                    <div key={s.surface}>
+                        <div className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">
+                                {SURFACE_LABEL[s.surface] ?? s.surface}
+                            </span>
+                            <span className="font-mono text-muted-foreground">
+                                {fmtUsd(s.cost_usd)} ·{" "}
+                                {fmtInt(s.requests)} zahtjeva ·{" "}
+                                {fmtInt(s.users)} korisnika
+                            </span>
+                        </div>
+                        <div className="mt-1 h-2 overflow-hidden rounded-full bg-muted">
+                            <div
+                                className={`h-full rounded-full ${
+                                    s.surface === "unknown"
+                                        ? "bg-muted-foreground"
+                                        : "bg-action"
+                                }`}
+                                style={{
+                                    width: `${Math.max(2, (s.cost_usd / maxCost) * 100)}%`,
+                                }}
+                            />
+                        </div>
+                    </div>
+                ))}
+                {surfaces.length === 0 && (
+                    <p className="py-4 text-center text-sm text-muted-foreground">
+                        Nema podataka.
+                    </p>
+                )}
+            </div>
+        </ChartPanel>
     );
 }
 

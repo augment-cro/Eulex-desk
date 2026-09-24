@@ -31,6 +31,12 @@ import {
     type IntegrationFile,
     type IntegrationProviderId,
 } from "@/app/lib/mikeApi";
+import { classifyUploadError } from "@/app/lib/bulkUpload";
+import {
+    SUPPORTED_UPLOAD_LABEL,
+    isSupportedIntegrationFile,
+} from "@/app/lib/supportedFileTypes";
+import { cn } from "@/lib/utils";
 import type { MikeDocument } from "./types";
 
 interface Props {
@@ -54,6 +60,7 @@ export function IntegrationFilePicker({
     projectId = null,
 }: Props) {
     const t = useTranslations("documents");
+    const tc = useTranslations("common");
     const [query, setQuery] = useState("");
     const [debouncedQuery, setDebouncedQuery] = useState("");
     const [files, setFiles] = useState<IntegrationFile[]>([]);
@@ -70,6 +77,7 @@ export function IntegrationFilePicker({
         total: 0,
         done: 0,
         failed: 0,
+        unsupportedTypes: [] as string[],
     });
 
     // Reset everything when the modal opens or the provider switches.
@@ -135,7 +143,12 @@ export function IntegrationFilePicker({
             if (!provider) return;
             setImportingId(file.id);
             setError(null);
-            setProgress({ total: 1, done: 0, failed: 0 });
+            setProgress({
+                total: 1,
+                done: 0,
+                failed: 0,
+                unsupportedTypes: [],
+            });
             try {
                 const doc = await importIntegrationFile(
                     provider,
@@ -146,14 +159,33 @@ export function IntegrationFilePicker({
                 setProgress((p) => ({ ...p, done: p.done + 1 }));
                 onClose();
             } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                setError(msg);
-                setProgress((p) => ({ ...p, failed: p.failed + 1 }));
+                // The thrown message is the raw response body — log it,
+                // show the user a localized reason instead.
+                console.error(`${provider} import failed:`, err);
+                const { reason, fileType } = classifyUploadError(err);
+                const unsupported =
+                    reason === "unsupported" && fileType
+                        ? fileType.toUpperCase()
+                        : null;
+                setError(
+                    unsupported
+                        ? t("importing.unsupported", { types: unsupported })
+                        : reason === "unsupported"
+                          ? t("picker.unsupported")
+                          : t("importing.failed", {
+                                name: providerDisplayName ?? provider,
+                            }),
+                );
+                setProgress((p) => ({
+                    ...p,
+                    failed: p.failed + 1,
+                    unsupportedTypes: unsupported ? [unsupported] : [],
+                }));
             } finally {
                 setImportingId(null);
             }
         },
-        [provider, projectId, onImport, onClose],
+        [provider, providerDisplayName, projectId, onImport, onClose, t],
     );
 
     const dateFormatter = useMemo(
@@ -196,6 +228,7 @@ export function IntegrationFilePicker({
             total={progress.total}
             done={progress.done}
             failed={progress.failed}
+            unsupportedTypes={progress.unsupportedTypes}
         />
     ) : null;
 
@@ -230,7 +263,7 @@ export function IntegrationFilePicker({
                     <button
                         onClick={onClose}
                         className="rounded-lg p-1.5 text-muted-foreground/70 hover:bg-accent hover:text-muted-foreground"
-                        aria-label="Close"
+                        aria-label={tc("close")}
                     >
                         <X className="h-4 w-4" />
                     </button>
@@ -252,7 +285,7 @@ export function IntegrationFilePicker({
                             <button
                                 onClick={() => setQuery("")}
                                 className="text-muted-foreground/70 hover:text-muted-foreground"
-                                aria-label="Clear search"
+                                aria-label={t("clearSearch")}
                             >
                                 <X className="h-3.5 w-3.5" />
                             </button>
@@ -285,18 +318,37 @@ export function IntegrationFilePicker({
                         <ul className="divide-y divide-border">
                             {files.map((file) => {
                                 const isImporting = importingId === file.id;
-                                const disabled = importingId !== null;
+                                // Files the backend can't import (xlsx,
+                                // pptx, …) stay listed for orientation but
+                                // can't be picked.
+                                const supported =
+                                    isSupportedIntegrationFile(file);
+                                const disabled =
+                                    importingId !== null || !supported;
                                 return (
-                                    <li key={`${file.id}-${file.revision ?? ""}`}>
+                                    <li
+                                        key={`${file.id}-${file.revision ?? ""}`}
+                                        title={
+                                            supported
+                                                ? undefined
+                                                : t(
+                                                      "uploadErrors.supportedTypes",
+                                                      {
+                                                          types: SUPPORTED_UPLOAD_LABEL,
+                                                      },
+                                                  )
+                                        }
+                                    >
                                         <button
                                             type="button"
                                             disabled={disabled}
                                             onClick={() => handleImport(file)}
-                                            className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors ${
+                                            className={cn(
+                                                "w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors",
                                                 disabled
                                                     ? "opacity-50 cursor-not-allowed"
-                                                    : "hover:bg-accent cursor-pointer"
-                                            }`}
+                                                    : "hover:bg-accent cursor-pointer",
+                                            )}
                                         >
                                             {isImporting ? (
                                                 <Loader2 className="h-4 w-4 shrink-0 text-foreground animate-spin" />
@@ -340,6 +392,11 @@ export function IntegrationFilePicker({
                                             {isImporting && (
                                                 <span className="text-xs text-foreground shrink-0">
                                                     {t("picker.importing")}
+                                                </span>
+                                            )}
+                                            {!supported && (
+                                                <span className="text-xs text-muted-foreground shrink-0">
+                                                    {t("picker.unsupported")}
                                                 </span>
                                             )}
                                         </button>

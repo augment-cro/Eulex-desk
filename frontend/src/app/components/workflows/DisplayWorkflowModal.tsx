@@ -13,6 +13,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { MikeDocument, MikeWorkflow } from "../shared/types";
+import { getLocalizedWorkflowTitle } from "./builtinWorkflows";
 import { createTabularReview } from "@/app/lib/mikeApi";
 import { track } from "@/app/lib/analytics";
 import { useRouter } from "next/navigation";
@@ -290,6 +291,7 @@ function TabularPanel({ workflow, columnsLabel = "Columns", noColumnsLabel = "No
 // ---------------------------------------------------------------------------
 export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
     const t = useTranslations("displayWorkflow");
+    const tBuiltinTitles = useTranslations("builtinWorkflows");
     const [screen, setScreen] = useState<"select" | "configure">("select");
     const [selected, setSelected] = useState<MikeWorkflow | null>(workflow);
     const [listSearch, setListSearch] = useState("");
@@ -306,6 +308,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
     const [docSearch, setDocSearch] = useState("");
     const [assistantPrompt, setAssistantPrompt] = useState("");
     const [saving, setSaving] = useState(false);
+    const [applyError, setApplyError] = useState<string | null>(null);
 
     const router = useRouter();
     const { saveChat, setNewChatMessages } = useChatHistoryContext();
@@ -356,10 +359,16 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
     // ---------------------------------------------------------------------------
     async function handleStartChat() {
         setSaving(true);
+        setApplyError(null);
         try {
             const projectId = inProject ? selectedProjectId! : undefined;
             const chatId = await saveChat(projectId);
-            if (!chatId) return;
+            if (!chatId) {
+                // saveChat swallows its own error and returns null — surface
+                // it instead of a silent no-op (issue #123).
+                setApplyError(t("applyError"));
+                return;
+            }
             const allDocs: MikeDocument[] = [
                 ...standaloneDocuments,
                 ...projects.flatMap((p) => p.documents || []),
@@ -398,6 +407,9 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                     ? `/projects/${projectId}/assistant/chat/${chatId}`
                     : `/assistant/chat/${chatId}`,
             );
+        } catch (err) {
+            console.error("[workflow] start chat failed", err);
+            setApplyError(t("applyError"));
         } finally {
             setSaving(false);
         }
@@ -414,6 +426,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
         const projectId = inProject ? selectedProjectId! : undefined;
 
         setSaving(true);
+        setApplyError(null);
         try {
             const review = await createTabularReview({
                 title: wf.title,
@@ -429,6 +442,9 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                     ? `/projects/${projectId}/tabular-reviews/${review.id}`
                     : `/tabular-reviews/${review.id}`,
             );
+        } catch (err) {
+            console.error("[workflow] create review failed", err);
+            setApplyError(t("applyError"));
         } finally {
             setSaving(false);
         }
@@ -538,7 +554,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                 {/* List */}
                                 <div className="overflow-y-auto flex-1">
                                     {workflows
-                                        .filter((wfItem) => !listSearch || wfItem.title.toLowerCase().includes(listSearch.toLowerCase()))
+                                        .filter((wfItem) => !listSearch || getLocalizedWorkflowTitle(wfItem, tBuiltinTitles).toLowerCase().includes(listSearch.toLowerCase()))
                                         .map((wfItem) => {
                                             const isSelected = selected?.id === wfItem.id;
                                             const Icon = wfItem.type === "tabular" ? Table2 : MessageSquare;
@@ -551,7 +567,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                                     className={`w-full flex items-center gap-3 px-4 py-3 text-xs text-left border-b border-border transition-colors ${isSelected ? "bg-secondary" : "hover:bg-accent"}`}
                                                 >
                                                     <span className={`flex-1 truncate ${isSelected ? "text-foreground font-medium" : "text-foreground"}`}>
-                                                        {wfItem.title}
+                                                        {getLocalizedWorkflowTitle(wfItem, tBuiltinTitles)}
                                                     </span>
                                                     <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
                                                 </button>
@@ -711,10 +727,20 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                         </div>
 
                         <div className="border-t border-border px-5 py-3 flex items-center justify-between shrink-0">
-                            <span className="text-xs text-muted-foreground/70">
-                                {!inProject && selectedDocIds.size > 0
-                                    ? t("selected", { count: selectedDocIds.size })
-                                    : ""}
+                            <span className="text-xs">
+                                {applyError ? (
+                                    <span className="text-destructive">
+                                        {applyError}
+                                    </span>
+                                ) : !inProject && selectedDocIds.size > 0 ? (
+                                    <span className="text-muted-foreground/70">
+                                        {t("selected", {
+                                            count: selectedDocIds.size,
+                                        })}
+                                    </span>
+                                ) : (
+                                    ""
+                                )}
                             </span>
                             <button
                                 onClick={handleStartChat}
@@ -834,10 +860,20 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                         </div>
 
                         <div className="border-t border-border px-5 py-3 flex items-center justify-between shrink-0">
-                            <span className="text-xs text-muted-foreground/70">
-                                {selectedDocIds.size > 0
-                                    ? t("selected", { count: selectedDocIds.size })
-                                    : ""}
+                            <span className="text-xs">
+                                {applyError ? (
+                                    <span className="text-destructive">
+                                        {applyError}
+                                    </span>
+                                ) : selectedDocIds.size > 0 ? (
+                                    <span className="text-muted-foreground/70">
+                                        {t("selected", {
+                                            count: selectedDocIds.size,
+                                        })}
+                                    </span>
+                                ) : (
+                                    ""
+                                )}
                             </span>
                             <button
                                 onClick={handleCreateReview}

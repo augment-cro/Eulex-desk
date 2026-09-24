@@ -5,16 +5,30 @@ import { useLocale, useTranslations } from "next-intl";
 import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { TIER_RANK } from "@/lib/tiers";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import { track } from "@/app/lib/analytics";
 import {
+    cancelSubscriptionRenewal,
+    getBillingStatus,
+    type BillingSubscriptionView,
+} from "@/app/lib/mikeApi";
+import {
     PlusUpgradeModal,
     type UpgradePlan,
 } from "@/app/components/shared/PlusUpgradeModal";
 
+import { API_BASE } from "@/app/lib/apiBase";
 /** Canonical tier keys. Mirrors backend lib/entitlements TierKey. */
 export type TierKey =
     | "free"
@@ -32,9 +46,6 @@ const TEAM_TIERS: readonly TierKey[] = ["team", "eulex_legal_team", "enterprise"
 
 /** Enterprise is on-demand — its CTA opens a sales contact, not checkout. */
 const ENTERPRISE_CONTACT = "mailto:info@eulex.ai";
-
-const API_BASE =
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
 
 interface LocaleCopy {
     name: string;
@@ -84,6 +95,15 @@ export function PlanCards({ currentTier }: { currentTier?: TierKey | null }) {
     const [failed, setFailed] = useState(false);
     const [upgradePlan, setUpgradePlan] = useState<UpgradePlan | null>(null);
 
+    // Live Stripe subscription snapshot — drives the cancel-renewal button
+    // on the current plan's card. `null` = no active subscription (or the
+    // lookup failed): the button simply stays hidden.
+    const [subscription, setSubscription] =
+        useState<BillingSubscriptionView | null>(null);
+    const [cancelOpen, setCancelOpen] = useState(false);
+    const [cancelling, setCancelling] = useState(false);
+    const [cancelError, setCancelError] = useState(false);
+
     useEffect(() => {
         let cancelled = false;
         (async () => {
@@ -107,6 +127,29 @@ export function PlanCards({ currentTier }: { currentTier?: TierKey | null }) {
         };
     }, []);
 
+    useEffect(() => {
+        // Only paid tiers can have a renewal to cancel — skip the lookup
+        // for free/anonymous users so their cards never trigger the call.
+        if (!currentTier || currentTier === "free") {
+            setSubscription(null);
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            try {
+                const status = await getBillingStatus();
+                if (!cancelled) setSubscription(status.subscription);
+            } catch {
+                // Non-fatal: without a snapshot the cancel button stays
+                // hidden; the rest of the cards render normally.
+                if (!cancelled) setSubscription(null);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [currentTier]);
+
     if (failed) {
         return (
             <p className="text-sm text-muted-foreground">{t("loadError")}</p>
@@ -123,6 +166,38 @@ export function PlanCards({ currentTier }: { currentTier?: TierKey | null }) {
     const defaultTab =
         currentTier && TEAM_TIERS.includes(currentTier) ? "team" : "individual";
     const currentRank = tierRank(currentTier);
+
+    const periodEndLabel = subscription?.current_period_end
+        ? new Intl.DateTimeFormat(loc === "hr" ? "hr-HR" : "en-GB", {
+              dateStyle: "long",
+          }).format(new Date(subscription.current_period_end * 1000))
+        : null;
+
+    const confirmCancelRenewal = async () => {
+        setCancelling(true);
+        setCancelError(false);
+        try {
+            const result = await cancelSubscriptionRenewal();
+            track("plan_renewal_cancelled", { tier: currentTier ?? "unknown" });
+            setSubscription((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          cancel_at_period_end: true,
+                          current_period_end:
+                              result.current_period_end ??
+                              prev.current_period_end,
+                      }
+                    : prev,
+            );
+            setCancelOpen(false);
+            void reloadProfile();
+        } catch {
+            setCancelError(true);
+        } finally {
+            setCancelling(false);
+        }
+    };
 
     const renderCard = (plan: PlanEntry) => {
         const c = plan.locales[loc] ?? plan.locales.en;
@@ -215,9 +290,38 @@ export function PlanCards({ currentTier }: { currentTier?: TierKey | null }) {
 
                 <div className="mt-5">
                     {isCurrent ? (
-                        <Button variant="outline" className="w-full" disabled>
-                            {t("currentCta")}
-                        </Button>
+                        <div className="flex flex-col gap-2">
+                            <Button
+                                variant="outline"
+                                className="w-full"
+                                disabled
+                            >
+                                {t("currentCta")}
+                            </Button>
+                            {plan.tierKey !== "free" &&
+                                subscription &&
+                                (subscription.cancel_at_period_end ? (
+                                    <p className="text-center text-xs text-muted-foreground">
+                                        {periodEndLabel
+                                            ? t("cancelRenewal.endsNote", {
+                                                  date: periodEndLabel,
+                                              })
+                                            : t("cancelRenewal.endsNoteNoDate")}
+                                    </p>
+                                ) : (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="w-full border-destructive/20 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                        onClick={() => {
+                                            setCancelError(false);
+                                            setCancelOpen(true);
+                                        }}
+                                    >
+                                        {t("cancelRenewal.cta")}
+                                    </Button>
+                                ))}
+                        </div>
                     ) : isIncluded ? (
                         <Button
                             variant="outline"
@@ -284,6 +388,52 @@ export function PlanCards({ currentTier }: { currentTier?: TierKey | null }) {
                     void reloadProfile();
                 }}
             />
+
+            <Dialog
+                open={cancelOpen}
+                onOpenChange={(open) => {
+                    if (!cancelling) setCancelOpen(open);
+                }}
+            >
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>{t("cancelRenewal.title")}</DialogTitle>
+                        <DialogDescription>
+                            {periodEndLabel
+                                ? t("cancelRenewal.bodyWithDate", {
+                                      date: periodEndLabel,
+                                  })
+                                : t("cancelRenewal.body")}
+                        </DialogDescription>
+                    </DialogHeader>
+                    {cancelError && (
+                        <p className="text-sm text-destructive">
+                            {t("cancelRenewal.error")}
+                        </p>
+                    )}
+                    <DialogFooter>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            disabled={cancelling}
+                            onClick={() => setCancelOpen(false)}
+                        >
+                            {t("cancelRenewal.keep")}
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            className="border-destructive/20 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            disabled={cancelling}
+                            onClick={() => void confirmCancelRenewal()}
+                        >
+                            {cancelling
+                                ? t("cancelRenewal.pending")
+                                : t("cancelRenewal.confirm")}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </>
     );
 }

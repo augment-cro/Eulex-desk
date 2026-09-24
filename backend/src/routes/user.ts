@@ -1,15 +1,18 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
 import { from } from "../lib/dbShim";
+import { syncSignupContact } from "../lib/brevoContacts";
 import { getPool } from "../lib/db";
 import { maskApiKey } from "../lib/crypto";
 import { deleteFile } from "../lib/storage";
+import { textCachePathsFor } from "../lib/documentText";
 import { safeErrorMessage, safeErrorLog } from "../lib/safeError";
 import {
     isSupabaseAdminConfigured,
     deleteSupabaseUser,
 } from "../lib/supabaseAdmin";
 import {
+    attachRateLimitHeaders,
     getRateLimitSnapshot,
     resolveTierLimits,
     setRateLimitHeaders,
@@ -22,6 +25,10 @@ import {
     type TierKey,
 } from "../lib/entitlements";
 import { resolveModel, DEFAULT_TABULAR_MODEL } from "../lib/llm/models";
+import {
+    isStripeConfigured,
+    syncCustomerInvoiceDetails,
+} from "../lib/stripe";
 
 export const userRouter = Router();
 
@@ -99,7 +106,10 @@ function serverKeyAvailability() {
 }
 
 // GET /user/profile
-userRouter.get("/profile", requireAuth, async (_req, res) => {
+// attachRateLimitHeaders (headers-only, no gating): the profile is fetched
+// on every app load, so the usage ring/banner get a fresh snapshot without
+// waiting for the first LLM call.
+userRouter.get("/profile", requireAuth, attachRateLimitHeaders(), async (_req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   // Tier + entitlements drive client-side feature gating; the backend
@@ -116,14 +126,30 @@ userRouter.get("/profile", requireAuth, async (_req, res) => {
   // IAM DB user can't ALTER it. Single query for both fields.
   let country: string | null = null;
   let vatNumber: string | null = null;
+  let addressLine1: string | null = null;
+  let addressCity: string | null = null;
+  let addressPostalCode: string | null = null;
+  let phone: string | null = null;
   try {
     const pool = await getPool();
-    const r = await pool.query<{ country: string | null; vat_number: string | null }>(
-      `SELECT country, vat_number FROM public.user_tier_state WHERE user_id = $1`,
+    const r = await pool.query<{
+      country: string | null;
+      vat_number: string | null;
+      address_line1: string | null;
+      address_city: string | null;
+      address_postal_code: string | null;
+      phone: string | null;
+    }>(
+      `SELECT country, vat_number, address_line1, address_city, address_postal_code, phone
+         FROM public.user_tier_state WHERE user_id = $1`,
       [userId],
     );
     country = r.rows[0]?.country ?? null;
     vatNumber = r.rows[0]?.vat_number ?? null;
+    addressLine1 = r.rows[0]?.address_line1 ?? null;
+    addressCity = r.rows[0]?.address_city ?? null;
+    addressPostalCode = r.rows[0]?.address_postal_code ?? null;
+    phone = r.rows[0]?.phone ?? null;
   } catch (err) {
     console.warn(
       "[user/profile] country/VAT lookup failed (non-fatal):",
@@ -167,10 +193,10 @@ userRouter.get("/profile", requireAuth, async (_req, res) => {
       openai_api_key: null,
       mistral_api_key: null,
       server_keys: serverKeyAvailability(),
-      // PII Shield defaults — match migration 120 column defaults.
+      // PII Shield default — the single Anonymization mode (#14 /
+      // migration 207). The retired review/disclosure fields are no
+      // longer part of the profile contract.
       pii_default_mode: "off",
-      pii_review_required: false,
-      pii_disclosure_policy: "ask",
     });
   }
 
@@ -196,6 +222,10 @@ userRouter.get("/profile", requireAuth, async (_req, res) => {
   // persist it on user_profiles.
   safe.country = country;
   safe.vat_number = vatNumber;
+  safe.address_line1 = addressLine1;
+  safe.address_city = addressCity;
+  safe.address_postal_code = addressPostalCode;
+  safe.phone = phone;
   // Boolean flags only — never the env-var values themselves. This is
   // what the Settings UI keys off to skip "please paste your key" for
   // providers the operator has wired up centrally (e.g. via Secret
@@ -236,15 +266,15 @@ userRouter.patch("/profile", requireAuth, async (req, res) => {
     // Stripe customer.tax_id so invoices can show it and zero-rate
     // reverse-charge B2B sales. Empty string clears it.
     "vat_number",
-    // PII Shield user defaults — see migration 120 + lib/pii/gate.ts.
+    // PII Shield user default — single Anonymization mode since #14 /
+    // migration 207. The legacy pii_review_required /
+    // pii_disclosure_policy body keys are silently ignored (stale
+    // clients may still send them; the columns are no longer read).
     "pii_default_mode",
-    "pii_review_required",
-    "pii_disclosure_policy",
   ];
   const SUPPORTED_LOCALES = new Set(["en", "hr"]);
   const SUPPORTED_EFFORTS = new Set(["low", "medium", "high"]);
-  const SUPPORTED_PII_MODES = new Set(["off", "standard", "strict_legal", "strict"]);
-  const SUPPORTED_PII_DISCLOSURE = new Set(["allow", "deny", "ask"]);
+  const SUPPORTED_PII_MODES = new Set(["off", "standard", "strict"]);
   const updates: Record<string, any> = { updated_at: new Date().toISOString() };
   // BYOK was removed 2026-05 — Eulex Desk only ever uses server-level keys
   // (Secret Manager) so the rate limiter and cost forensics stay
@@ -276,16 +306,9 @@ userRouter.patch("/profile", requireAuth, async (req, res) => {
         }
       }
       if (key === "pii_default_mode") {
+        // Legacy alias from stale clients — persist the collapsed value.
+        if (val === "strict_legal") val = "strict";
         if (typeof val !== "string" || !SUPPORTED_PII_MODES.has(val)) continue;
-      }
-      if (key === "pii_disclosure_policy") {
-        if (typeof val !== "string" || !SUPPORTED_PII_DISCLOSURE.has(val)) continue;
-      }
-      if (key === "pii_review_required") {
-        // Accept boolean / "true" / "false" / 0 / 1 from forms.
-        if (typeof val === "string") val = val === "true";
-        if (typeof val === "number") val = val !== 0;
-        if (typeof val !== "boolean") continue;
       }
       updates[key] = val;
     }
@@ -299,36 +322,39 @@ userRouter.patch("/profile", requireAuth, async (req, res) => {
   // still gets persisted and the client sees the country attempt as a
   // 500 only if the country was the only field in the body.
   // country + vat_number live on user_tier_state, not user_profiles.
-  const tierStateUpdates: { country?: string | null; vat_number?: string | null } = {};
+  const tierStateUpdates: {
+    country?: string | null;
+    vat_number?: string | null;
+    address_line1?: string | null;
+    address_city?: string | null;
+    address_postal_code?: string | null;
+    phone?: string | null;
+  } = {};
   if (Object.prototype.hasOwnProperty.call(updates, "country")) {
     tierStateUpdates.country = updates.country as string | null;
     delete updates.country;
   }
-  if (Object.prototype.hasOwnProperty.call(updates, "vat_number")) {
-    // Empty string clears the field.
-    const raw = (updates.vat_number as string | null | undefined) ?? null;
-    tierStateUpdates.vat_number = (typeof raw === "string" && raw.trim()) ? raw.trim() : null;
-    delete updates.vat_number;
+  // Empty string clears the field — same rule for VAT and the billing
+  // address (tracker #35; address lives on user_tier_state too).
+  const clearable = ["vat_number", "address_line1", "address_city", "address_postal_code", "phone"] as const;
+  for (const key of clearable) {
+    if (Object.prototype.hasOwnProperty.call(updates, key)) {
+      const raw = (updates[key] as string | null | undefined) ?? null;
+      tierStateUpdates[key] = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+      delete updates[key];
+    }
   }
   if (Object.keys(tierStateUpdates).length > 0) {
     try {
       const pool = await getPool();
       // One idempotent upsert per changed field — keeps the logic simple
       // and ensures "send null" always clears (not COALESCE-guarded).
-      if ("country" in tierStateUpdates) {
+      for (const [col, val] of Object.entries(tierStateUpdates)) {
         await pool.query(
-          `INSERT INTO public.user_tier_state (user_id, country, active_tier_synced_at)
+          `INSERT INTO public.user_tier_state (user_id, ${col}, active_tier_synced_at)
                 VALUES ($1, $2, now())
-           ON CONFLICT (user_id) DO UPDATE SET country = EXCLUDED.country`,
-          [userId, tierStateUpdates.country ?? null],
-        );
-      }
-      if ("vat_number" in tierStateUpdates) {
-        await pool.query(
-          `INSERT INTO public.user_tier_state (user_id, vat_number, active_tier_synced_at)
-                VALUES ($1, $2, now())
-           ON CONFLICT (user_id) DO UPDATE SET vat_number = EXCLUDED.vat_number`,
-          [userId, tierStateUpdates.vat_number ?? null],
+           ON CONFLICT (user_id) DO UPDATE SET ${col} = EXCLUDED.${col}`,
+          [userId, val ?? null],
         );
       }
     } catch (err: any) {
@@ -362,6 +388,78 @@ userRouter.patch("/profile", requireAuth, async (req, res) => {
     .update(updates)
     .eq("user_id", userId);
   if (error) return void res.status(500).json({ detail: error.message });
+
+  // Language switch → move the contact between the hr/en Brevo lists.
+  // Awaited (not fire-and-forget) for the same Cloud Run freeze reason
+  // as the Stripe mirror below; never throws, never fails the save.
+  if ("preferred_language" in updates) {
+    const email = res.locals.userEmail as string | undefined;
+    if (email) {
+      await syncSignupContact({
+        email,
+        displayName: typeof updates.display_name === "string" ? updates.display_name : undefined,
+        language: updates.preferred_language as string,
+      });
+    }
+  }
+
+  // Mirror invoice-facing fields (company name + VAT) onto the Stripe
+  // customer, if one exists, so the *next* invoice shows them — the
+  // checkout path handles the first one. Awaited (not fire-and-forget)
+  // because Cloud Run may freeze the instance right after the response;
+  // best-effort inside, so a Stripe hiccup never fails the profile save.
+  const touchedInvoiceFields =
+    "vat_number" in tierStateUpdates ||
+    "country" in tierStateUpdates ||
+    "address_line1" in tierStateUpdates ||
+    "address_city" in tierStateUpdates ||
+    "address_postal_code" in tierStateUpdates ||
+    "phone" in tierStateUpdates ||
+    "organisation" in updates;
+  if (touchedInvoiceFields && isStripeConfigured()) {
+    try {
+      const pool = await getPool();
+      const r = await pool.query<{
+        stripe_customer_id: string | null;
+        vat_number: string | null;
+        country: string | null;
+        address_line1: string | null;
+        address_city: string | null;
+        address_postal_code: string | null;
+        phone: string | null;
+        organisation: string | null;
+      }>(
+        `SELECT s.stripe_customer_id, s.vat_number, s.country,
+                s.address_line1, s.address_city, s.address_postal_code, s.phone,
+                p.organisation
+           FROM public.user_tier_state s
+           LEFT JOIN public.user_profiles p ON p.user_id = s.user_id
+          WHERE s.user_id = $1`,
+        [userId],
+      );
+      const row = r.rows[0];
+      if (row?.stripe_customer_id) {
+        await syncCustomerInvoiceDetails(row.stripe_customer_id, {
+          name: row.organisation,
+          vatNumber: row.vat_number,
+          address: row.country
+            ? {
+                country: row.country,
+                line1: row.address_line1,
+                city: row.address_city,
+                postal_code: row.address_postal_code,
+              }
+            : null,
+          phone: row.phone,
+        });
+      }
+    } catch (err: any) {
+      console.warn(
+        "[user/profile] Stripe invoice-details sync failed (non-fatal):",
+        err.message,
+      );
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -411,7 +509,9 @@ userRouter.get("/rate-limit-status", requireAuth, async (_req, res) => {
             next_relief_at: snap.nextReliefAt?.toISOString() ?? null,
             percent_used: percentUsed,
             state,
-            topup_available: snap.tier.slug === "eulex_plus",
+            // Entitlement-driven (buyTokenPacks, Plus and up) — a slug
+            // check here showed Pro/Team the "upgrade to Plus" CTA.
+            topup_available: snap.topupAvailable,
         });
     } catch (err: any) {
         console.error("[user/rate-limit-status]", err);
@@ -434,23 +534,26 @@ userRouter.delete("/account", requireAuth, async (_req, res) => {
     const pool = await getPool();
 
     // 1) Collect and delete storage objects (originals + converted PDFs, across
-    // all document versions). Best-effort — deleteFile swallows not-found.
+    // all document versions). Storage paths live on `document_versions` — they
+    // were moved off `documents` (see lib/documentVersions.ts), so query only
+    // there. Best-effort — deleteFile swallows not-found.
     const storageKeys = new Set<string>();
-    const [docPaths, versionPaths] = await Promise.all([
-      pool.query<{ storage_path: string | null; pdf_storage_path: string | null }>(
-        `SELECT storage_path, pdf_storage_path FROM public.documents WHERE user_id = $1`,
-        [userId],
-      ),
-      pool.query<{ storage_path: string | null; pdf_storage_path: string | null }>(
-        `SELECT v.storage_path, v.pdf_storage_path
-           FROM public.document_versions v
-           JOIN public.documents d ON d.id = v.document_id
-          WHERE d.user_id = $1`,
-        [userId],
-      ),
-    ]);
-    for (const row of [...docPaths.rows, ...versionPaths.rows]) {
-      if (row.storage_path) storageKeys.add(row.storage_path);
+    const versionPaths = await pool.query<{
+      storage_path: string | null;
+      pdf_storage_path: string | null;
+    }>(
+      `SELECT v.storage_path, v.pdf_storage_path
+         FROM public.document_versions v
+         JOIN public.documents d ON d.id = v.document_id
+        WHERE d.user_id = $1`,
+      [userId],
+    );
+    for (const row of versionPaths.rows) {
+      if (row.storage_path) {
+        storageKeys.add(row.storage_path);
+        for (const derived of textCachePathsFor(row.storage_path))
+          storageKeys.add(derived);
+      }
       if (row.pdf_storage_path) storageKeys.add(row.pdf_storage_path);
     }
     await Promise.all([...storageKeys].map((key) => deleteFile(key)));

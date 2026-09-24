@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Layers } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
@@ -60,6 +60,13 @@ export function AttachContextsButton({ target, targetId }: Props) {
             setError(true);
         }
     }, [items, target, targetId]);
+
+    // Load links on mount (once the contexts list is available) so the badge
+    // count + active state are correct without first opening the dropdown
+    // (issue #126 F3). Re-opening still re-fetches for freshness.
+    useEffect(() => {
+        if (!linksLoaded && items.length > 0) void loadLinks();
+    }, [linksLoaded, items.length, loadLinks]);
 
     async function handleToggle(contextId: string, next: boolean) {
         setError(false);

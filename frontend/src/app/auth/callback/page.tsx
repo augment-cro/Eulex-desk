@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import {
     exchangeCodeForTokens,
     consumePostLoginRedirect,
@@ -15,6 +16,7 @@ function CallbackHandler() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const { isAuthenticated } = useAuth();
+    const t = useTranslations("login");
     const [error, setError] = useState<string | null>(null);
     const [tokensReady, setTokensReady] = useState(false);
     const [pendingNext, setPendingNext] = useState<string | null>(null);
@@ -26,12 +28,19 @@ function CallbackHandler() {
         const errorDesc = searchParams.get("error_description");
 
         if (oauthError) {
-            setError(errorDesc || oauthError);
+            // Raw OAuth error strings are English — log them, render
+            // localized copy.
+            console.error("[auth/callback]", oauthError, errorDesc);
+            setError(
+                oauthError === "access_denied"
+                    ? t("callbackAccessDenied")
+                    : t("callbackGenericError"),
+            );
             return;
         }
 
         if (!code || !state) {
-            setError("Missing authorization code or state parameter.");
+            setError(t("callbackMissingCode"));
             return;
         }
 
@@ -58,9 +67,9 @@ function CallbackHandler() {
             })
             .catch((err: Error) => {
                 console.error("[auth/callback] Token exchange failed:", err);
-                setError(err.message || "Authentication failed. Please try again.");
+                setError(t("callbackGenericError"));
             });
-    }, [searchParams]);
+    }, [searchParams, t]);
 
     useEffect(() => {
         if (tokensReady && isAuthenticated && pendingNext) {
@@ -92,14 +101,14 @@ function CallbackHandler() {
                             </svg>
                         </div>
                         <h2 className="text-xl font-semibold text-foreground mb-3">
-                            Authentication Failed
+                            {t("callbackFailedTitle")}
                         </h2>
                         <p className="text-muted-foreground text-sm mb-6">{error}</p>
                         <button
                             onClick={() => router.push("/login")}
                             className="w-full py-3 rounded-xl bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-colors"
                         >
-                            Try Again
+                            {t("callbackTryAgain")}
                         </button>
                     </div>
                 </div>
@@ -111,7 +120,9 @@ function CallbackHandler() {
         <div className="min-h-dvh bg-background flex items-center justify-center">
             <div className="text-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-2 border-border border-t-foreground mx-auto mb-4" />
-                <p className="text-muted-foreground text-sm">Completing sign-in...</p>
+                <p className="text-muted-foreground text-sm">
+                    {t("callbackCompleting")}
+                </p>
             </div>
         </div>
     );

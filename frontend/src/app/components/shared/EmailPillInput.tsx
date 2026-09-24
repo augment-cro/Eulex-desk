@@ -2,8 +2,11 @@
 
 import { useState } from "react";
 import { X } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Delimiters between addresses: comma, semicolon, any whitespace/newlines.
+const SPLIT_RE = /[,;\s]+/;
 
 interface Props {
     emails: string[];
@@ -19,9 +22,10 @@ export function EmailPillInput({
     onChange,
     validate,
     onValidatingChange,
-    placeholder = "Add by email…",
+    placeholder,
     autoFocus = false,
 }: Props) {
+    const t = useTranslations("emailPillInput");
     const [input, setInput] = useState("");
     const [validating, setValidating] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -32,44 +36,81 @@ export function EmailPillInput({
     }
 
     function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-        if (e.key === "Enter" || e.key === ",") {
+        if (e.key === "Enter" || e.key === "," || e.key === ";") {
             e.preventDefault();
-            addEmail();
+            void addEmails(input);
         } else if (e.key === "Backspace" && !input && emails.length > 0) {
             onChange(emails.slice(0, -1));
         }
     }
 
-    async function addEmail() {
-        const email = input.trim().toLowerCase();
-        if (!email) return;
-        if (emails.includes(email)) {
-            setInput("");
-            return;
+    function handlePaste(e: React.ClipboardEvent<HTMLInputElement>) {
+        const text = e.clipboardData.getData("text");
+        // Only take over when the paste contains delimiters (multiple
+        // addresses); a plain fragment keeps native paste behaviour.
+        if (SPLIT_RE.test(text)) {
+            e.preventDefault();
+            void addEmails(`${input} ${text}`);
         }
-        if (!EMAIL_RE.test(email)) {
-            setError("Enter a valid email address.");
-            return;
+    }
+
+    /**
+     * Split `raw` on commas/semicolons/whitespace, dedupe (case-insensitive,
+     * incl. against existing pills), validate each token, and add all valid
+     * ones. Invalid tokens stay in the input with the error shown.
+     */
+    async function addEmails(raw: string) {
+        const seen = new Set(emails.map((e) => e.toLowerCase()));
+        const candidates: string[] = [];
+        const rejected: string[] = [];
+        let firstError: string | null = null;
+
+        for (const token of raw.split(SPLIT_RE)) {
+            const email = token.trim().toLowerCase();
+            if (!email) continue;
+            if (seen.has(email)) continue; // duplicate — silently skipped
+            if (!EMAIL_RE.test(email)) {
+                rejected.push(token.trim());
+                continue;
+            }
+            seen.add(email);
+            candidates.push(email);
         }
-        if (validate) {
+
+        const accepted: string[] = [];
+        if (validate && candidates.length > 0) {
             setValidatingState(true);
             setError(null);
             try {
-                const err = await validate(email);
-                if (err) {
-                    setError(err);
-                    return;
+                for (const email of candidates) {
+                    try {
+                        const err = await validate(email);
+                        if (err) {
+                            rejected.push(email);
+                            firstError ??= err;
+                        } else {
+                            accepted.push(email);
+                        }
+                    } catch {
+                        rejected.push(email);
+                        firstError ??= t("verifyFailed");
+                    }
                 }
-            } catch {
-                setError("Could not verify email. Try again.");
-                return;
             } finally {
                 setValidatingState(false);
             }
+        } else {
+            accepted.push(...candidates);
         }
-        onChange([...emails, email]);
-        setInput("");
-        setError(null);
+
+        if (accepted.length > 0) onChange([...emails, ...accepted]);
+        if (rejected.length > 0) {
+            setInput(rejected.join(", "));
+            setError(firstError ?? t("invalidEmail"));
+        } else {
+            setInput("");
+            setError(null);
+        }
     }
 
     return (
@@ -104,14 +145,15 @@ export function EmailPillInput({
                         setError(null);
                     }}
                     onKeyDown={handleKeyDown}
-                    onBlur={addEmail}
-                    placeholder={emails.length === 0 ? placeholder : ""}
+                    onPaste={handlePaste}
+                    onBlur={() => void addEmails(input)}
+                    placeholder={emails.length === 0 ? (placeholder ?? t("placeholder")) : ""}
                     className="flex-1 min-w-[160px] bg-transparent text-sm text-foreground placeholder:text-muted-foreground/70 outline-none"
                     autoFocus={autoFocus}
                 />
             </div>
             {error && <p className="mt-1.5 text-xs text-destructive">{error}</p>}
-            {validating && <p className="mt-1.5 text-xs text-muted-foreground/70">Checking…</p>}
+            {validating && <p className="mt-1.5 text-xs text-muted-foreground/70">{t("checking")}</p>}
         </div>
     );
 }

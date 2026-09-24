@@ -8,11 +8,18 @@ import {
     createProject,
     uploadProjectDocument,
 } from "@/app/lib/mikeApi";
-import { track, fileTypeOf } from "@/app/lib/analytics";
+import {
+    preflightUploadFiles,
+    trackUploadResult,
+    uploadFilesBulk,
+    type UploadFailure,
+} from "@/app/lib/bulkUpload";
+import { SUPPORTED_UPLOAD_ACCEPT } from "@/app/lib/supportedFileTypes";
 import { useDirectoryData } from "../shared/useDirectoryData";
 import { FileDirectory } from "../shared/FileDirectory";
 import { EmailPillInput } from "../shared/EmailPillInput";
 import { ConnectorsButton } from "../shared/ConnectorsButton";
+import { UploadFailuresAlert } from "../shared/UploadFailuresAlert";
 import type { MikeDocument, MikeProject } from "../shared/types";
 
 interface Props {
@@ -38,6 +45,15 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     >([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [uploadFailures, setUploadFailures] = useState<UploadFailure[]>(
+        [],
+    );
+    // Set when the project was created but some files failed to upload:
+    // the modal stays on the failure summary (navigating away would hide
+    // it) and the primary button opens the project instead.
+    const [createdProject, setCreatedProject] = useState<MikeProject | null>(
+        null,
+    );
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const { loading: dirLoading, standaloneDocuments, projects: dirProjects } =
@@ -49,9 +65,17 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
         const files = Array.from(e.target.files ?? []);
         e.target.value = "";
         if (!files.length) return;
+        // Flag unsupported / oversized files now instead of letting them
+        // fail after the project exists (tracked as upload errors, like the
+        // other surfaces' pre-filter).
+        const { accepted, rejected } = preflightUploadFiles(files);
+        files
+            .filter((f) => !accepted.includes(f))
+            .forEach((f) => trackUploadResult("project", f, false));
+        setUploadFailures(rejected);
         setPendingFiles((prev) => [
             ...prev,
-            ...files.filter((f) => !prev.some((p) => p.name === f.name)),
+            ...accepted.filter((f) => !prev.some((p) => p.name === f.name)),
         ]);
     }
 
@@ -66,9 +90,14 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
+        if (createdProject) {
+            finish(createdProject);
+            return;
+        }
         if (!name.trim()) return;
         setLoading(true);
         setError("");
+        setUploadFailures([]);
         try {
             const project = await createProject(
                 name.trim(),
@@ -80,42 +109,48 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
             const allDocIds = Array.from(
                 new Set([...directorySelected, ...connectorIds]),
             );
-            await Promise.all([
-                ...allDocIds.map((id) =>
-                    addDocumentToProject(project.id, id).catch(() => {}),
+            // Count only the docs that actually attached/uploaded, so the
+            // projects list doesn't show an inflated document_count when some
+            // attach/upload calls fail (issue #105).
+            let attachedOk = 0;
+            const [, { uploaded, failures }] = await Promise.all([
+                Promise.all(
+                    allDocIds.map((id) =>
+                        addDocumentToProject(project.id, id).then(
+                            () => {
+                                attachedOk += 1;
+                            },
+                            () => {},
+                        ),
+                    ),
                 ),
-                ...pendingFiles.map((f) => {
-                    const fileType = fileTypeOf(f);
-                    return uploadProjectDocument(project.id, f).then(
-                        () => {
-                            track("document_uploaded", {
-                                surface: "project",
-                                file_type: fileType,
-                                result: "success",
-                            });
-                        },
-                        () => {
-                            track("document_uploaded", {
-                                surface: "project",
-                                file_type: fileType,
-                                result: "error",
-                            });
-                        },
-                    );
+                uploadFilesBulk(pendingFiles, {
+                    upload: (f) => uploadProjectDocument(project.id, f),
+                    surface: "project",
                 }),
             ]);
-            onCreated({
+            const created = {
                 ...project,
-                document_count:
-                    allDocIds.length + pendingFiles.length,
-            });
-            resetForm();
-            onClose();
+                document_count: attachedOk + uploaded.length,
+            };
+            if (failures.length > 0) {
+                setCreatedProject(created);
+                setUploadFailures(failures);
+                setPendingFiles([]);
+                return;
+            }
+            finish(created);
         } catch (err: unknown) {
             setError((err as Error).message || t("failedToCreate"));
         } finally {
             setLoading(false);
         }
+    }
+
+    function finish(project: MikeProject) {
+        onCreated(project);
+        resetForm();
+        onClose();
     }
 
     function resetForm() {
@@ -127,9 +162,17 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
         setPendingFiles([]);
         setImportedConnectorDocs([]);
         setError("");
+        setUploadFailures([]);
+        setCreatedProject(null);
     }
 
+    // Once the project exists, closing still has to hand it to the parent
+    // (list + navigation) — otherwise it would silently vanish from view.
     function handleClose() {
+        if (createdProject) {
+            finish(createdProject);
+            return;
+        }
         resetForm();
         onClose();
     }
@@ -242,12 +285,19 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                         )}
                     </div>
 
+                    <UploadFailuresAlert
+                        failures={uploadFailures}
+                        onDismiss={() => setUploadFailures([])}
+                        className="mx-6 mb-3 w-auto shrink-0"
+                    />
+
                     {/* Footer */}
                     <div className="flex items-center justify-between border-t border-border px-6 py-4 shrink-0">
                         <div className="flex items-center gap-2">
                             <input
                                 ref={fileInputRef}
                                 type="file"
+                                accept={SUPPORTED_UPLOAD_ACCEPT}
                                 multiple
                                 className="hidden"
                                 onChange={handleFileChange}
@@ -255,7 +305,8 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                             <button
                                 type="button"
                                 onClick={() => fileInputRef.current?.click()}
-                                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent transition-colors"
+                                disabled={!!createdProject}
+                                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent transition-colors disabled:opacity-50"
                             >
                                 <Upload className="h-3.5 w-3.5" />
                                 {t("uploadFiles")}
@@ -263,24 +314,35 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                                     ? ` (${extraDocCount})`
                                     : ""}
                             </button>
-                            <ConnectorsButton
-                                onImport={handleConnectorImport}
-                            />
+                            {!createdProject && (
+                                <ConnectorsButton
+                                    onImport={handleConnectorImport}
+                                />
+                            )}
                         </div>
                         <div className="flex items-center gap-2">
-                            <button
-                                type="button"
-                                onClick={handleClose}
-                                className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:bg-accent transition-colors"
-                            >
-                                {t("cancel")}
-                            </button>
+                            {!createdProject && (
+                                <button
+                                    type="button"
+                                    onClick={handleClose}
+                                    className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:bg-accent transition-colors"
+                                >
+                                    {t("cancel")}
+                                </button>
+                            )}
                             <button
                                 type="submit"
-                                disabled={!name.trim() || loading}
+                                disabled={
+                                    !createdProject &&
+                                    (!name.trim() || loading)
+                                }
                                 className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
                             >
-                                {loading ? t("creating") : t("create")}
+                                {createdProject
+                                    ? t("openProject")
+                                    : loading
+                                      ? t("creating")
+                                      : t("create")}
                             </button>
                         </div>
                     </div>

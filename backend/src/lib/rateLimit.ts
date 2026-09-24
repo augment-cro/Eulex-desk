@@ -20,9 +20,11 @@
  */
 
 import type { RequestHandler } from "express";
-import { query } from "./db";
+import { recordAuditEvent } from "./audit";
+import { query, getClient } from "./db";
 import { can, getEntitlements } from "./entitlements";
 import { ensureTierRow, getTierLimitsRow } from "./tierLimitsStore";
+import { getFreshSupabaseTier } from "./tierResolution";
 
 /** Window width in seconds, exposed via `RateLimit-Limit` w= parameter. */
 export const WINDOW_SECONDS = 86_400;
@@ -218,35 +220,60 @@ export async function consumeCredits(
     if (overage <= 0) return 0;
     let remaining = overage;
     let drawn = 0;
-    const { rows: packs } = await query<{
-        id: string;
-        available: string | number;
-    }>(
-        `SELECT
-            id,
-            (tokens_granted - tokens_consumed)::bigint AS available
-        FROM public.user_token_credits
-        WHERE user_id = $1
-          AND voided_at IS NULL
-          AND tokens_consumed < tokens_granted
-          AND (expires_at IS NULL OR expires_at > NOW())
-        ORDER BY granted_at ASC, id ASC
-        FOR UPDATE`,
-        [userId],
-    );
-    for (const p of packs) {
-        if (remaining <= 0) break;
-        const avail = Number(p.available);
-        if (avail <= 0) continue;
-        const take = Math.min(avail, remaining);
-        await query(
-            `UPDATE public.user_token_credits
-             SET tokens_consumed = tokens_consumed + $1
-             WHERE id = $2`,
-            [take, p.id],
+    // Must run on ONE connection inside a transaction: `query()` is pool
+    // autocommit, so the SELECT … FOR UPDATE released its lock at statement
+    // end and the follow-up UPDATEs were unguarded — two concurrent turns
+    // could both read the same pack and over-draw it past tokens_granted
+    // (issue #94). Hold the row locks for the whole drain, and guard each
+    // UPDATE with LEAST(...) so a pack can never exceed its grant even under
+    // a lost update.
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const { rows: packs } = await client.query<{
+            id: string;
+            available: string | number;
+        }>(
+            `SELECT
+                id,
+                (tokens_granted - tokens_consumed)::bigint AS available
+            FROM public.user_token_credits
+            WHERE user_id = $1
+              AND voided_at IS NULL
+              AND tokens_consumed < tokens_granted
+              AND (expires_at IS NULL OR expires_at > NOW())
+            ORDER BY granted_at ASC, id ASC
+            FOR UPDATE`,
+            [userId],
         );
-        remaining -= take;
-        drawn += take;
+        for (const p of packs) {
+            if (remaining <= 0) break;
+            const avail = Number(p.available);
+            if (avail <= 0) continue;
+            // take ≤ avail, and the row is locked FOR UPDATE, so LEAST never
+            // clips here — it's a defensive cap so the column can never
+            // exceed the grant even if the invariant is ever violated.
+            const take = Math.min(avail, remaining);
+            await client.query(
+                `UPDATE public.user_token_credits
+                 SET tokens_consumed =
+                     LEAST(tokens_consumed + $1, tokens_granted)
+                 WHERE id = $2`,
+                [take, p.id],
+            );
+            remaining -= take;
+            drawn += take;
+        }
+        await client.query("COMMIT");
+    } catch (err) {
+        try {
+            await client.query("ROLLBACK");
+        } catch {
+            /* connection already broken */
+        }
+        throw err;
+    } finally {
+        client.release();
     }
     return drawn;
 }
@@ -355,17 +382,40 @@ function nextReliefSeconds(nextReliefAt: Date | null): number {
 export function enforceRateLimit(): RequestHandler {
     return async (_req, res, next) => {
         const userId = res.locals.userId as string | undefined;
-        const tierLevelId = res.locals.tierLevelId as number | undefined;
-        const tierSlug = res.locals.tier as string | undefined;
+        let tierLevelId = res.locals.tierLevelId as number | undefined;
+        let tierSlug = (res.locals.tier as string | undefined) ?? null;
         if (!userId || typeof tierLevelId !== "number") {
             next();
             return;
         }
         try {
+            // Phase B of tracker #15 (GH #143): for Supabase-authenticated
+            // callers the auth-time tier came from the JWT's app_metadata,
+            // which can be ~1h stale (access-token lifetime). On this
+            // ENFORCEMENT path a stale tier could over-grant (cancelled sub
+            // still burning a paid quota) or under-grant (fresh upgrade
+            // capped at free), so re-read the tier via a fresh admin lookup
+            // — amortised by a 60s in-process per-user cache inside
+            // getFreshSupabaseTier(), which never throws. "none"/"error"
+            // outcomes keep the auth-time resolution (fallback chain /
+            // fail-open toward what auth already decided).
+            const supabaseUserId = res.locals.supabaseUserId as
+                | string
+                | undefined;
+            if (supabaseUserId) {
+                const fresh = await getFreshSupabaseTier(supabaseUserId);
+                if (fresh.kind === "tier") {
+                    tierLevelId = fresh.tierLevelId;
+                    if (fresh.tierSlug) tierSlug = fresh.tierSlug;
+                    // Keep the request self-consistent: entitlement gates
+                    // running after this middleware see the fresh tier too.
+                    res.locals.tierLevelId = fresh.tierLevelId;
+                }
+            }
             const snap = await getRateLimitSnapshot(
                 userId,
                 tierLevelId,
-                tierSlug ?? null,
+                tierSlug,
             );
             setRateLimitHeaders(res, snap);
             // Stash the snapshot so the route can read it without a
@@ -387,6 +437,18 @@ export function enforceRateLimit(): RequestHandler {
             // so Pro/Team get the "Nadoplati" hint too. Already resolved on
             // the snapshot; reuse it rather than a second entitlement lookup.
             const topupAvailable = snap.topupAvailable;
+            // Growth signal (migration 210): the strongest upgrade-timing
+            // event we have — the user hit the ceiling mid-work.
+            void recordAuditEvent({
+                userId,
+                eventType: "quota.hit",
+                metadata: {
+                    tier: snap.tier.slug,
+                    used_tokens: snap.usedTokensWindow,
+                    limit_tokens: snap.effectiveLimit,
+                    topup_available: topupAvailable,
+                },
+            });
             res.status(429).json({
                 detail: "Token quota exceeded for this 24h rolling window.",
                 code: "RATE_LIMITED",

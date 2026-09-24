@@ -302,7 +302,20 @@ export async function refreshAccessToken(): Promise<TokenSet | null> {
             );
             const { data, error } = await getSupabase().auth.refreshSession();
             if (error || !data.session) {
-                clearTokens();
+                // Only a genuinely dead refresh token ends the session.
+                // This used to clear on ANY error, so a network blip or
+                // Supabase's own rate limit on /token logged the user out —
+                // exactly what mikeApi's "one refresh + retry" is written to
+                // prevent, and the tail of the tracker #32 loop. supabase-js
+                // stays the authority for real session death: it emits
+                // SIGNED_OUT, which initSupabaseAuthMirror() already clears
+                // on. Anything transient keeps the tokens so the caller can
+                // retry.
+                const dead =
+                    error?.code === "refresh_token_not_found" ||
+                    error?.code === "session_not_found" ||
+                    (!error && !data.session);
+                if (dead) clearTokens();
                 return null;
             }
             mirrorSupabaseSession(data.session);

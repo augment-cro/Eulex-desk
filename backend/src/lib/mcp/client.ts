@@ -92,6 +92,15 @@ export class McpHttpClient {
         );
     }
 
+    /**
+     * The server's initialize-time `instructions` — its own usage guidance
+     * for clients (tool selection, identifier formats, query language).
+     * Available after connect(); undefined when the server ships none.
+     */
+    getInstructions(): string | undefined {
+        return this.client?.getInstructions();
+    }
+
     async listTools(): Promise<Tool[]> {
         if (!this.client) throw new Error("MCP client not connected");
         const result = await withTimeout(

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getProject, listProjects, listStandaloneDocuments } from "@/app/lib/mikeApi";
+import { listProjects, listStandaloneDocuments } from "@/app/lib/mikeApi";
 import type { MikeDocument, MikeProject } from "./types";
 
 const CACHE_TTL_MS = 30_000;
@@ -35,22 +35,24 @@ export function useDirectoryData(enabled: boolean) {
         }
 
         setLoading(true);
-        Promise.all([listProjects(), listStandaloneDocuments()])
+        // One request for all projects WITH their documents (batched
+        // server-side) — the previous getProject()-per-project fan-out
+        // fired N+1 requests on every modal open (#26).
+        Promise.all([
+            listProjects({ includeDocuments: true }),
+            listStandaloneDocuments(),
+        ])
             .then(([ps, ds]) => {
                 const sorted = [...ds].sort((a, b) =>
                     (b.created_at ?? "").localeCompare(a.created_at ?? ""),
                 );
-                return Promise.all(ps.map((p) => getProject(p.id))).then(
-                    (fullProjects) => {
-                        cache = {
-                            standaloneDocuments: sorted,
-                            projects: fullProjects,
-                            fetchedAt: Date.now(),
-                        };
-                        setStandaloneDocuments(sorted);
-                        setProjects(fullProjects);
-                    },
-                );
+                cache = {
+                    standaloneDocuments: sorted,
+                    projects: ps,
+                    fetchedAt: Date.now(),
+                };
+                setStandaloneDocuments(sorted);
+                setProjects(ps);
             })
             .catch(() => {
                 setStandaloneDocuments([]);

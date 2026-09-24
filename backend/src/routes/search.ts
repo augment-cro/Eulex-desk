@@ -23,6 +23,7 @@
  */
 
 import { Router } from "express";
+import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
 import { requireAuth } from "../middleware/auth";
 import { webSearch, type SearchProvider } from "../lib/search";
 import { resolveProjectSearchConfig } from "../lib/search/search_config";
@@ -108,8 +109,17 @@ searchRouter.post("/", requireAuth, async (req, res) => {
         );
         if (cost > 0) {
             // Fire-and-forget; recordLlmUsage swallows its own failures.
+            void recordFeatureUse({ userId, feature: "search", surface: "search", projectId });
+            void recordAuditEvent({
+                userId,
+                eventType: "search.performed",
+                projectId,
+                surface: "search",
+                metadata: { provider: resp.provider, results: Array.isArray(resp.results) ? resp.results.length : 0 },
+            });
             void recordLlmUsage({
                 userId,
+                client: "search",
                 provider: "web_search",
                 model: resp.provider,
                 projectId,

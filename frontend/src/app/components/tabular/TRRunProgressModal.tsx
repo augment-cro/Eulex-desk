@@ -12,6 +12,8 @@ import type {
 interface Props {
     open: boolean;
     generating: boolean;
+    /** Localized message when the run was rejected/failed (issue #114). */
+    runError?: string | null;
     documents: MikeDocument[];
     columns: ColumnConfig[];
     cells: TabularCell[];
@@ -28,6 +30,7 @@ interface Props {
 export function TRRunProgressModal({
     open,
     generating,
+    runError,
     documents,
     columns,
     cells,
@@ -67,7 +70,14 @@ export function TRRunProgressModal({
         const docById = new Map(documents.map((d) => [d.id, d.filename]));
         const colByIdx = new Map(columns.map((c) => [c.index, c.name]));
         return cells
-            .filter((c) => c.status === "generating")
+            // Only cells for a still-loaded (doc × column) — otherwise a cell
+            // for a doc removed mid-run rendered its raw UUID (issue #115).
+            .filter(
+                (c) =>
+                    c.status === "generating" &&
+                    docById.has(c.document_id) &&
+                    colByIdx.has(c.column_index),
+            )
             .slice(0, 3)
             .map((c) => ({
                 docName: docById.get(c.document_id) ?? c.document_id,
@@ -78,13 +88,14 @@ export function TRRunProgressModal({
     }, [cells, documents, columns]);
 
     // Auto-close when the run is finished AND user hasn't already minimised.
-    // We add a small dwell so the "Done" state is actually visible.
+    // We add a small dwell so the "Done" state is actually visible. A run
+    // that errored stays open so the user actually sees it (issue #114).
     useEffect(() => {
-        if (!open || generating) return;
+        if (!open || generating || runError) return;
         if (total === 0) return;
         const id = setTimeout(() => onClose(), 1600);
         return () => clearTimeout(id);
-    }, [open, generating, total, onClose]);
+    }, [open, generating, runError, total, onClose]);
 
     // Reset minimised state every time the modal is freshly opened.
     useEffect(() => {
@@ -93,7 +104,8 @@ export function TRRunProgressModal({
 
     if (!open) return null;
 
-    const completed = !generating && total > 0;
+    const errored = !generating && !!runError;
+    const completed = !generating && !runError && total > 0;
 
     // Minimised: floating chip in bottom-right. Tapping it restores the modal.
     if (minimised) {
@@ -103,7 +115,9 @@ export function TRRunProgressModal({
                 aria-label={t("runProgressRestore")}
                 className="fixed bottom-6 right-6 z-[9999] flex items-center gap-2 rounded-full bg-surface-elevated px-4 py-2 ring-1 ring-ring transition"
             >
-                {completed ? (
+                {errored ? (
+                    <AlertTriangle className="h-4 w-4 text-destructive" />
+                ) : completed ? (
                     <CheckCircle2 className="h-4 w-4 text-success" />
                 ) : (
                     <Loader2 className="h-4 w-4 animate-spin text-warning" />
@@ -112,9 +126,11 @@ export function TRRunProgressModal({
                     {counts.done}/{total}
                 </span>
                 <span className="text-xs text-muted-foreground">
-                    {completed
-                        ? t("runProgressCompleted")
-                        : t("runProgressProcessing")}
+                    {errored
+                        ? t("runProgressErrorTitle")
+                        : completed
+                          ? t("runProgressCompleted")
+                          : t("runProgressProcessing")}
                 </span>
             </button>
         );
@@ -130,7 +146,11 @@ export function TRRunProgressModal({
             >
                 <div className="flex items-start justify-between gap-4 px-6 pt-6">
                     <div className="flex items-center gap-3">
-                        {completed ? (
+                        {errored ? (
+                            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-destructive/10">
+                                <AlertTriangle className="h-5 w-5 text-destructive" />
+                            </span>
+                        ) : completed ? (
                             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-success/10">
                                 <CheckCircle2 className="h-5 w-5 text-success" />
                             </span>
@@ -141,14 +161,18 @@ export function TRRunProgressModal({
                         )}
                         <div>
                             <h2 className="text-base font-semibold text-foreground">
-                                {completed
-                                    ? t("runProgressCompleted")
-                                    : t("runProgressTitle")}
+                                {errored
+                                    ? t("runProgressErrorTitle")
+                                    : completed
+                                      ? t("runProgressCompleted")
+                                      : t("runProgressTitle")}
                             </h2>
                             <p className="text-xs text-muted-foreground">
-                                {completed
-                                    ? t("runProgressKeepOpen")
-                                    : t("runProgressSubtitle")}
+                                {errored
+                                    ? runError
+                                    : completed
+                                      ? t("runProgressKeepOpen")
+                                      : t("runProgressSubtitle")}
                             </p>
                         </div>
                     </div>

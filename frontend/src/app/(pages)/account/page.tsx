@@ -13,11 +13,20 @@ import { TeamSection } from "@/app/components/account/TeamSection";
 import { createBillingPortalSession, deleteAccount } from "@/app/lib/mikeApi";
 import { COUNTRIES } from "@/lib/countries";
 
+/** Keys of the billing-address block; `phone` rides along (optional). */
+type AddressKey = "line1" | "city" | "postal" | "phone";
+
 export default function AccountPage() {
     const router = useRouter();
     const { user, signOut } = useAuth();
-    const { profile, updateDisplayName, updateOrganisation, updateCountry, updateVatNumber } =
-        useUserProfile();
+    const {
+        profile,
+        updateDisplayName,
+        updateOrganisation,
+        updateCountry,
+        updateVatNumber,
+        updateAddress,
+    } = useUserProfile();
     const t = useTranslations("account");
     const tc = useTranslations("common");
     const tCountries = useTranslations("countries");
@@ -33,6 +42,11 @@ export default function AccountPage() {
     const [vatNumber, setVatNumber] = useState("");
     const [isSavingVat, setIsSavingVat] = useState(false);
     const [vatSaved, setVatSaved] = useState(false);
+    // Billing address (tracker #35) — one saved/saving pair per field so
+    // the inline "saved" tick lands next to the input the user just left.
+    const [address, setAddress] = useState({ line1: "", city: "", postal: "", phone: "" });
+    const [addressSaving, setAddressSaving] = useState<AddressKey | null>(null);
+    const [addressSaved, setAddressSaved] = useState<AddressKey | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
     const [isOpeningPortal, setIsOpeningPortal] = useState(false);
@@ -49,6 +63,12 @@ export default function AccountPage() {
         // from an older client. Empty string → "no country selected".
         setCountry(profile?.country?.toUpperCase() ?? "");
         setVatNumber(profile?.vatNumber ?? "");
+        setAddress({
+            line1: profile?.addressLine1 ?? "",
+            city: profile?.addressCity ?? "",
+            postal: profile?.addressPostalCode ?? "",
+            phone: profile?.phone ?? "",
+        });
     }, [profile]);
 
     const handleCountryChange = async (next: string) => {
@@ -84,6 +104,30 @@ export default function AccountPage() {
         } else {
             setVatNumber(previous);
             alert(t("alerts.failedUpdateVat"));
+        }
+    };
+
+    const ADDRESS_FIELD = {
+        line1: "addressLine1",
+        city: "addressCity",
+        postal: "addressPostalCode",
+        phone: "phone",
+    } as const;
+
+    const handleAddressBlur = async (key: AddressKey) => {
+        const field = ADDRESS_FIELD[key];
+        const trimmed = address[key].trim();
+        const previous = profile?.[field] ?? "";
+        if (trimmed === previous) return;
+        setAddressSaving(key);
+        const success = await updateAddress(field, trimmed || null);
+        setAddressSaving(null);
+        if (success) {
+            setAddressSaved(key);
+            setTimeout(() => setAddressSaved(null), 1500);
+        } else {
+            setAddress((a) => ({ ...a, [key]: previous }));
+            alert(t("alerts.failedUpdateAddress"));
         }
     };
 
@@ -308,6 +352,56 @@ export default function AccountPage() {
                             {t("profile.vatNumberHint")}
                         </p>
                     </div>
+                    {/* Billing address (tracker #35) — čl. 79. ZPDV: the
+                        invoice must carry the buyer's address. Street +
+                        city are enforced at checkout for a business;
+                        here they are editable like every other field. */}
+                    {(
+                        [
+                            ["line1", "addressLine1", "street-address"],
+                            ["city", "addressCity", "address-level2"],
+                            ["postal", "addressPostalCode", "postal-code"],
+                            ["phone", "phone", "tel"],
+                        ] as const
+                    ).map(([key, i18nKey, autoComplete]) => (
+                        <div key={key}>
+                            <label
+                                htmlFor={`profile-${key}`}
+                                className="text-sm text-muted-foreground block mb-2"
+                            >
+                                {t(`profile.${i18nKey}`)}
+                            </label>
+                            <div className="flex items-center gap-2">
+                                <Input
+                                    id={`profile-${key}`}
+                                    value={address[key]}
+                                    onChange={(e) =>
+                                        setAddress((a) => ({ ...a, [key]: e.target.value }))
+                                    }
+                                    onBlur={() => handleAddressBlur(key)}
+                                    disabled={addressSaving === key}
+                                    autoComplete={autoComplete}
+                                    placeholder={t(`profile.${i18nKey}Placeholder`)}
+                                    className="flex-1"
+                                />
+                                {addressSaved === key ? (
+                                    <span className="text-xs text-success inline-flex items-center gap-1">
+                                        <Check className="h-3.5 w-3.5" />
+                                        {tc("saved")}
+                                    </span>
+                                ) : addressSaving === key ? (
+                                    <span className="text-xs text-muted-foreground">
+                                        {tc("saving")}
+                                    </span>
+                                ) : null}
+                            </div>
+                            {key === "line1" && (
+                                <p className="text-xs text-muted-foreground mt-1.5">
+                                    {t("profile.addressHint")}
+                                </p>
+                            )}
+                        </div>
+                    ))}
                     <div>
                         <label className="text-sm text-muted-foreground block mb-2">
                             {t("profile.email")}

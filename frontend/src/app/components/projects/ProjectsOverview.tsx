@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { Plus, FolderOpen, ChevronDown } from "lucide-react";
 import { HeaderSearchBtn } from "@/app/components/shared/HeaderSearchBtn";
 import { listProjects, updateProject, deleteProject } from "@/app/lib/mikeApi";
@@ -14,8 +14,11 @@ import { ToolbarTabs } from "@/app/components/shared/ToolbarTabs";
 import { RowActions } from "@/app/components/shared/RowActions";
 import { useConfirmDialog } from "@/app/components/modals/confirm-dialog";
 
-function formatDate(iso: string) {
-    return new Date(iso).toLocaleDateString(undefined, {
+function formatDate(iso: string, locale?: string) {
+    // Map the app locale to a BCP-47 tag so a hr user on an en-US browser
+    // still sees Croatian dates, matching ProjectPage.formatDate (#105).
+    const bcp47 = locale === "hr" ? "hr-HR" : locale;
+    return new Date(iso).toLocaleDateString(bcp47, {
         day: "numeric",
         month: "short",
         year: "numeric",
@@ -44,6 +47,7 @@ export function ProjectsOverview() {
     const router = useRouter();
     const { user } = useAuth();
     const t = useTranslations("projects");
+    const locale = useLocale();
     const tc = useTranslations("common");
     const tDelete = useTranslations("confirmDelete");
     const { confirm: confirmDialog, dialog: confirmDialogEl } =
@@ -130,7 +134,9 @@ export function ProjectsOverview() {
                 p.id === projectId ? { ...p, cm_number: trimmed || null } : p,
             ),
         );
-        await updateProject(projectId, { cm_number: trimmed || undefined });
+        // `undefined` was dropped by JSON.stringify, so clearing the field
+        // PATCHed `{}` and silently reverted on reload (issue #100).
+        await updateProject(projectId, { cm_number: trimmed || null });
     }
 
     async function handleDeleteSelected() {
@@ -171,7 +177,7 @@ export function ProjectsOverview() {
             setProjects((prev) => prev.filter((p) => !deleted.has(p.id)));
         if (blocked > 0) {
             setOwnerOnlyAction(
-                `delete ${blocked} of the selected projects — only the project owner can delete a project`,
+                t("ownerOnlyDeleteWarning", { count: blocked }),
             );
         }
     }
@@ -203,7 +209,7 @@ export function ProjectsOverview() {
     );
 
     return (
-        <div className="flex-1 overflow-y-auto bg-background">
+        <div className="flex-1 h-full overflow-y-auto bg-background">
             {/* Page header */}
             <div className="flex items-center justify-between px-8 py-4">
                 <h1 className="text-2xl font-medium font-serif text-foreground">
@@ -416,7 +422,7 @@ export function ProjectsOverview() {
                                     {project.review_count ?? 0}
                                 </div>
                                 <div className="w-32 shrink-0 text-sm text-muted-foreground truncate">
-                                    {formatDate(project.created_at)}
+                                    {formatDate(project.created_at, locale)}
                                 </div>
 
                                 <div

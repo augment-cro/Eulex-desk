@@ -3,6 +3,7 @@ import { streamGemini, completeGeminiText } from "./gemini";
 import { streamOpenAI, completeOpenAIText } from "./openai";
 import { streamMistral, completeMistralText } from "./mistral";
 import { providerForModel } from "./models";
+import { attachUsage, emptyUsage, sumUsage } from "./usage";
 import type {
     LlmUsage,
     StreamChatParams,
@@ -12,27 +13,116 @@ import type {
 
 export * from "./types";
 export * from "./models";
+export * from "./stallWatchdog";
+
+/**
+ * Stall-watchdog liveness wiring (tracker #25): when the caller supplies
+ * `onStreamActivity`, wrap the surfaced-event callbacks and the tool
+ * runner so every provider chunk/event re-arms the caller's idle
+ * deadline. The wrappers are ALWAYS defined (even where the underlying
+ * callback is not) so suppressed streams — e.g. the orchestration
+ * retriever, which drops content/reasoning deltas on purpose — still
+ * count as live while the provider is producing output. This is the one
+ * shared chunk-consumption point both the single-model flow and each
+ * orchestrated phase pass through.
+ */
+function withStreamActivity(params: StreamChatParams): StreamChatParams {
+    const touch = params.onStreamActivity;
+    if (!touch) return params;
+    const base = params.callbacks ?? {};
+    return {
+        ...params,
+        callbacks: {
+            onContentDelta: (text) => {
+                touch();
+                base.onContentDelta?.(text);
+            },
+            onReasoningDelta: (text) => {
+                touch();
+                base.onReasoningDelta?.(text);
+            },
+            onReasoningBlockEnd: () => {
+                touch();
+                base.onReasoningBlockEnd?.();
+            },
+            onToolCallStart: (call) => {
+                touch();
+                base.onToolCallStart?.(call);
+            },
+        },
+        runTools: params.runTools
+            ? async (calls) => {
+                  touch();
+                  try {
+                      return await params.runTools!(calls);
+                  } finally {
+                      // Tool batches can legitimately run long — count the
+                      // completed batch as provider liveness so the next
+                      // model iteration starts with a fresh deadline.
+                      touch();
+                  }
+              }
+            : undefined,
+    };
+}
 
 export async function streamChatWithTools(
     params: StreamChatParams,
 ): Promise<StreamChatResult> {
     const provider = providerForModel(params.model);
-    // Only the Claude adapter understands the static/dynamic system split
-    // (it maps to two cache blocks). Every other provider does no prompt
-    // caching here, so fold the dynamic suffix back onto the system prompt
-    // and hand them a plain string — identical instructions, no behavioral
-    // change.
-    const merged: StreamChatParams = params.systemDynamicSuffix
+    let usage = emptyUsage();
+    const active = withStreamActivity({
+        ...params,
+        onUsage: (delta) => {
+            usage = sumUsage(usage, delta);
+            params.onUsage?.(delta);
+        },
+    });
+    const merged: StreamChatParams = active.systemDynamicSuffix
         ? {
-              ...params,
-              systemPrompt: `${params.systemPrompt}${params.systemDynamicSuffix}`,
+              ...active,
+              systemPrompt: active.systemPrompt + active.systemDynamicSuffix,
               systemDynamicSuffix: undefined,
           }
-        : params;
-    if (provider === "claude") return streamClaude(params);
-    if (provider === "openai") return streamOpenAI(merged);
-    if (provider === "mistral") return streamMistral(merged);
-    return streamGemini(merged);
+        : active;
+    try {
+        const result = await (provider === "claude"
+            ? streamClaude(active)
+            : provider === "openai"
+              ? streamOpenAI(active)
+              : provider === "mistral"
+                ? streamMistral(merged)
+                : streamGemini(merged));
+        // Older adapters report a turn aggregate. Keep it explicitly labelled
+        // as a legacy estimate, never pretend it is a per-request receipt.
+        if (!usage.iterations && result.usage) {
+            const u = result.usage;
+            active.onUsage?.({
+                ...u,
+                calls: [
+                    {
+                        provider,
+                        model: result.model ?? params.model,
+                        phase: params.usagePhase ?? "single",
+                        status: "legacy",
+                        inputTokens: u.inputTokens,
+                        outputTokens: u.outputTokens,
+                        cacheCreationInputTokens: u.cacheCreationInputTokens,
+                        cacheReadInputTokens: u.cacheReadInputTokens,
+                    },
+                ],
+            });
+        }
+        return {
+            ...result,
+            model: result.model ?? params.model,
+            usage: usage.iterations ? usage : result.usage,
+        };
+    } catch (error) {
+        if (!usage.iterations)
+            active.onUsage?.({ ...emptyUsage(), incomplete: true });
+        throw attachUsage(error, { usage, model: params.model });
+    }
 }
 
 export type CompleteTextResult = { text: string; usage?: LlmUsage };
@@ -58,4 +148,3 @@ export async function completeText(params: {
     if (provider === "mistral") return completeMistralText(params);
     return completeGeminiText(params);
 }
-

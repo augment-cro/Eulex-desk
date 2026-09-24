@@ -10,7 +10,9 @@
  *   POST /auth/pair/redeem  (NO auth)
  *     Body: { code }. If a non-expired row exists, returns the bound JWT
  *     and deletes the row. Wrong attempts increment the row's `attempts`
- *     counter; after 5 wrong tries the code is invalidated.
+ *     counter; after 5 wrong tries the code is invalidated. On top of the
+ *     per-code counter the route is rate-limited per client IP and
+ *     globally (fixed 15-min windows, lib/ipRateLimit.ts, issue #148).
  *
  * The `token` stored alongside each code is the eulex.ai-issued JWT
  * verbatim — no re-signing, no separate audience. The add-in stores it
@@ -19,15 +21,32 @@
  */
 
 import { Router } from "express";
+import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
 import crypto from "crypto";
 import { requireAuth } from "../middleware/auth";
 import { requireEntitlement } from "../lib/entitlements";
 import { getPool } from "../lib/db";
+import { envInt, ipRateLimit } from "../lib/ipRateLimit";
 
 export const authPairRouter = Router();
 
 const CODE_TTL_MINUTES = 5;
 const MAX_ATTEMPTS = 5;
+
+// /redeem is unauthenticated, so the per-code counter alone lets a
+// distributed guesser burn through many DIFFERENT codes. Two fixed
+// 15-minute windows on top (issue #148): per-IP (default 10 attempts)
+// and route-global across all IPs (default 300) as the backstop against
+// a botnet spreading guesses thin. In-process, i.e. per Cloud Run
+// instance — see lib/ipRateLimit.ts header for the trade-off. Both
+// limits are env-tunable without a redeploy of code.
+const REDEEM_WINDOW_MS = 15 * 60 * 1000;
+const redeemRateLimit = ipRateLimit({
+  name: "auth/pair/redeem",
+  windowMs: REDEEM_WINDOW_MS,
+  perIpLimit: envInt("AUTH_PAIR_REDEEM_IP_LIMIT", 10),
+  globalLimit: envInt("AUTH_PAIR_REDEEM_GLOBAL_LIMIT", 300),
+});
 
 /**
  * Cryptographically random 6-digit code, zero-padded. Uses
@@ -74,6 +93,10 @@ authPairRouter.post("/start", requireAuth, requireEntitlement("wordPlugin"), asy
         );
         code = candidate;
         expiresAt = rows[0].expires_at;
+        // Word add-in activation (migration 210): pairing is the only token
+        // path for the add-in, so this is the "Word used" milestone.
+        void recordAuditEvent({ userId, eventType: "word.paired", surface: "word" });
+        void recordFeatureUse({ userId, feature: "word", surface: "word" });
         break;
       } catch (err: unknown) {
         // 23505 = unique_violation — try a new code.
@@ -101,7 +124,7 @@ authPairRouter.post("/start", requireAuth, requireEntitlement("wordPlugin"), asy
 });
 
 // POST /auth/pair/redeem
-authPairRouter.post("/redeem", async (req, res) => {
+authPairRouter.post("/redeem", redeemRateLimit, async (req, res) => {
   const code = (req.body?.code ?? "").toString().trim();
   if (!/^\d{6}$/.test(code)) {
     res.status(400).json({ detail: "Code must be 6 digits" });

@@ -84,13 +84,28 @@ export function EnrichmentPanel({
                 : undefined),
     );
 
-    // Number shortcuts: press 1/2/3 to select
+    // Number shortcuts: press 1/2/3 to select. Escape closes from anywhere,
+    // but digits must never fire while the user is typing — a global
+    // listener that swallows "1" while the composer is focused replaces
+    // the typed text with a variant (issue #86).
     useEffect(() => {
+        const isEditableTarget = (e: KeyboardEvent) => {
+            const el = e.target as HTMLElement | null;
+            if (!el) return false;
+            const tag = el.tagName;
+            return (
+                tag === "INPUT" ||
+                tag === "TEXTAREA" ||
+                el.isContentEditable
+            );
+        };
         const handleKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") {
                 onClose();
                 return;
             }
+            if (isEditableTarget(e)) return;
+            if (e.metaKey || e.ctrlKey || e.altKey) return;
             const idx = parseInt(e.key) - 1;
             if (idx >= 0 && idx < TOTAL_CARDS) {
                 const variant = completedVariants[idx];
@@ -131,7 +146,7 @@ export function EnrichmentPanel({
                             type="button"
                             onClick={onClose}
                             className="rounded-full p-1 text-muted-foreground/70 hover:text-muted-foreground hover:bg-accent transition-colors"
-                            aria-label="Close"
+                            aria-label={t("closeAria")}
                         >
                             <X className="h-3.5 w-3.5" />
                         </button>

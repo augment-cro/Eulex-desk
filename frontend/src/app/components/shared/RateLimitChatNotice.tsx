@@ -15,11 +15,14 @@ import { useRateLimitStatus } from "../../hooks/useRateLimitStatus";
 import { PlansModal } from "./PlansModal";
 import { TopupModal } from "./TopupModal";
 
-function formatRelief(iso: string | null | undefined): string {
+function formatRelief(
+    iso: string | null | undefined,
+    soonLabel: string,
+): string {
     if (!iso) return "—";
     const target = new Date(iso);
     const diffMs = target.getTime() - Date.now();
-    if (diffMs <= 0) return "uskoro";
+    if (diffMs <= 0) return soonLabel;
     const minutes = Math.round(diffMs / 60_000);
     if (minutes < 60) return `${minutes} min`;
     const hours = Math.floor(minutes / 60);
@@ -51,7 +54,10 @@ export function RateLimitChatNotice() {
                     {snap?.nextReliefAt && (
                         <p className="mt-0.5 text-[11px] opacity-70">
                             {t("chatNoticeRelief", {
-                                relief: formatRelief(snap.nextReliefAt),
+                                relief: formatRelief(
+                                    snap.nextReliefAt,
+                                    t("reliefSoon"),
+                                ),
                             })}
                         </p>
                     )}

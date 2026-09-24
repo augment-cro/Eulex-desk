@@ -39,17 +39,22 @@ export default function MikeLayout({
         }
     }, [isSidebarOpenDesktop]);
 
+    // Sync the sidebar only when the viewport crosses the md breakpoint.
+    // Mobile browsers (iOS Safari especially) fire `resize` on toolbar
+    // collapse and keyboard show/hide; reacting to every resize while
+    // narrow closed the sidebar right after the user opened it.
     useEffect(() => {
         if (typeof window === "undefined") return;
+        let wasSmall = window.innerWidth < 768;
         const handleResize = () => {
             const isSmall = window.innerWidth < 768;
-            if (isSmall && isSidebarOpen) setIsSidebarOpen(false);
-            else if (!isSmall && !isSidebarOpen)
-                setIsSidebarOpen(isSidebarOpenDesktop);
+            if (isSmall === wasSmall) return;
+            wasSmall = isSmall;
+            setIsSidebarOpen(isSmall ? false : isSidebarOpenDesktop);
         };
         window.addEventListener("resize", handleResize);
         return () => window.removeEventListener("resize", handleResize);
-    }, [isSidebarOpen, isSidebarOpenDesktop]);
+    }, [isSidebarOpenDesktop]);
 
     const handleSidebarToggle = () => {
         if (window.innerWidth >= 768) {

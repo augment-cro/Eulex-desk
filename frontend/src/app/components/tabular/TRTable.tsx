@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef, useImperativeHandle, useRef } from "react";
+import { useTranslations } from "next-intl";
 import { Plus, Table2 } from "lucide-react";
 import type { ColumnConfig, MikeDocument, TabularCell } from "../shared/types";
 import { TabularCell as TabularCellComponent } from "./TabularCell";
@@ -62,6 +63,8 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
     },
     ref,
 ) {
+    const t = useTranslations("tabularReview");
+    const tDocs = useTranslations("documents");
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const sortedColumns = [...columns].sort((a, b) => a.index - b.index);
     const totalContentWidth =
@@ -133,7 +136,7 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                     <div
                         className={`${COL_W} border-r border-border p-2 text-xs font-medium text-muted-foreground`}
                     >
-                        Document
+                        {tDocs("documentLabel")}
                     </div>
                     {Array.from({ length: SKELETON_COLS }).map((_, i) => (
                         <div
@@ -175,31 +178,31 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                     <div
                         className={`${COL_W} border-r border-border p-2 text-xs font-medium text-muted-foreground select-none`}
                     >
-                        Document
+                        {tDocs("documentLabel")}
                     </div>
                     <div className="flex-1" />
                 </div>
                 <div className="flex flex-1 flex-col items-start justify-center w-full max-w-xs mx-auto">
                     <Table2 className="h-8 w-8 text-muted-foreground/70 mb-4" />
                     <p className="text-2xl font-medium font-serif text-foreground">
-                        Tabular Review
+                        {t("tabularReview")}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground/70 text-left">
-                        Add columns and documents to get started.
+                        {t("emptyHint")}
                     </p>
                     <div className="mt-4 flex items-center gap-2">
                         <button
                             onClick={onAddColumn}
                             className="inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
                         >
-                            + Add Columns
+                            {`+ ${t("addColumns")}`}
                         </button>
                         <button
                             onClick={onAddDocuments}
                             className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-accent transition-colors"
                         >
                             <Plus className="h-3.5 w-3.5" />
-                            Add Documents
+                            {t("addDocuments")}
                         </button>
                     </div>
                 </div>
@@ -230,7 +233,7 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                 <div
                     className={`sticky left-8 z-30 ${COL_W} bg-background border-b border-r border-border p-2 text-left text-xs font-medium text-muted-foreground select-none`}
                 >
-                    Document
+                    {tDocs("documentLabel")}
                 </div>
                 {columns.map((col) => (
                     <div

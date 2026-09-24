@@ -10,12 +10,14 @@ import {
     addDocumentToProject,
     deleteDocument,
 } from "@/app/lib/mikeApi";
-import { track, fileTypeOf } from "@/app/lib/analytics";
+import { uploadFilesBulk, type UploadFailure } from "@/app/lib/bulkUpload";
+import { SUPPORTED_UPLOAD_ACCEPT } from "@/app/lib/supportedFileTypes";
 import type { MikeDocument } from "./types";
 import { FileDirectory } from "./FileDirectory";
 import { useDirectoryData, invalidateDirectoryCache } from "./useDirectoryData";
 import { OwnerOnlyModal } from "./OwnerOnlyModal";
 import { ConnectorsButton } from "./ConnectorsButton";
+import { UploadFailuresAlert } from "./UploadFailuresAlert";
 import { useAuth } from "@/contexts/AuthContext";
 
 export { invalidateDirectoryCache };
@@ -49,6 +51,9 @@ export function AddDocumentsModal({
     // cached state won't re-fetch until the modal reopens.
     const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
+    const [uploadFailures, setUploadFailures] = useState<UploadFailure[]>(
+        [],
+    );
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -57,6 +62,7 @@ export function AddDocumentsModal({
         setSelectedIds(new Set());
         setExtraUploadedDocs([]);
         setDeletedIds(new Set());
+        setUploadFailures([]);
     }, [open]);
 
     if (!open) return null;
@@ -95,6 +101,17 @@ export function AddDocumentsModal({
         ...allStandalone,
         ...projects.flatMap((p) => p.documents || []),
     ];
+
+    // Docs uploaded through this modal already exist server-side, so closing
+    // WITHOUT confirming used to leave them invisible to the parent until a
+    // reload ("ghost" documents, issue #101). Surface them on close — the
+    // parent dedups by id, so this is safe even after a confirm.
+    function handleClose() {
+        if (extraUploadedDocs.length > 0) {
+            onSelect(extraUploadedDocs, projectId);
+        }
+        onClose();
+    }
 
     async function handleConfirm() {
         const selected = allDocs.filter((d) => selectedIds.has(d.id));
@@ -151,9 +168,7 @@ export function AddDocumentsModal({
         });
         const blocked = ids.length - owned.length;
         if (owned.length === 0 && blocked > 0) {
-            setOwnerOnlyAction(
-                "delete these documents — only the document creator can delete a document",
-            );
+            setOwnerOnlyAction(t("ownerOnlyDelete"));
             return;
         }
         const idSet = new Set(owned);
@@ -172,7 +187,7 @@ export function AddDocumentsModal({
         });
         if (blocked > 0) {
             setOwnerOnlyAction(
-                `delete ${blocked} of the selected documents — only the document creator can delete a document`,
+                t("ownerOnlyDeletePartial", { count: blocked }),
             );
         }
     }
@@ -181,38 +196,23 @@ export function AddDocumentsModal({
         const files = Array.from(e.target.files || []);
         if (!files.length) return;
         setUploading(true);
+        setUploadFailures([]);
         try {
-            const uploaded = await Promise.all(
-                files.map(async (f) => {
-                    const surface = projectId ? "project" : "standalone";
-                    const fileType = fileTypeOf(f);
-                    try {
-                        const doc = projectId
-                            ? await uploadProjectDocument(projectId, f)
-                            : await uploadStandaloneDocument(f);
-                        track("document_uploaded", {
-                            surface,
-                            file_type: fileType,
-                            result: "success",
-                        });
-                        return doc;
-                    } catch (err) {
-                        track("document_uploaded", {
-                            surface,
-                            file_type: fileType,
-                            result: "error",
-                        });
-                        throw err;
-                    }
-                }),
-            );
-            invalidateDirectoryCache();
-            setExtraUploadedDocs((prev) => [...uploaded, ...prev]);
-            uploaded.forEach((d) =>
-                setSelectedIds((prev) => new Set([...prev, d.id])),
-            );
-        } catch (err) {
-            console.error("Upload failed:", err);
+            // Each document is listed + pre-selected as soon as it lands,
+            // so one failed file never hides the others.
+            const { uploaded, failures } = await uploadFilesBulk(files, {
+                upload: (f) =>
+                    projectId
+                        ? uploadProjectDocument(projectId, f)
+                        : uploadStandaloneDocument(f),
+                surface: projectId ? "project" : "standalone",
+                onUploaded: (doc) => {
+                    setExtraUploadedDocs((prev) => [doc, ...prev]);
+                    setSelectedIds((prev) => new Set([...prev, doc.id]));
+                },
+            });
+            if (uploaded.length > 0) invalidateDirectoryCache();
+            setUploadFailures(failures);
         } finally {
             setUploading(false);
             if (fileInputRef.current) fileInputRef.current.value = "";
@@ -245,7 +245,7 @@ export function AddDocumentsModal({
                         ))}
                     </div>
                     <button
-                        onClick={onClose}
+                        onClick={handleClose}
                         className="rounded-lg p-1.5 text-muted-foreground/70 hover:bg-accent hover:text-muted-foreground"
                     >
                         <X className="h-4 w-4" />
@@ -292,13 +292,19 @@ export function AddDocumentsModal({
                     />
                 </div>
 
+                <UploadFailuresAlert
+                    failures={uploadFailures}
+                    onDismiss={() => setUploadFailures([])}
+                    className="mx-4 mb-2 w-auto"
+                />
+
                 {/* Footer */}
                 <div className="border-t border-border px-4 py-3 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                         <input
                             ref={fileInputRef}
                             type="file"
-                            accept=".pdf,.docx,.doc"
+                            accept={SUPPORTED_UPLOAD_ACCEPT}
                             multiple
                             className="hidden"
                             onChange={handleUpload}
@@ -327,7 +333,7 @@ export function AddDocumentsModal({
                             </span>
                         )}
                         <button
-                            onClick={onClose}
+                            onClick={handleClose}
                             className="rounded-lg px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent"
                         >
                             {tc("cancel")}

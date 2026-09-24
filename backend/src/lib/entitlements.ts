@@ -26,6 +26,7 @@
  */
 
 import type { RequestHandler } from "express";
+import { recordAuditEvent } from "./audit";
 import { getAllTierLimits, seedEntitlementsIfEmpty } from "./tierLimitsStore";
 import {
     getEnterpriseTierLevelId,
@@ -161,6 +162,19 @@ export const ENTITLEMENT_CATALOG: readonly EntitlementDef[] = [
         labelHr: "MCP pristup (uz dnevni limit)",
         labelEn: "MCP access (with daily limit)",
         defaults: { free: T, plus: T, pro: T, legal_pro: T, team: T, eulex_legal_team: T, enterprise: T, foundation: T },
+    },
+    {
+        key: "mcpDailyCalls",
+        type: "int",
+        group: "workbench",
+        labelHr: "MCP alata — poziva dnevno (0 = neograničeno)",
+        labelEn: "MCP tool calls per day (0 = unlimited)",
+        // Sized 2–4× above what the tier's daily_tokens budget can realistically
+        // drive (research turn ≈ 25–50k tokens ≈ 4–6 MCP calls), so legit users
+        // never hit it and scripted loops do. Worst-case marginal cost ≈
+        // €0.002/call (semantic + Voyage rerank); most calls are far cheaper.
+        defaults: { free: 50, plus: 250, pro: 1_000, legal_pro: 2_000, team: 1_000, eulex_legal_team: 2_000, enterprise: 5_000, foundation: 10_000 },
+        unlimitedWhenZero: true,
     },
     {
         key: "shareResearchLink",
@@ -412,6 +426,16 @@ export function requireEntitlement(key: string): RequestHandler {
                 err instanceof Error ? err.message : err,
             );
             // fall through to 403 (fail closed)
+        }
+        // Paywall signal (migration 210): a real server-side "wanted a
+        // gated feature" event, with the feature and the tier it needs.
+        const blockedUserId = res.locals.userId as string | undefined;
+        if (blockedUserId) {
+            void recordAuditEvent({
+                userId: blockedUserId,
+                eventType: "paywall.blocked",
+                metadata: { feature: key, required: minTierForEntitlement(key) },
+            });
         }
         res.status(403).json({
             detail: "Ova značajka zahtijeva višu razinu pretplate.",

@@ -101,6 +101,18 @@ const PRACTICE_KEYS: Record<string, string> = {
     "Real Estate": "realEstate",
     "Private Equity": "privateEquity",
     Employment: "employment",
+    Tax: "tax",
+    IP: "ip",
+    Competition: "competition",
+    "Tech Transactions": "techTransactions",
+    "Project Finance": "projectFinance",
+    "EC/VC": "ecVc",
+    "Private Credit": "privateCredit",
+    ECM: "ecm",
+    DCM: "dcm",
+    "Lev Fin": "levFin",
+    Arbitration: "arbitration",
+    Others: "others",
 };
 
 /**

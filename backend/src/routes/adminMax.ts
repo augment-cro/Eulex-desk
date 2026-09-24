@@ -18,6 +18,12 @@
  *   GET   /adminmax/users/:userId/messages        — paginated chat_messages
  *   GET   /adminmax/users/:userId/usage.csv       — CSV export per user
  *   GET   /adminmax/usage.csv                     — global CSV export
+ *   GET   /adminmax/chats                         — global searchable chat list
+ *   GET   /adminmax/audit                         — admin action audit trail
+ *   GET   /adminmax/bugfix/status                 — GitHub issue/PR/deploy status
+ *   GET   /adminmax/promos                        — Stripe promo codes + usage stats
+ *   POST  /adminmax/promos                        — create coupon + promotion code
+ *   PATCH /adminmax/promos/:id                    — (de)activate a promotion code
  *
  * Filters
  * -------
@@ -25,7 +31,8 @@
  *                                created_at. Defaults: last 30 days, now.
  *  ?limit=int    &offset=int     paginated endpoints (default 50, max 500).
  *
- * The handlers are intentionally read-only — there is no write surface here.
+ * Every mutating handler (and each CSV export) appends a row to
+ * public.admin_audit via logAdminAudit — see lib/adminAudit.ts.
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -42,6 +49,7 @@ import {
 } from "../lib/entitlements";
 import {
     bustPlanCatalogCache,
+    getPlanCatalog,
     sanitizeMarketingInput,
 } from "../lib/planCatalog";
 import {
@@ -49,6 +57,8 @@ import {
     markNewUsersSeen,
     recordAdminLogin,
 } from "../lib/adminState";
+import { getStripe, isStripeConfigured } from "../lib/stripe";
+import { backfillSubscriptionRevenue } from "./billing";
 import {
     banSupabaseUser,
     getSupabaseAuthInfo,
@@ -69,9 +79,17 @@ import {
     upsertTierDefinition,
     type TierDefinitionPatch,
 } from "../lib/tierLimitsStore";
-import { getFreeTierLevelId } from "../lib/stripe";
+import { getFreeTierLevelId, getPlanDefs } from "../lib/stripe";
 import { sendWeeklyAdminSummary } from "../lib/adminSummary";
 import { sendExpiryReminders } from "../lib/expiryReminders";
+import { backfillSignupContacts } from "../lib/brevoContacts";
+import { sendContextAlertDigests } from "../lib/contextAlertDigest";
+import { logAdminAudit } from "../lib/adminAudit";
+import {
+    OpsInventoryError,
+    opsInventoryConfigured,
+    opsInventoryFetch,
+} from "../lib/opsInventory";
 
 export const adminMaxRouter = Router();
 
@@ -322,9 +340,154 @@ adminMaxRouter.post(
     },
 );
 
+/**
+ * POST /adminmax/cron/brevo-backfill — one-shot. Imports every existing
+ * public.users row into the Brevo newsletter list (BREVO_SIGNUP_LIST_ID).
+ * New signups are synced live by the auth middleware; this only exists to
+ * catch up users who registered before that hook shipped. Idempotent
+ * (Brevo updates existing contacts), so re-running is safe.
+ */
+adminMaxRouter.post(
+    "/cron/brevo-backfill",
+    async (req: Request, res: Response) => {
+        if (!cronSecretOk(req, res)) return;
+        try {
+            const result = await backfillSignupContacts();
+            res.status(result.errors.length ? 207 : 200).json(result);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error("[adminmax/cron/brevo-backfill]", msg);
+            res.status(500).json({ detail: msg });
+        }
+    },
+);
+
+/**
+ * POST /adminmax/cron/context-alerts — daily. Sends the hr/en digest of
+ * context source-change notifications (service_notifications rows from
+ * contexts-service) to context owners; claims each row on success.
+ */
+adminMaxRouter.post(
+    "/cron/context-alerts",
+    async (req: Request, res: Response) => {
+        if (!cronSecretOk(req, res)) return;
+        try {
+            const result = await sendContextAlertDigests();
+            res.json(result);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error("[adminmax/cron/context-alerts]", msg);
+            res.status(500).json({ detail: msg });
+        }
+    },
+);
+
 // ── authenticated routes ──────────────────────────────────────────────────
 
 adminMaxRouter.use(requireAdminMaxAuth);
+
+// ── paying-users counter ──────────────────────────────────────────────────
+//
+// Distinct Stripe customers with an ≥1 active subscription, straight from
+// the Stripe API (source of truth for "who is actually paying right now",
+// independent of tier grants in mike-db). Cached in-memory: the dashboard
+// polls /users on every filter change and Stripe pagination is not free.
+
+const PAID_COUNT_TTL_MS = 5 * 60 * 1000;
+let _paidCountCache: {
+    at: number;
+    count: number;
+    subs: number;
+    mrrCents: number;
+} | null = null;
+
+async function getPaidUsersCount(): Promise<{
+    count: number;
+    subs: number;
+    mrrCents: number;
+} | null> {
+    if (!isStripeConfigured()) return null;
+    if (_paidCountCache && Date.now() - _paidCountCache.at < PAID_COUNT_TTL_MS) {
+        const { count, subs, mrrCents } = _paidCountCache;
+        return { count, subs, mrrCents };
+    }
+    try {
+        const stripe = getStripe();
+        const customers = new Set<string>();
+        let subs = 0;
+        let mrrCents = 0;
+        for await (const sub of stripe.subscriptions.list({
+            status: "active",
+            limit: 100,
+        })) {
+            subs += 1;
+            const c = sub.customer;
+            customers.add(typeof c === "string" ? c : c.id);
+            // Monthly run-rate: normalize each item's recurring price to a
+            // month (year/12, week×4.348, day×30.437). Amounts are cents.
+            for (const item of sub.items?.data ?? []) {
+                const price = item.price;
+                const unit = price?.unit_amount ?? 0;
+                const qty = item.quantity ?? 1;
+                const rec = price?.recurring;
+                if (!unit || !rec) continue;
+                const per = unit * qty;
+                const count = rec.interval_count ?? 1;
+                const monthly =
+                    rec.interval === "month"
+                        ? per / count
+                        : rec.interval === "year"
+                          ? per / (12 * count)
+                          : rec.interval === "week"
+                            ? (per * 4.348) / count
+                            : (per * 30.437) / count;
+                mrrCents += monthly;
+            }
+        }
+        mrrCents = Math.round(mrrCents);
+        _paidCountCache = { at: Date.now(), count: customers.size, subs, mrrCents };
+        return { count: customers.size, subs, mrrCents };
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/paid-users]", msg);
+        // Serve a stale value over a hole in the dashboard.
+        if (_paidCountCache) {
+            const { count, subs, mrrCents } = _paidCountCache;
+            return { count, subs, mrrCents };
+        }
+        return null;
+    }
+}
+
+// ── revenue ledger backfill ──────────────────────────────────────────────
+
+/**
+ * POST /adminmax/billing/backfill-revenue?days=365 — idempotent repair:
+ * re-inserts paid Stripe subscription invoices missing from
+ * billing_revenue (the Basil API shape change silently disabled the
+ * webhook's ledger insert for a while). Safe to re-run any time.
+ */
+adminMaxRouter.post(
+    "/billing/backfill-revenue",
+    async (req: Request, res: Response) => {
+        if (!isStripeConfigured()) {
+            res.status(503).json({ detail: "Stripe not configured" });
+            return;
+        }
+        const days = Math.min(
+            Math.max(Number(req.query.days ?? 365) || 365, 1),
+            1095,
+        );
+        try {
+            const result = await backfillSubscriptionRevenue(days);
+            res.json({ ok: true, days, ...result });
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error("[adminmax/backfill-revenue]", msg);
+            res.status(500).json({ detail: msg });
+        }
+    },
+);
 
 // ── new-users badge ───────────────────────────────────────────────────────
 //
@@ -395,13 +558,41 @@ adminMaxRouter.post(
  */
 adminMaxRouter.post(
     "/weekly-summary/send",
-    async (_req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
         try {
             const result = await sendWeeklyAdminSummary();
+            void logAdminAudit({
+                action: "email.weekly_summary.send",
+                targetType: "email",
+                ip: req.ip ?? null,
+            });
             res.json(result);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.error("[adminmax/weekly-summary/send]", msg);
+            res.status(500).json({ detail: msg });
+        }
+    },
+);
+
+/**
+ * POST /adminmax/context-alerts/send — manual trigger of the context-alert
+ * digest sweep (same logic the cron runs).
+ */
+adminMaxRouter.post(
+    "/context-alerts/send",
+    async (req: Request, res: Response) => {
+        try {
+            const result = await sendContextAlertDigests();
+            void logAdminAudit({
+                action: "email.context_alerts.send",
+                targetType: "email",
+                ip: req.ip ?? null,
+            });
+            res.json(result);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error("[adminmax/context-alerts/send]", msg);
             res.status(500).json({ detail: msg });
         }
     },
@@ -413,9 +604,14 @@ adminMaxRouter.post(
  */
 adminMaxRouter.post(
     "/expiry-reminders/send",
-    async (_req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
         try {
             const result = await sendExpiryReminders();
+            void logAdminAudit({
+                action: "email.expiry_reminders.send",
+                targetType: "email",
+                ip: req.ip ?? null,
+            });
             res.json(result);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -662,6 +858,7 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
         );
 
         const t = totalsRes.rows[0];
+        const paid = await getPaidUsersCount();
 
         res.json({
             range: { from: from.toISOString(), to: to.toISOString() },
@@ -693,6 +890,9 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                 new_users_count: Number(t?.new_users_count ?? 0),
                 new_users_since: newUsersSince.toISOString(),
                 total_users: Number(t?.total_users ?? 0),
+                paid_users_count: paid?.count ?? null,
+                paid_subs_count: paid?.subs ?? null,
+                paid_mrr_cents: paid?.mrrCents ?? null,
             },
             users: pageRes.rows.map((r) => ({
                 id: r.id,
@@ -987,6 +1187,18 @@ adminMaxRouter.patch(
             const freeLevel = getFreeTierLevelId();
             const clearing = levelId === null || levelId === freeLevel;
 
+            // A paid grant with `until` in the past is instantly-expired —
+            // the effective tier folds it to free, so the operator sees the
+            // user "revert to Free" right after assigning. Only guarded for
+            // grants: clears ignore `until`, and rejecting there would break
+            // clearing while a stale date sits in the form.
+            if (!clearing && until && until.getTime() <= Date.now()) {
+                res.status(400).json({
+                    detail: "until must be in the future",
+                });
+                return;
+            }
+
             if (!clearing) {
                 // Definition existence check via tierLimitsStore (creates
                 // invalidate its cache, so a just-created tier is visible).
@@ -1034,6 +1246,17 @@ adminMaxRouter.patch(
             console.log(
                 `[adminmax/tier] user=${userId} → ${clearing ? "free (cleared)" : levelId} until=${until?.toISOString() ?? "—"} reason=${reason ?? "-"}`,
             );
+            void logAdminAudit({
+                action: clearing ? "user.tier.clear" : "user.tier.set",
+                targetType: "user",
+                targetId: userId,
+                payload: {
+                    tier_level_id: clearing ? null : levelId,
+                    until: until?.toISOString() ?? null,
+                    reason,
+                },
+                ip: req.ip ?? null,
+            });
             res.json({
                 ok: true,
                 tier: {
@@ -1127,6 +1350,18 @@ adminMaxRouter.patch(
             console.log(
                 `[adminmax/profile] user=${userId} display_name=${displayName === undefined ? "(unchanged)" : displayName} country=${country === undefined ? "(unchanged)" : country}`,
             );
+            void logAdminAudit({
+                action: "user.profile.update",
+                targetType: "user",
+                targetId: userId,
+                payload: {
+                    ...(displayName !== undefined
+                        ? { display_name: displayName }
+                        : {}),
+                    ...(country !== undefined ? { country } : {}),
+                },
+                ip: req.ip ?? null,
+            });
             res.json({
                 ok: true,
                 user: {
@@ -1191,6 +1426,14 @@ adminMaxRouter.post(
             console.log(
                 `[adminmax/suspend] user=${userId} action=${action} hours=${action === "ban" ? hours : "-"}`,
             );
+            void logAdminAudit({
+                action:
+                    action === "ban" ? "user.suspend" : "user.unsuspend",
+                targetType: "user",
+                targetId: userId,
+                payload: action === "ban" ? { hours } : null,
+                ip: req.ip ?? null,
+            });
             res.json({ ok: true, action });
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -1219,8 +1462,15 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
     const fromIso = from.toISOString();
     const toIso = to.toISOString();
     try {
-        const [signups, usage, revenue, tiers, activeTotal, revMetrics] =
-            await Promise.all([
+        const [
+            signups,
+            usage,
+            revenue,
+            tiers,
+            activeTotal,
+            revMetrics,
+            surfaces,
+        ] = await Promise.all([
                 query<{ day: string; signups: string }>(
                     `SELECT date_trunc('day', created_at)::date::text AS day,
                             COUNT(*)::text AS signups
@@ -1359,6 +1609,31 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
                          n.base_cents::text, n.retained_cents::text
                        FROM bridge b, nrr n`,
                 ),
+                // Usage split by product surface. `client` is the surface
+                // tag on llm_usage ("web", "word", "tabular", …); rows
+                // written before call sites tagged themselves group under
+                // "unknown".
+                query<{
+                    surface: string;
+                    requests: string;
+                    users: string;
+                    cost_usd: string | null;
+                    tokens: string | null;
+                }>(
+                    `SELECT COALESCE(client, 'unknown') AS surface,
+                            COUNT(*)::text AS requests,
+                            COUNT(DISTINCT user_id)::text AS users,
+                            COALESCE(SUM(cost_usd), 0) AS cost_usd,
+                            COALESCE(SUM(
+                                input_tokens + output_tokens
+                                + cache_creation_input_tokens
+                                + cache_read_input_tokens), 0) AS tokens
+                       FROM public.llm_usage
+                      WHERE created_at >= $1 AND created_at < $2
+                   GROUP BY 1
+                   ORDER BY SUM(cost_usd) DESC NULLS LAST`,
+                    [fromIso, toIso],
+                ),
             ]);
 
         // Merge the three day-keyed series into one dense array (fill
@@ -1433,6 +1708,13 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
                 ),
             },
             revenue_metrics: buildRevenueMetrics(revMetrics.rows[0]),
+            surfaces: surfaces.rows.map((r) => ({
+                surface: r.surface,
+                requests: Number(r.requests),
+                users: Number(r.users),
+                cost_usd: Number(r.cost_usd ?? 0),
+                tokens: Number(r.tokens ?? 0),
+            })),
         });
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1463,7 +1745,7 @@ adminMaxRouter.get(
                        iterations,
                        input_tokens, output_tokens,
                        cache_creation_input_tokens, cache_read_input_tokens,
-                       cost_usd, duration_ms, status, error_message,
+                       cost_usd, cost_breakdown, duration_ms, status, error_message,
                        created_at
                   FROM public.llm_usage
                  WHERE user_id = $1
@@ -1658,7 +1940,8 @@ adminMaxRouter.get(
                  FROM public.chat_messages cm
                  LEFT JOIN (
                      SELECT COALESCE(chat_message_id, project_chat_message_id) AS msg_id,
-                            SUM(cost_usd)                    AS cost_usd,
+                            CASE WHEN bool_and(cost_usd IS NOT NULL)
+                                 THEN SUM(cost_usd) ELSE NULL END AS cost_usd,
                             SUM(input_tokens)                AS input_tokens,
                             SUM(output_tokens)               AS output_tokens,
                             SUM(cache_creation_input_tokens) AS cache_creation_input_tokens,
@@ -1725,13 +2008,12 @@ adminMaxRouter.get(
                     is_flagged: m.is_flagged,
                     created_at: m.created_at,
                     // null for user turns and any assistant turn with no
-                    // usage row; an object (cost may be 0 for unpriced
-                    // models) when at least one llm_usage row attached.
+                    // usage row; unknown/incomplete costs remain null.
                     usage:
                         m.usage_rows == null
                             ? null
                             : {
-                                  cost_usd: Number(m.cost_usd ?? 0),
+                                  cost_usd: m.cost_usd == null ? null : Number(m.cost_usd),
                                   input_tokens: Number(m.input_tokens ?? 0),
                                   output_tokens: Number(m.output_tokens ?? 0),
                                   cache_creation_input_tokens: Number(
@@ -1849,6 +2131,17 @@ adminMaxRouter.get(
                 );
             }
             res.end();
+            void logAdminAudit({
+                action: "export.usage_csv",
+                targetType: "user",
+                targetId: userId,
+                payload: {
+                    from: from.toISOString(),
+                    to: to.toISOString(),
+                    rows: result.rows.length,
+                },
+                ip: req.ip ?? null,
+            });
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.error("[adminmax/users/:userId/usage.csv] failed:", msg);
@@ -1933,10 +2226,300 @@ adminMaxRouter.get("/usage.csv", async (req: Request, res: Response) => {
             );
         }
         res.end();
+        void logAdminAudit({
+            action: "export.usage_csv",
+            targetType: "export",
+            targetId: "global",
+            payload: {
+                from: from.toISOString(),
+                to: to.toISOString(),
+                rows: result.rows.length,
+            },
+            ip: req.ip ?? null,
+        });
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("[adminmax/usage.csv] failed:", msg);
         res.status(500).json({ detail: "Failed to export global CSV" });
+    }
+});
+
+/**
+ * GET /adminmax/chats — workspace-wide chat list, newest activity first.
+ *
+ * One row per chat with the owner's identity and a cost/message rollup,
+ * so the operator can scan ALL conversations without entering each user
+ * first (support + PII-compliance oversight). Both regular and project
+ * chats are included (project chats live in the same `chats` table).
+ *
+ * Query params (all optional):
+ *   - from, to   window on LAST ACTIVITY (newest message, falling back
+ *                to chat creation for empty chats). Default last 30 days.
+ *   - q          case-insensitive substring match on chat title, owner
+ *                email/display name, OR message content (full-text-ish
+ *                forensic search — content is matched as raw text).
+ *   - limit/offset — standard pagination.
+ */
+adminMaxRouter.get("/chats", async (req: Request, res: Response) => {
+    const { from, to } = parseDateRange(req);
+    const { limit, offset } = parsePagination(req);
+    const rawQ = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const like = `%${rawQ}%`;
+    // chats.user_id is TEXT (legacy column type) — cast both sides.
+    // Two fragments (joins vs. where) so the list query can slot its
+    // llm_usage LATERAL between them while the count query skips it.
+    const baseJoins = `
+          FROM public.chats c
+          LEFT JOIN public.users u ON u.id::text = c.user_id::text
+          JOIN LATERAL (
+              SELECT COUNT(*)            AS message_count,
+                     MAX(cm.created_at)  AS last_message_at
+                FROM public.chat_messages cm
+               WHERE cm.chat_id = c.id
+          ) m ON TRUE`;
+    const baseWhere = `
+         WHERE COALESCE(m.last_message_at, c.created_at) >= $1
+           AND COALESCE(m.last_message_at, c.created_at) <  $2
+           AND ($3 = ''
+                OR c.title ILIKE $4
+                OR u.email ILIKE $4
+                OR u.display_name ILIKE $4
+                OR EXISTS (
+                       SELECT 1 FROM public.chat_messages cm2
+                        WHERE cm2.chat_id = c.id
+                          AND cm2.content::text ILIKE $4
+                   ))`;
+    try {
+        const rows = await query(
+            `SELECT c.id, c.title, c.project_id, c.created_at,
+                    c.user_id::text AS user_id,
+                    u.email, u.display_name,
+                    m.message_count,
+                    COALESCE(m.last_message_at, c.created_at) AS last_activity_at,
+                    COALESCE(lu.cost_usd_total, 0) AS cost_usd_total,
+                    COALESCE(lu.request_count, 0)  AS request_count,
+                    COALESCE(lu.error_count, 0)    AS error_count
+             ${baseJoins}
+              LEFT JOIN LATERAL (
+                  SELECT SUM(l.cost_usd) AS cost_usd_total,
+                         COUNT(*)        AS request_count,
+                         COUNT(*) FILTER (WHERE l.status = 'error') AS error_count
+                    FROM public.llm_usage l
+                   WHERE l.chat_id = c.id
+              ) lu ON TRUE
+             ${baseWhere}
+          ORDER BY COALESCE(m.last_message_at, c.created_at) DESC
+             LIMIT $5 OFFSET $6`,
+            [from.toISOString(), to.toISOString(), rawQ, like, limit, offset],
+        );
+        const total = await query<{ count: string }>(
+            `SELECT COUNT(*)::text AS count ${baseJoins} ${baseWhere}`,
+            [from.toISOString(), to.toISOString(), rawQ, like],
+        );
+        res.json({
+            range: { from: from.toISOString(), to: to.toISOString() },
+            limit,
+            offset,
+            total: Number(total.rows[0]?.count ?? 0),
+            rows: rows.rows.map((r) => ({
+                id: r.id,
+                title: r.title,
+                project_id: r.project_id,
+                created_at: r.created_at,
+                user_id: r.user_id,
+                email: r.email,
+                display_name: r.display_name,
+                message_count: Number(r.message_count ?? 0),
+                last_activity_at: r.last_activity_at,
+                cost_usd_total: Number(r.cost_usd_total ?? 0),
+                request_count: Number(r.request_count ?? 0),
+                error_count: Number(r.error_count ?? 0),
+            })),
+        });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/chats]", msg);
+        res.status(500).json({ detail: msg });
+    }
+});
+
+/**
+ * GET /adminmax/audit — the admin action audit trail, newest first.
+ *
+ * Query params (all optional):
+ *   - from, to   window on created_at (default last 30 days)
+ *   - q          case-insensitive substring match on action, target id
+ *                or target type (e.g. "tier", "credits.grant", a user id)
+ *   - limit/offset — standard pagination.
+ */
+/**
+ * GET /adminmax/activity-events — read API over the workspace audit trail
+ * (audit_events, migration 208 + surface column 210). Feeds the admin MCP's
+ * feature-usage and per-user activity tools.
+ *
+ * Query: user_id?, event_type? (prefix match, e.g. "document."), surface?,
+ * from/to (default last 30 days), limit/offset, aggregate=user|day|type|surface.
+ * Without `aggregate` returns raw rows (newest first); with it, grouped counts.
+ * Metadata is PII-lean by design (ids/enums only) so nothing is redacted here.
+ */
+adminMaxRouter.get("/activity-events", async (req: Request, res: Response) => {
+    const { from, to } = parseDateRange(req);
+    const { limit, offset } = parsePagination(req);
+    const userId = typeof req.query.user_id === "string" && isUuid(req.query.user_id) ? req.query.user_id : null;
+    const typePrefix = typeof req.query.event_type === "string" && req.query.event_type.trim() ? req.query.event_type.trim().slice(0, 80) : null;
+    const surface = typeof req.query.surface === "string" && req.query.surface.trim() ? req.query.surface.trim().slice(0, 32) : null;
+    const aggregate = typeof req.query.aggregate === "string" && ["user", "day", "type", "surface"].includes(req.query.aggregate) ? req.query.aggregate : null;
+    const where = `WHERE created_at >= $1 AND created_at < $2
+                     AND ($3::uuid IS NULL OR user_id = $3::uuid)
+                     AND ($4::text IS NULL OR event_type LIKE $4::text || '%')
+                     AND ($5::text IS NULL OR surface = $5::text)`;
+    const params = [from.toISOString(), to.toISOString(), userId, typePrefix, surface];
+    try {
+        if (aggregate) {
+            const col = aggregate === "user" ? "user_id" : aggregate === "day" ? "date_trunc('day', created_at)" : aggregate === "type" ? "event_type" : "surface";
+            const r = await query<{ key: string | null; events: string; users: string }>(
+                `SELECT ${col}::text AS key, COUNT(*)::text AS events, COUNT(DISTINCT user_id)::text AS users
+                   FROM public.audit_events ${where}
+               GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT $6 OFFSET $7`,
+                [...params, limit, offset],
+            );
+            res.json({
+                range: { from: from.toISOString(), to: to.toISOString() },
+                aggregate,
+                rows: r.rows.map((x) => ({ key: x.key, events: Number(x.events), users: Number(x.users) })),
+            });
+            return;
+        }
+        const [rows, total] = await Promise.all([
+            query(`SELECT id, user_id, event_type, surface, project_id, document_id, review_id, chat_id, metadata, created_at
+                     FROM public.audit_events ${where}
+                 ORDER BY created_at DESC LIMIT $6 OFFSET $7`, [...params, limit, offset]),
+            query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM public.audit_events ${where}`, params),
+        ]);
+        res.json({
+            range: { from: from.toISOString(), to: to.toISOString() },
+            pagination: { limit, offset, total: Number(total.rows[0]?.count ?? 0) },
+            events: rows.rows,
+        });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/activity-events]", msg);
+        res.status(500).json({ detail: "Failed to load activity events" });
+    }
+});
+
+/**
+ * GET /adminmax/features — feature adoption overview (migration 210):
+ * per feature how many users ever used it and how many first used it in the
+ * window; per event type and per surface counts in the window.
+ */
+adminMaxRouter.get("/features", async (req: Request, res: Response) => {
+    const { from, to } = parseDateRange(req);
+    const range = [from.toISOString(), to.toISOString()];
+    try {
+        const [features, byType, bySurface] = await Promise.all([
+            query<{ feature: string; users_total: string; first_uses_in_range: string; last_first_use: string | null }>(
+                `SELECT feature,
+                        COUNT(*)::text AS users_total,
+                        COUNT(*) FILTER (WHERE first_used_at >= $1 AND first_used_at < $2)::text AS first_uses_in_range,
+                        MAX(first_used_at) AS last_first_use
+                   FROM public.user_feature_first_use
+               GROUP BY feature ORDER BY COUNT(*) DESC`, range),
+            query<{ event_type: string; events: string; users: string }>(
+                `SELECT event_type, COUNT(*)::text AS events, COUNT(DISTINCT user_id)::text AS users
+                   FROM public.audit_events WHERE created_at >= $1 AND created_at < $2
+               GROUP BY event_type ORDER BY COUNT(*) DESC`, range),
+            query<{ surface: string | null; events: string; users: string }>(
+                `SELECT surface, COUNT(*)::text AS events, COUNT(DISTINCT user_id)::text AS users
+                   FROM public.audit_events WHERE created_at >= $1 AND created_at < $2
+               GROUP BY surface ORDER BY COUNT(*) DESC`, range),
+        ]);
+        res.json({
+            range: { from: range[0], to: range[1] },
+            features: features.rows.map((r) => ({ feature: r.feature, users_total: Number(r.users_total), first_uses_in_range: Number(r.first_uses_in_range), last_first_use: r.last_first_use })),
+            events_by_type: byType.rows.map((r) => ({ event_type: r.event_type, events: Number(r.events), users: Number(r.users) })),
+            events_by_surface: bySurface.rows.map((r) => ({ surface: r.surface ?? "unknown", events: Number(r.events), users: Number(r.users) })),
+        });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/features]", msg);
+        res.status(500).json({ detail: "Failed to load feature adoption" });
+    }
+});
+
+/**
+ * GET /adminmax/users/:userId/features — one user's feature adoption:
+ * first-use rows, event counts by type in the window, and the most recent
+ * events (metadata is ids/enums only).
+ */
+adminMaxRouter.get("/users/:userId/features", async (req: Request, res: Response) => {
+    const { userId } = req.params;
+    if (!isUuid(userId)) {
+        res.status(400).json({ detail: "Invalid user id" });
+        return;
+    }
+    const { from, to } = parseDateRange(req);
+    try {
+        const [first, counts, recent] = await Promise.all([
+            query(`SELECT feature, surface, first_used_at FROM public.user_feature_first_use WHERE user_id = $1 ORDER BY first_used_at`, [userId]),
+            query<{ event_type: string; count: string; last_at: string }>(
+                `SELECT event_type, COUNT(*)::text AS count, MAX(created_at) AS last_at
+                   FROM public.audit_events WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
+               GROUP BY event_type ORDER BY COUNT(*) DESC`, [userId, from.toISOString(), to.toISOString()]),
+            query(`SELECT event_type, surface, project_id, chat_id, review_id, document_id, metadata, created_at
+                     FROM public.audit_events WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30`, [userId]),
+        ]);
+        res.json({
+            range: { from: from.toISOString(), to: to.toISOString() },
+            features: first.rows,
+            event_counts: counts.rows.map((r) => ({ event_type: r.event_type, count: Number(r.count), last_at: r.last_at })),
+            recent_events: recent.rows,
+        });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/users/:userId/features]", msg);
+        res.status(500).json({ detail: "Failed to load user features" });
+    }
+});
+
+adminMaxRouter.get("/audit", async (req: Request, res: Response) => {
+    const { from, to } = parseDateRange(req);
+    const { limit, offset } = parsePagination(req);
+    const rawQ = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const like = `%${rawQ}%`;
+    const where = `
+         WHERE created_at >= $1
+           AND created_at <  $2
+           AND ($3 = ''
+                OR action ILIKE $4
+                OR target_id ILIKE $4
+                OR target_type ILIKE $4
+                OR actor ILIKE $4)`;
+    try {
+        const rows = await query(
+            `SELECT id, actor, action, target_type, target_id,
+                    payload, ip, created_at
+               FROM public.admin_audit
+             ${where}
+          ORDER BY created_at DESC
+             LIMIT $5 OFFSET $6`,
+            [from.toISOString(), to.toISOString(), rawQ, like, limit, offset],
+        );
+        const total = await query<{ count: string }>(
+            `SELECT COUNT(*)::text AS count FROM public.admin_audit ${where}`,
+            [from.toISOString(), to.toISOString(), rawQ, like],
+        );
+        res.json({
+            range: { from: from.toISOString(), to: to.toISOString() },
+            limit,
+            offset,
+            total: Number(total.rows[0]?.count ?? 0),
+            rows: rows.rows,
+        });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/audit]", msg);
+        res.status(500).json({ detail: msg });
     }
 });
 
@@ -1973,6 +2556,18 @@ async function listTierLimitsHandler(_req: Request, res: Response): Promise<void
         const countByLevel = new Map<number, number>(
             counts.rows.map((c) => [Number(c.lvl), Number(c.cnt)]),
         );
+        // Read-only enrichment: attach the public monthly PRICE string (the
+        // exact same source /billing/plans exposes — the plan catalog's hr
+        // price) and the env-driven Stripe product id per tier. Both are null
+        // for tiers with no public plan / no Stripe product (free, enterprise,
+        // foundation, …). This does not touch the write path.
+        const catalog = await getPlanCatalog();
+        const priceByLevel = new Map<number, string>(
+            catalog.map((p) => [p.tierLevelId, p.marketing.locales.hr.price]),
+        );
+        const productBySlug = new Map<string, string | null>(
+            getPlanDefs().map((p) => [p.slug, p.productId]),
+        );
         res.json({
             tiers: [...rows]
                 .sort((a, b) => a.tier_level_id - b.tier_level_id)
@@ -1983,6 +2578,8 @@ async function listTierLimitsHandler(_req: Request, res: Response): Promise<void
                     daily_tokens: r.daily_tokens,
                     entitlements: r.entitlements,
                     marketing: r.marketing,
+                    price: priceByLevel.get(r.tier_level_id) ?? null,
+                    stripe_product_id: productBySlug.get(r.tier_slug) ?? null,
                     updated_at: r.updated_at,
                     user_count: countByLevel.get(r.tier_level_id) ?? 0,
                     is_free: r.tier_level_id === freeLevelId,
@@ -2084,6 +2681,34 @@ adminMaxRouter.patch(
             // row cache is invalidated by the write itself.
             bustEntitlementsCache();
             bustPlanCatalogCache();
+            void logAdminAudit({
+                action: "tier.update",
+                targetType: "tier",
+                targetId: String(tierLevelId),
+                payload: {
+                    ...(patch.daily_tokens !== undefined
+                        ? { daily_tokens: patch.daily_tokens }
+                        : {}),
+                    ...(patch.display_label !== undefined
+                        ? { display_label: patch.display_label }
+                        : {}),
+                    ...(patch.tier_slug !== undefined
+                        ? { tier_slug: patch.tier_slug }
+                        : {}),
+                    // Payload stays small: record WHICH entitlement keys
+                    // changed (values are in tier_limits) and whether
+                    // marketing copy was replaced.
+                    ...(patch.entitlementsMerge
+                        ? {
+                              entitlement_keys: Object.keys(
+                                  patch.entitlementsMerge,
+                              ),
+                          }
+                        : {}),
+                    ...(patch.marketing ? { marketing_updated: true } : {}),
+                },
+                ip: req.ip ?? null,
+            });
             res.json({ tier });
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -2135,6 +2760,17 @@ adminMaxRouter.post("/tiers", async (req: Request, res: Response) => {
             entitlements: cleanEntitlements,
         });
         bustEntitlementsCache();
+        void logAdminAudit({
+            action: "tier.create",
+            targetType: "tier",
+            targetId: String(id),
+            payload: {
+                tier_slug: tier_slug.trim(),
+                display_label: display_label.trim(),
+                daily_tokens: Math.floor(tokens),
+            },
+            ip: req.ip ?? null,
+        });
         res.status(201).json({ ok: true });
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2292,6 +2928,20 @@ adminMaxRouter.post(
             console.log(
                 `[adminmax/credits] grant id=${ins.rows[0].id} user=${userId} tokens=${tokens} method=${method} ref=${reference ?? "-"}`,
             );
+            void logAdminAudit({
+                action: "credits.grant",
+                targetType: "user",
+                targetId: userId,
+                payload: {
+                    credit_id: ins.rows[0].id,
+                    tokens_granted: Math.floor(tokens),
+                    payment_method: method,
+                    external_reference: reference,
+                    amount_eur_cents: amountCents,
+                    expires_at: expiresIso,
+                },
+                ip: req.ip ?? null,
+            });
             res.status(201).json({ id: ins.rows[0].id, tokens_granted: tokens });
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -2328,6 +2978,17 @@ adminMaxRouter.post(
             console.log(
                 `[adminmax/credits] void id=${creditId} reason=${reason ?? "-"}`,
             );
+            void logAdminAudit({
+                action: "credits.void",
+                targetType: "credit",
+                targetId: creditId,
+                payload: {
+                    user_id: result.rows[0].user_id,
+                    tokens_granted: Number(result.rows[0].tokens_granted),
+                    reason,
+                },
+                ip: req.ip ?? null,
+            });
             res.json({ ok: true });
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -2336,3 +2997,624 @@ adminMaxRouter.post(
         }
     },
 );
+
+// ── bugfix status (GitHub issue / PR / deploy tracking) ──────────────────
+//
+// GET /adminmax/bugfix/status — composes GitHub issues + PRs + the
+// stable...main compare into one payload for the AdminMax BugFix page.
+// The repo is private: without ADMINMAX_GITHUB_TOKEN (or GITHUB_TOKEN)
+// we return 200 { configured: false } so the page renders a friendly
+// "token not configured" state instead of a 500.
+
+type BugfixIssueStatus = "open" | "pr_open" | "merged" | "live" | "closed";
+
+interface BugfixLinkedPr {
+    number: number;
+    state: "open" | "closed";
+    mergedAt: string | null;
+    htmlUrl: string;
+}
+
+interface BugfixIssue {
+    number: number;
+    title: string;
+    state: "open" | "closed";
+    labels: string[];
+    createdAt: string;
+    closedAt: string | null;
+    htmlUrl: string;
+    linkedPr: BugfixLinkedPr | null;
+    status: BugfixIssueStatus;
+}
+
+interface BugfixStatusPayload {
+    configured: true;
+    repo: string;
+    deploy: { mainAheadOfStable: number | null };
+    issues: BugfixIssue[];
+    fetchedAt: string;
+}
+
+// 60-second in-memory cache of the composed payload. The page has a manual
+// refresh button and GitHub rate limits are per-token, so one composition
+// per minute per instance is plenty (same per-instance trade-off as the
+// login failure log above).
+const BUGFIX_CACHE_TTL_MS = 60 * 1000;
+let bugfixCache: { payload: BugfixStatusPayload; at: number } | null = null;
+
+/** Minimal slice of the GitHub issues-list item we consume. */
+interface GhIssueRaw {
+    number: number;
+    title: string;
+    state: string;
+    labels?: Array<{ name?: string } | string>;
+    created_at: string;
+    closed_at: string | null;
+    html_url: string;
+    /** Present on items that are actually pull requests — we skip those. */
+    pull_request?: unknown;
+}
+
+/** Minimal slice of the GitHub pulls-list item we consume. */
+interface GhPullRaw {
+    number: number;
+    title: string;
+    state: string;
+    merged_at: string | null;
+    merge_commit_sha?: string | null;
+    body: string | null;
+    html_url: string;
+    head?: { ref?: string };
+    base?: { ref?: string };
+}
+
+/**
+ * Status precedence: merged PR > open PR > raw issue state.
+ *
+ * A merged PR counts as promoted (on LIVE) when its merge commit is NOT
+ * among the commits main has ahead of stable — checked per PR so one
+ * fresh merge on main no longer flips every other merged issue back to
+ * "waiting for LIVE" (issue #130). When the ahead-list is unavailable
+ * (compare failed or truncated past per_page) we fall back to the old
+ * conservative repo-global gate: promoted only when main == stable.
+ *
+ * Promoted + issue closed → "closed"; promoted + issue still open →
+ * "live" (fix deployed, issue awaiting closure).
+ */
+export function bugfixIssueStatus(
+    issueState: "open" | "closed",
+    pr: {
+        mergedAt: string | null;
+        state: "open" | "closed";
+        mergeCommitSha: string | null;
+    } | null,
+    deploy: {
+        mainAheadOfStable: number | null;
+        unpromotedShas: Set<string> | null;
+    },
+): BugfixIssueStatus {
+    if (pr?.mergedAt) {
+        const promoted =
+            deploy.unpromotedShas !== null && pr.mergeCommitSha
+                ? !deploy.unpromotedShas.has(pr.mergeCommitSha)
+                : deploy.mainAheadOfStable === 0;
+        if (!promoted) return "merged";
+        return issueState === "closed" ? "closed" : "live";
+    }
+    if (pr?.state === "open") return "pr_open";
+    return issueState === "closed" ? "closed" : "open";
+}
+
+async function githubJson<T>(
+    repo: string,
+    token: string,
+    path: string,
+): Promise<T> {
+    const res = await fetch(`https://api.github.com/repos/${repo}${path}`, {
+        headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${token}`,
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "mike-adminmax",
+        },
+    });
+    if (!res.ok) {
+        throw new Error(`GitHub ${path} responded ${res.status}`);
+    }
+    return (await res.json()) as T;
+}
+
+async function composeBugfixStatus(
+    repo: string,
+    token: string,
+): Promise<BugfixStatusPayload> {
+    const [issuesRaw, pullsRaw] = await Promise.all([
+        githubJson<GhIssueRaw[]>(
+            repo,
+            token,
+            `/issues?state=all&per_page=100&sort=created&direction=desc`,
+        ),
+        githubJson<GhPullRaw[]>(
+            repo,
+            token,
+            `/pulls?state=all&per_page=100&sort=created&direction=desc`,
+        ),
+    ]);
+
+    // Deploy lag: commits on main not yet promoted to stable (LIVE).
+    // A missing branch (404 on a fresh fork without `stable`) → null.
+    // The same compare also lists those commits' SHAs, which lets the
+    // status below decide promotion PER PR instead of gating every
+    // merged issue on main==stable (issue #130). null = list unusable
+    // (truncated past per_page or compare failed) → conservative gate.
+    let mainAheadOfStable: number | null = null;
+    let unpromotedShas: Set<string> | null = null;
+    try {
+        const cmp = await githubJson<{
+            ahead_by?: number;
+            total_commits?: number;
+            commits?: Array<{ sha?: string }>;
+        }>(repo, token, `/compare/stable...main?per_page=250`);
+        mainAheadOfStable =
+            typeof cmp.ahead_by === "number" ? cmp.ahead_by : null;
+        const commits = cmp.commits ?? [];
+        if (
+            typeof cmp.total_commits === "number" &&
+            cmp.total_commits <= commits.length
+        ) {
+            unpromotedShas = new Set(
+                commits
+                    .map((c) => c.sha ?? "")
+                    .filter((sha): sha is string => sha.length > 0),
+            );
+        }
+    } catch {
+        mainAheadOfStable = null;
+    }
+
+    // Map issue number → best linked PR. A PR links to issue N when its
+    // head branch matches `fix/issue-N-*` or its title/body mentions `#N`.
+    // Merged beats open beats closed-unmerged; the newer PR wins ties.
+    const prRank = (pr: GhPullRaw): number =>
+        pr.merged_at ? 2 : pr.state === "open" ? 1 : 0;
+    const prByIssue = new Map<number, GhPullRaw>();
+    for (const pr of pullsRaw) {
+        const nums = new Set<number>();
+        const headMatch = /^fix\/issue-(\d+)(?:-|$)/.exec(pr.head?.ref ?? "");
+        if (headMatch) nums.add(Number(headMatch[1]));
+        const text = `${pr.title ?? ""}\n${pr.body ?? ""}`;
+        for (const m of text.matchAll(/#(\d+)\b/g)) {
+            nums.add(Number(m[1]));
+        }
+        for (const n of nums) {
+            const cur = prByIssue.get(n);
+            if (
+                !cur ||
+                prRank(pr) > prRank(cur) ||
+                (prRank(pr) === prRank(cur) && pr.number > cur.number)
+            ) {
+                prByIssue.set(n, pr);
+            }
+        }
+    }
+
+    const issues: BugfixIssue[] = issuesRaw
+        .filter((it) => !it.pull_request)
+        .map((it) => {
+            const pr = prByIssue.get(it.number);
+            const linkedPr: BugfixLinkedPr | null = pr
+                ? {
+                      number: pr.number,
+                      state: pr.state === "open" ? "open" : "closed",
+                      mergedAt: pr.merged_at,
+                      htmlUrl: pr.html_url,
+                  }
+                : null;
+            const status = bugfixIssueStatus(
+                it.state === "closed" ? "closed" : "open",
+                linkedPr
+                    ? {
+                          mergedAt: linkedPr.mergedAt,
+                          state: linkedPr.state,
+                          mergeCommitSha: pr?.merge_commit_sha ?? null,
+                      }
+                    : null,
+                { mainAheadOfStable, unpromotedShas },
+            );
+            const labels = (it.labels ?? [])
+                .map((l) => (typeof l === "string" ? l : (l?.name ?? "")))
+                .filter((name): name is string => Boolean(name));
+            return {
+                number: it.number,
+                title: it.title,
+                state: it.state === "closed" ? "closed" : "open",
+                labels,
+                createdAt: it.created_at,
+                closedAt: it.closed_at,
+                htmlUrl: it.html_url,
+                linkedPr,
+                status,
+            };
+        });
+
+    return {
+        configured: true,
+        repo,
+        deploy: { mainAheadOfStable },
+        issues,
+        fetchedAt: new Date().toISOString(),
+    };
+}
+
+/**
+ * GET /adminmax/bugfix/status — live bug tracking for the BugFix page.
+ *
+ * Response: { configured: false, repo }  when no GitHub token is set, or
+ *           { configured: true, repo, deploy: { mainAheadOfStable },
+ *             issues: [...], fetchedAt }.
+ */
+adminMaxRouter.get("/bugfix/status", async (_req: Request, res: Response) => {
+    const token =
+        process.env.ADMINMAX_GITHUB_TOKEN?.trim() ||
+        process.env.GITHUB_TOKEN?.trim() ||
+        "";
+    const repo = process.env.ADMINMAX_GITHUB_REPO?.trim() || "nforum/mike";
+    if (!token) {
+        res.json({ configured: false, repo });
+        return;
+    }
+    try {
+        const now = Date.now();
+        if (bugfixCache && now - bugfixCache.at < BUGFIX_CACHE_TTL_MS) {
+            res.json(bugfixCache.payload);
+            return;
+        }
+        const payload = await composeBugfixStatus(repo, token);
+        bugfixCache = { payload, at: now };
+        res.json(payload);
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/bugfix/status]", msg);
+        res.status(500).json({ detail: msg });
+    }
+});
+
+// ── promo codes (Stripe coupons + promotion codes) ────────────────────────
+//
+// Promo codes live entirely in Stripe (a percent-off Coupon + a
+// customer-facing Promotion Code on top, optionally restricted to
+// specific products). Checkout already resolves and applies them
+// (billing.ts runCheckout), so these routes only create/list/toggle
+// codes and surface usage: Stripe's aggregate times_redeemed plus the
+// per-code subscription/revenue attribution the webhook stamps into
+// billing_revenue.promo_code.
+
+const PROMO_CODE_RE = /^[A-Za-z0-9_-]{3,30}$/;
+
+type PromoRevenueStat = {
+    promo_code: string;
+    invoices: string;
+    subscribers: string;
+    revenue_cents: string;
+};
+
+/**
+ * GET /adminmax/promos — Stripe promotion codes (newest first) enriched
+ * with the plans they're restricted to and billing_revenue stats.
+ */
+adminMaxRouter.get("/promos", async (_req: Request, res: Response) => {
+    if (!isStripeConfigured()) {
+        res.json({ configured: false, promos: [] });
+        return;
+    }
+    try {
+        const stripe = getStripe();
+        const [list, stats] = await Promise.all([
+            stripe.promotionCodes.list({
+                limit: 100,
+                expand: ["data.promotion.coupon.applies_to"],
+            }),
+            query<PromoRevenueStat>(
+                `SELECT promo_code,
+                        COUNT(*)::text                    AS invoices,
+                        COUNT(DISTINCT COALESCE(user_id::text, stripe_customer_id))::text
+                                                          AS subscribers,
+                        COALESCE(SUM(amount_cents), 0)::text AS revenue_cents
+                   FROM public.billing_revenue
+                  WHERE promo_code IS NOT NULL
+                  GROUP BY promo_code`,
+            ),
+        ]);
+        const statByCode = new Map(
+            stats.rows.map((r) => [r.promo_code.toUpperCase(), r]),
+        );
+        const defs = getPlanDefs();
+        const promos = list.data.map((p) => {
+            // API ≥ clover nests the coupon under promotion.coupon
+            // (expandable — string id unless expanded, see list() above).
+            const rawCoupon = p.promotion?.coupon;
+            const coupon =
+                rawCoupon && typeof rawCoupon === "object" ? rawCoupon : null;
+            const products = coupon?.applies_to?.products ?? [];
+            const s = statByCode.get(p.code.toUpperCase());
+            return {
+                id: p.id,
+                code: p.code,
+                active: p.active,
+                coupon_id: coupon?.id ?? null,
+                coupon_valid: coupon?.valid ?? null,
+                percent_off: coupon?.percent_off ?? null,
+                amount_off: coupon?.amount_off ?? null,
+                currency: coupon?.currency ?? null,
+                duration: coupon?.duration ?? null,
+                duration_in_months: coupon?.duration_in_months ?? null,
+                // [] ⇒ the coupon applies to every product.
+                plans: products.map(
+                    (pid: string) =>
+                        defs.find((d) => d.productId === pid)?.slug ?? pid,
+                ),
+                expires_at: p.expires_at
+                    ? new Date(p.expires_at * 1000).toISOString()
+                    : null,
+                max_redemptions: p.max_redemptions ?? null,
+                times_redeemed: p.times_redeemed ?? 0,
+                created_at: new Date(p.created * 1000).toISOString(),
+                stats: s
+                    ? {
+                          invoices: Number(s.invoices),
+                          subscribers: Number(s.subscribers),
+                          revenue_cents: Number(s.revenue_cents),
+                      }
+                    : null,
+            };
+        });
+        res.json({ configured: true, promos });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/promos GET]", msg);
+        res.status(500).json({ detail: msg });
+    }
+});
+
+/**
+ * POST /adminmax/promos — create a Coupon + Promotion Code in Stripe.
+ *
+ * Body: {
+ *   code:               "HOK2026"            (3-30 chars, [A-Za-z0-9_-])
+ *   percent_off:        20                   (1–100)
+ *   duration?:          "forever" | "once" | "repeating"   (default forever)
+ *   duration_in_months?: number              (required for "repeating")
+ *   plans?:             string[]             (plan keys/slugs; empty = all)
+ *   expires_at?:        ISO date             (last day the code can be entered)
+ *   max_redemptions?:   number
+ * }
+ */
+adminMaxRouter.post("/promos", async (req: Request, res: Response) => {
+    if (!isStripeConfigured()) {
+        res.status(503).json({ detail: "Stripe nije konfiguriran" });
+        return;
+    }
+    const {
+        code,
+        percent_off,
+        duration,
+        duration_in_months,
+        plans,
+        expires_at,
+        max_redemptions,
+    } = req.body as {
+        code?: unknown;
+        percent_off?: unknown;
+        duration?: unknown;
+        duration_in_months?: unknown;
+        plans?: unknown;
+        expires_at?: unknown;
+        max_redemptions?: unknown;
+    };
+    if (typeof code !== "string" || !PROMO_CODE_RE.test(code.trim())) {
+        res.status(400).json({
+            detail: "code: 3–30 znakova, samo slova/brojke/_/-",
+        });
+        return;
+    }
+    const normalizedCode = code.trim().toUpperCase();
+    const pct = Number(percent_off);
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+        res.status(400).json({ detail: "percent_off mora biti 1–100" });
+        return;
+    }
+    const dur =
+        duration === undefined || duration === "forever"
+            ? "forever"
+            : duration === "once" || duration === "repeating"
+              ? duration
+              : null;
+    if (!dur) {
+        res.status(400).json({
+            detail: "duration: forever | once | repeating",
+        });
+        return;
+    }
+    let durMonths: number | undefined;
+    if (dur === "repeating") {
+        durMonths = Number(duration_in_months);
+        if (!Number.isInteger(durMonths) || durMonths <= 0 || durMonths > 60) {
+            res.status(400).json({
+                detail: "duration_in_months: 1–60 (uz duration=repeating)",
+            });
+            return;
+        }
+    }
+    // Plan keys/slugs → Stripe product ids. Unknown or unconfigured
+    // plans are a hard error so a typo can't silently widen the coupon.
+    const productIds: string[] = [];
+    if (plans !== undefined) {
+        if (!Array.isArray(plans) || plans.some((p) => typeof p !== "string")) {
+            res.status(400).json({ detail: "plans mora biti lista stringova" });
+            return;
+        }
+        const defs = getPlanDefs();
+        for (const p of plans as string[]) {
+            const def = defs.find((d) => d.plan === p || d.slug === p);
+            if (!def) {
+                res.status(400).json({ detail: `Nepoznat plan: ${p}` });
+                return;
+            }
+            if (!def.productId) {
+                res.status(400).json({
+                    detail: `Plan ${p} nema konfiguriran Stripe product`,
+                });
+                return;
+            }
+            if (!productIds.includes(def.productId)) {
+                productIds.push(def.productId);
+            }
+        }
+    }
+    let expiresAtUnix: number | undefined;
+    if (expires_at !== undefined && expires_at !== null && expires_at !== "") {
+        const t = new Date(String(expires_at)).getTime();
+        if (!Number.isFinite(t) || t <= Date.now()) {
+            res.status(400).json({
+                detail: "expires_at mora biti valjan budući datum",
+            });
+            return;
+        }
+        expiresAtUnix = Math.floor(t / 1000);
+    }
+    let maxRedemptions: number | undefined;
+    if (max_redemptions !== undefined && max_redemptions !== null) {
+        maxRedemptions = Number(max_redemptions);
+        if (!Number.isInteger(maxRedemptions) || maxRedemptions <= 0) {
+            res.status(400).json({
+                detail: "max_redemptions mora biti pozitivan broj",
+            });
+            return;
+        }
+    }
+    try {
+        const stripe = getStripe();
+        // Reject duplicates up front — Stripe allows several promotion
+        // codes with the same code string as long as only one is active,
+        // which would make stats ambiguous.
+        const existing = await stripe.promotionCodes.list({
+            code: normalizedCode,
+            limit: 1,
+        });
+        if (existing.data.length > 0) {
+            res.status(409).json({
+                detail: `Kod ${normalizedCode} već postoji u Stripeu`,
+            });
+            return;
+        }
+        const coupon = await stripe.coupons.create({
+            name: normalizedCode,
+            percent_off: pct,
+            duration: dur,
+            ...(durMonths ? { duration_in_months: durMonths } : {}),
+            ...(productIds.length
+                ? { applies_to: { products: productIds } }
+                : {}),
+        });
+        let promo;
+        try {
+            promo = await stripe.promotionCodes.create({
+                promotion: { type: "coupon", coupon: coupon.id },
+                code: normalizedCode,
+                ...(expiresAtUnix ? { expires_at: expiresAtUnix } : {}),
+                ...(maxRedemptions
+                    ? { max_redemptions: maxRedemptions }
+                    : {}),
+            });
+        } catch (err) {
+            // Don't leave an orphan coupon behind a failed promo create.
+            await stripe.coupons.del(coupon.id).catch(() => {});
+            throw err;
+        }
+        void logAdminAudit({
+            action: "promo.create",
+            targetType: "promo",
+            targetId: normalizedCode,
+            payload: {
+                promotion_code_id: promo.id,
+                coupon_id: coupon.id,
+                percent_off: pct,
+                duration: dur,
+                ...(durMonths ? { duration_in_months: durMonths } : {}),
+                plans: productIds,
+                ...(expiresAtUnix ? { expires_at: expiresAtUnix } : {}),
+                ...(maxRedemptions ? { max_redemptions: maxRedemptions } : {}),
+            },
+            ip: req.ip ?? null,
+        });
+        res.status(201).json({ ok: true, id: promo.id, code: promo.code });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/promos POST]", msg);
+        res.status(500).json({ detail: msg });
+    }
+});
+
+/**
+ * PATCH /adminmax/promos/:id — activate/deactivate a promotion code.
+ * (Stripe promotion codes can't be deleted, only deactivated; an
+ * expired code can't be reactivated — Stripe rejects it.)
+ */
+adminMaxRouter.patch("/promos/:id", async (req: Request, res: Response) => {
+    if (!isStripeConfigured()) {
+        res.status(503).json({ detail: "Stripe nije konfiguriran" });
+        return;
+    }
+    const id = String(req.params.id ?? "");
+    if (!id.startsWith("promo_")) {
+        res.status(400).json({ detail: "Nevaljan promotion code id" });
+        return;
+    }
+    const { active } = req.body as { active?: unknown };
+    if (typeof active !== "boolean") {
+        res.status(400).json({ detail: "active mora biti boolean" });
+        return;
+    }
+    try {
+        const promo = await getStripe().promotionCodes.update(id, { active });
+        void logAdminAudit({
+            action: "promo.update",
+            targetType: "promo",
+            targetId: promo.code,
+            payload: { promotion_code_id: id, active },
+            ip: req.ip ?? null,
+        });
+        res.json({ ok: true, id: promo.id, active: promo.active });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/promos PATCH]", msg);
+        res.status(500).json({ detail: msg });
+    }
+});
+
+// ── databases inventory (external ops service) ────────────────────────────
+//
+// GET /adminmax/databases — generic proxy to the ops-inventory service
+// (OPS_INVENTORY_URL). Max holds no knowledge of the data stores behind the
+// "Baze" tab: it forwards the request and returns the JSON as-is. Reads serve
+// that service's stored snapshot; `?refresh=1` asks it to scan now (minutes).
+// Unset URL → `{ available: false }` and the tab says so.
+
+adminMaxRouter.get("/databases", async (req: Request, res: Response) => {
+    if (!opsInventoryConfigured()) {
+        res.json({ available: false, detail: "OPS_INVENTORY_URL not configured" });
+        return;
+    }
+    const refresh = req.query.refresh === "1" || req.query.refresh === "true";
+    try {
+        const data = await opsInventoryFetch<Record<string, unknown>>(
+            `/v1/databases${refresh ? "?refresh=1" : ""}`,
+            { timeoutMs: refresh ? 1_150_000 : 30_000 },
+        );
+        res.json({ available: true, ...data });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/databases]", msg);
+        res.status(err instanceof OpsInventoryError ? 502 : 500).json({ detail: msg });
+    }
+});

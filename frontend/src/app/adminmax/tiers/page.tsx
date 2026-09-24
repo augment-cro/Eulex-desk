@@ -171,6 +171,12 @@ export default function AdminMaxTiersPage() {
                             <th className="px-4 py-2 text-right text-xs font-medium uppercase tracking-wide">
                                 Daily tokens
                             </th>
+                            <th className="px-4 py-2 text-right text-xs font-medium uppercase tracking-wide">
+                                Cijena
+                            </th>
+                            <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wide">
+                                Stripe ID
+                            </th>
                             <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wide">
                                 Ažurirano
                             </th>
@@ -181,7 +187,7 @@ export default function AdminMaxTiersPage() {
                         {tiers.length === 0 && !loading && (
                             <tr>
                                 <td
-                                    colSpan={6}
+                                    colSpan={8}
                                     className="px-4 py-6 text-center text-muted-foreground/70"
                                 >
                                     Nema definiranih tierova.
@@ -371,6 +377,18 @@ function TierRow({
                         {fmtInt(Number(tokens) || 0)} tokena / 24h
                     </div>
                 </td>
+                <td className="px-4 py-2 text-right font-mono text-xs text-foreground">
+                    {tier.price ?? "—"}
+                </td>
+                <td className="max-w-[12rem] truncate px-4 py-2 font-mono text-xs text-muted-foreground">
+                    {tier.stripe_product_id ? (
+                        <span title={tier.stripe_product_id}>
+                            {tier.stripe_product_id}
+                        </span>
+                    ) : (
+                        "—"
+                    )}
+                </td>
                 <td className="px-4 py-2 text-xs text-muted-foreground/70">
                     {fmtDate(tier.updated_at)}
                 </td>
@@ -403,7 +421,7 @@ function TierRow({
             </tr>
             {expanded && (
                 <tr className="border-t border-border bg-muted/50">
-                    <td colSpan={6} className="px-4 py-3">
+                    <td colSpan={8} className="px-4 py-3">
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                             {groups.map((g) => (
                                 <div key={g} className="space-y-1.5">
@@ -437,7 +455,7 @@ function TierRow({
             )}
             {mktExpanded && (
                 <tr className="border-t border-border bg-muted/50">
-                    <td colSpan={6} className="px-4 py-3">
+                    <td colSpan={8} className="px-4 py-3">
                         <MarketingEditor mkt={mkt} onChange={setMkt} />
                         <div className="mt-2 text-[10px] text-muted-foreground/70">
                             Marketinški tekst cjenika — povlači ga javni{" "}

@@ -12,6 +12,13 @@
     "bonusBadge": "bonus tokens available",
     "topupCta": "Top up",
     "upgradeCta": "See Plus",
+    "usageRingTitle": "Daily usage",
+    "usageRingUsed": "Used: {percent}%",
+    "usageRingRemaining": "Remaining: {remaining}%",
+    "usageRingBonus": "Includes bonus tokens",
+    "usageRingReset": "Replenishes in {relief}",
+    "usageRingResetSoon": "Replenishes soon",
+    "usageRingAria": "Daily usage: {percent}%",
     "topupTitle": "Buy more tokens",
     "topupSubtitle": "Choose a pack — tokens never expire and apply after the daily limit.",
     "topupDisabled": "Top-up is currently unavailable — please contact support for a bank transfer.",
@@ -46,7 +53,33 @@
     "promoApply": "Apply",
     "promoApplied": "Code {code} applied",
     "promoRemove": "Remove",
-    "promoInvalid": "Unknown or inactive promo code"
+    "promoInvalid": "Unknown or inactive promo code",
+    "notSignedIn": "You are not signed in.",
+    "reliefSoon": "soon",
+    "perMonthSuffix": "/mo",
+    "billingTitle": "Billing details",
+    "billingHint": "Name and country are required — without a country Stripe cannot calculate VAT. Add a company name and VAT ID if the invoice is for a business.",
+    "billingName": "Full name",
+    "billingCountry": "Country",
+    "billingCountryPlaceholder": "Select your country…",
+    "billingOrganisation": "Company name (optional)",
+    "billingVatId": "VAT ID (optional)",
+    "billingVatPlaceholder": "HR12345678901",
+    "billingVatHint": "Shown on the invoice. A valid EU VAT ID from another member state enables reverse charge.",
+    "billingContinue": "Continue to payment",
+    "billingRequired": "Name and country are required. For a business invoice, company name, OIB/VAT ID, street and city are required too.",
+    "billingTaxUnresolved": "Stripe could not resolve a tax location for the selected country. Check the country or contact us.",
+    "billingPlanUpgraded": "Plan changed to {plan}. The difference for the remaining period has been prorated and charged to your saved card; the unused part of the old plan was credited.",
+    "billingPlanScheduled": "Switch to {plan} is scheduled for {date} — your current, already-paid plan runs until then, and the new price starts with the automatic renewal.",
+    "billingPlanClose": "Done",
+    "billingActiveSubExists": "You already have an active subscription. Change the plan instead of adding one — try again or pick a plan under Settings → Billing.",
+    "billingBusiness": "Invoice to a company (business)",
+    "billingBusinessHint": "Under Art. 79 of the Croatian VAT Act an invoice must carry the buyer's name, address and OIB or VAT ID — all fields are required. No phone number needed.",
+    "billingAddressLine1": "Street and number",
+    "billingAddressCity": "City",
+    "billingAddressPostal": "Postal code",
+    "billingPhone": "Phone (optional)",
+    "billingPhonePlaceholder": "+385 1 2345 678"
   },
   "common": {
     "save": "Save",
@@ -66,7 +99,9 @@
     "email": "Email",
     "rename": "Rename",
     "copy": "Copy",
-    "copied": "Copied"
+    "copied": "Copied",
+    "createAction": "Create",
+    "dismissWarning": "Dismiss warning"
   },
   "columnFormats": {
     "freeText": "Free text",
@@ -114,7 +149,9 @@
     "generatedOn": "Generated",
     "watermark": "Confidential · For internal use",
     "marketingTagline": "Trusted AI for legal excellence",
-    "disclaimer": "AI can make mistakes. Answers are not legal advice."
+    "disclaimer": "AI can make mistakes. Answers are not legal advice.",
+    "poweredBy": "Powered by",
+    "pageLabel": "Page"
   },
   "sidebar": {
     "assistant": "Assistant",
@@ -129,7 +166,15 @@
     "assistantHistory": "Assistant History",
     "noChatsYet": "No chats yet",
     "closeSidebar": "Close sidebar",
-    "openSidebar": "Open sidebar"
+    "openSidebar": "Open sidebar",
+    "pinned": "Pinned",
+    "ungrouped": "Ungrouped",
+    "showMore": "Show more",
+    "archived": "Archived",
+    "backToActive": "Back",
+    "noArchived": "No archived conversations",
+    "groupOptions": "Group options",
+    "resizeSidebar": "Resize sidebar"
   },
   "login": {
     "title": "Log In",
@@ -175,7 +220,14 @@
     "otpVerifyButton": "Verify code",
     "otpVerifying": "Verifying...",
     "otpInvalid": "The code is invalid or has expired. Request a new link.",
-    "sourceCode": "Source code (AGPL-3.0)"
+    "sourceCode": "Source code (AGPL-3.0)",
+    "callbackGenericError": "We couldn't complete the sign-in. Please try again.",
+    "callbackAccessDenied": "Sign-in was cancelled or access was denied.",
+    "callbackLinkExpired": "This link has expired or has already been used. Please request a new one.",
+    "callbackMissingCode": "The sign-in link is incomplete. Please try signing in again.",
+    "resetWeakPassword": "The password is too weak. Choose a longer, less common password.",
+    "resetSamePassword": "The new password must be different from your current password.",
+    "resetGenericError": "Password change failed. Please try again."
   },
   "landing": {
     "nav": {
@@ -284,6 +336,12 @@
       "privacy": "Privacy",
       "terms": "Terms",
       "contact": "Contact"
+    },
+    "tokenBanner": {
+      "message": "We're giving away the first <b>200,000,000 tokens</b> free for testing.",
+      "remaining": "Remaining: {amount}",
+      "used": "{amount} used",
+      "percentUsed": "{pct}% used"
     }
   },
   "signup": {
@@ -310,6 +368,7 @@
     "settings": "Settings",
     "tabs": {
       "general": "General",
+      "billing": "Billing & tokens",
       "models": "Models & API Keys",
       "connectors": "Context",
       "fileSources": "File sources",
@@ -340,25 +399,46 @@
       "organisationPlaceholder": "Enter your organisation",
       "country": "Country",
       "countryPlaceholder": "Select your country…",
-      "countryHint": "Used to calculate VAT for the Plus subscription. Synced with your eulex.ai profile.",
+      "countryHint": "Used to calculate VAT when a subscription is charged.",
       "vatNumber": "VAT number",
       "vatNumberPlaceholder": "e.g. HR12345678901",
-      "vatNumberHint": "EU VAT registration number. Shown on your invoice and may allow zero-rating on B2B purchases. Synced from your eulex.ai profile.",
-      "email": "Email"
+      "vatNumberHint": "EU VAT registration number. Shown on your invoice and may allow zero-rating on B2B purchases.",
+      "email": "Email",
+      "addressLine1": "Street and number",
+      "addressLine1Placeholder": "Ilica 1",
+      "addressCity": "City",
+      "addressCityPlaceholder": "Zagreb",
+      "addressPostalCode": "Postal code",
+      "addressPostalCodePlaceholder": "10000",
+      "addressHint": "Billing address for the invoice. Required together with a company name and OIB/VAT ID (Art. 79 VAT Act). Sent to Stripe.",
+      "phone": "Phone (optional)",
+      "phonePlaceholder": "+385 1 2345 678"
     },
     "plan": {
       "title": "Usage Plan",
       "free": "Free",
       "popular": "Popular",
       "current": "Your plan",
-      "currentCta": "Current plan",
-      "includedCta": "Included in your plan",
+      "currentCta": "Current",
+      "includedCta": "Included",
       "modalTitle": "Choose a plan",
       "modalSubtitle": "Compare the plans and pick the one that suits you best.",
       "upgradeTo": "Upgrade to {plan}",
       "loading": "Loading plans…",
       "loadError": "Couldn't load plans right now.",
       "vatNote": "+ VAT",
+      "cancelRenewal": {
+        "cta": "Cancel renewal",
+        "title": "Cancel renewal?",
+        "bodyWithDate": "Your plan stays active until {date} — the end of the period you already paid for. There is no refund or proration; the plan simply won't renew.",
+        "body": "Your plan stays active until the end of the period you already paid for. There is no refund or proration; the plan simply won't renew.",
+        "confirm": "Cancel renewal",
+        "keep": "Keep plan",
+        "pending": "Cancelling…",
+        "endsNote": "Renewal cancelled — active until {date}.",
+        "endsNoteNoDate": "Renewal cancelled.",
+        "error": "Cancellation failed. Please try again."
+      },
       "tabs": {
         "individual": "Individual",
         "teamsEnterprise": "Teams & Enterprise"
@@ -480,7 +560,27 @@
       "usedOf": "of {limit} ({remaining} remaining)",
       "bonusTokens": "Bonus tokens",
       "bonusHint": "Never expire",
-      "requests24h": "Requests in 24h"
+      "requests24h": "Requests in 24h",
+      "changePlan": {
+        "title": "Change plan",
+        "subtitle": "Upgrades take effect immediately with a prorated charge; downgrades apply at the end of the current billing period.",
+        "current": "Current plan",
+        "downgradeCta": "Downgrade",
+        "upgradeTitle": "Upgrade to {plan}?",
+        "upgradeBody": "Your subscription switches to {plan} immediately. You will be charged the prorated price difference for the remainder of the current billing period.",
+        "downgradeTitle": "Switch to {plan}?",
+        "downgradeBodyWithDate": "Your current plan stays active until {date}. {plan} and its price apply from the next billing period — no refunds or partial charges.",
+        "downgradeBody": "Your current plan stays active until the end of the paid period. {plan} and its price apply from the next billing period — no refunds or partial charges.",
+        "confirm": "Confirm change",
+        "cancel": "Cancel",
+        "pending": "Processing…",
+        "successUpgraded": "You are now on {plan}.",
+        "successScheduled": "Plan change scheduled — {plan} starts on {date}.",
+        "successScheduledNoDate": "Plan change scheduled — {plan} starts at the end of the current period.",
+        "error": "Plan change failed. Please try again or contact support.",
+        "loadError": "Could not load plans.",
+        "loading": "Loading plans…"
+      }
     },
     "team": {
       "title": "Team",
@@ -520,7 +620,8 @@
       "failedUpdateOrg": "Failed to update organisation. Please try again.",
       "failedUpdateCountry": "Failed to update country. Please try again.",
       "failedUpdateVat": "Failed to update VAT number. Please try again.",
-      "failedOpenBillingPortal": "Could not open the billing portal. Please try again."
+      "failedOpenBillingPortal": "Could not open the billing portal. Please try again.",
+      "failedUpdateAddress": "Could not save the address."
     }
   },
   "models": {
@@ -616,9 +717,12 @@
     "greeting": "Hi, {username}",
     "disclaimer": "AI can make mistakes. Answers are not legal advice.",
     "placeholder": "Ask a question...",
+    "pastedText": "Pasted text",
     "loadingPlaceholder": "Loading chat history and context…",
     "projects": "Projects",
+    "projectsTooltip": "Open your matters and their documents.",
     "workflows": "Workflows",
+    "workflowsTooltip": "Run a saved workflow — a prompt or review template.",
     "addDocuments": "Add Documents",
     "openProjects": "Open projects",
     "openWorkflows": "Open workflows",
@@ -626,7 +730,9 @@
       "loading": "Checking for PII…",
       "errorTitle": "PII review failed",
       "errorStrict": "The document was not attached (strict mode). Try again or change the mode in privacy settings.",
-      "errorOpen": "The document was attached without a PII review. Check your connection and try again for full protection."
+      "errorOpen": "The document was attached without a PII review. Check your connection and try again for full protection.",
+      "messageLabel": "Your message",
+      "errorStrictTyped": "The message was NOT sent (strict mode). Your draft is still in the input field — try again."
     },
     "editCard": {
       "accept": "Accept",
@@ -634,7 +740,9 @@
       "reject": "Reject",
       "rejected": "Rejected",
       "view": "View",
-      "viewDisabledTitle": "This change has been resolved and is no longer in the document."
+      "viewDisabledTitle": "This change has been resolved and is no longer in the document.",
+      "acceptSaveError": "Couldn't save accept — reverted.",
+      "rejectSaveError": "Couldn't save reject — reverted."
     },
     "modelToggle": {
       "trigger": "Model: {model}",
@@ -653,7 +761,8 @@
       }
     },
     "enrichment": {
-      "button": "Improve query",
+      "button": "Improve",
+      "buttonAria": "Improve query",
       "tooltip": "Turns a short question into a more precise query with relevant context.",
       "selectVariant": "Select one of the improved queries:",
       "loading": "Improving query…",
@@ -670,12 +779,35 @@
         "select": "select",
         "shortcuts": "shortcuts",
         "close": "close"
-      }
+      },
+      "closeAria": "Close"
     },
     "webSearch": {
       "label": "Web",
       "tooltipOn": "Web search is on — Eulex Desk can check official sources, the web, and news. Click to turn off.",
       "tooltipOff": "Web search is off — Eulex Desk answers without searching the internet. Click to turn on."
+    },
+    "errors": {
+      "generic": "Sorry, something went wrong. Please try again.",
+      "network": "Can't reach the server. Check your internet connection and try again.",
+      "sessionExpired": "Your session has expired. Please sign in again.",
+      "projectNotFound": "This project no longer exists or you no longer have access to it.",
+      "streamError": "The response was interrupted by a server error. Please try again.",
+      "piiUnavailable": "The message was not sent: PII protection is temporarily unavailable, and your privacy mode does not allow sending unprotected text. Please try again in a moment.",
+      "cancelled": "You cancelled the response"
+    },
+    "greetingAnonymous": "Hi there",
+    "dismiss": "Dismiss",
+    "piiBadge": {
+      "restoredTooltip": "PII shield: original values restored on your device only.",
+      "restoringTooltip": "PII shield: restoring original values…",
+      "failedTooltip": "PII shield: placeholders shown (de-anon failed).",
+      "decrypting": "Decrypting PII…",
+      "restored": "PII restored locally",
+      "placeholders": "PII placeholders"
+    },
+    "sidePanel": {
+      "closePanel": "Close panel"
     }
   },
   "projects": {
@@ -713,7 +845,8 @@
     "apiKeyRequired": {
       "title": "API key required",
       "message": "You haven't added a {provider} API key yet. Add one in your account settings to use this model.",
-      "goToSettings": "Go to account settings"
+      "goToSettings": "Go to account settings",
+      "genericProvider": "this provider"
     }
   },
   "practices": {
@@ -782,7 +915,20 @@
   "chatItem": {
     "untitledChat": "Untitled chat",
     "renameThisChat": "rename this chat",
-    "deleteThisChat": "delete this chat"
+    "deleteThisChat": "delete this chat",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "moveToGroup": "Move to group",
+    "removeFromGroup": "Remove from group",
+    "newGroup": "New group…",
+    "newGroupTitle": "New group",
+    "groupNamePlaceholder": "Group name",
+    "archive": "Archive",
+    "restore": "Restore",
+    "pinThisChat": "pin this chat",
+    "restoreThisChat": "restore this chat",
+    "moveThisChat": "move this chat to a group",
+    "archiveThisChat": "archive this chat"
   },
   "rowActions": {
     "rename": "Rename",
@@ -793,6 +939,12 @@
     "removeFromSubfolder": "Remove from subfolder",
     "unhide": "Unhide",
     "hide": "Hide"
+  },
+  "emailPillInput": {
+    "placeholder": "Add by email…",
+    "invalidEmail": "Enter a valid email address.",
+    "verifyFailed": "Could not verify email. Try again.",
+    "checking": "Checking…"
   },
   "people": {
     "addByEmail": "Add by email…",
@@ -880,6 +1032,7 @@
     "uploadFiles": "Upload files",
     "browseAll": "Browse all",
     "addDocuments": "Add documents",
+    "addDocumentsTooltip": "Attach documents from your computer, matters, or integrations.",
     "documentLabel": "Document",
     "documentsLabel": "Documents",
     "selected": "{count} selected",
@@ -901,7 +1054,8 @@
       "empty": "No files found",
       "emptyRoot": "This folder is empty",
       "loadMore": "Load more",
-      "importing": "Importing…"
+      "importing": "Importing…",
+      "unsupported": "Unsupported format"
     },
     "importing": {
       "title": "Importing from {name}",
@@ -909,7 +1063,20 @@
       "done": "Import from {name} finished",
       "failed": "Import from {name} failed",
       "summaryDone": "{count, plural, one {1 file imported} other {{count} files imported}}",
-      "summaryMixed": "{done} succeeded, {failed} failed"
+      "summaryMixed": "{done} succeeded, {failed} failed",
+      "unsupported": "Unsupported format: {types}"
+    },
+    "processing": "Processing…",
+    "uploadFailed": "Upload failed",
+    "removeDocument": "Remove document",
+    "clearSearch": "Clear search",
+    "uploadErrors": {
+      "title": "{count, plural, one {# file wasn't uploaded} other {# files weren't uploaded}}",
+      "unsupported": "unsupported format",
+      "unsupportedType": "unsupported format ({type})",
+      "tooLarge": "file too large (max {max} MB)",
+      "failed": "upload failed",
+      "supportedTypes": "Supported formats: {types}."
     }
   },
   "uploadVersion": {
@@ -944,7 +1111,24 @@
     "projectTitle": "Delete project",
     "projectBodyNamed": "Are you sure you want to delete the project \"{title}\"? All documents, chats and reviews in it will be permanently removed and this cannot be undone.",
     "projectsTitle": "Delete projects",
-    "projectsBody": "Are you sure you want to delete {count} {count, plural, one {project} other {projects}}? All documents, chats and reviews in them will be permanently removed and this cannot be undone."
+    "projectsBody": "Are you sure you want to delete {count} {count, plural, one {project} other {projects}}? All documents, chats and reviews in them will be permanently removed and this cannot be undone.",
+    "archiveAction": "Archive",
+    "groupArchiveTitle": "Archive group",
+    "groupArchiveBody": "Archiving the group \"{name}\" will also archive all conversations in it. You can restore them from the archived view.",
+    "groupDeleteTitle": "Delete group",
+    "groupDeleteBody": "Deleting the group \"{name}\" will also delete all conversations in it. This cannot be undone.",
+    "documentTitle": "Delete document",
+    "documentBodyNamed": "Are you sure you want to delete the document \"{title}\"? All versions will be permanently removed and this cannot be undone.",
+    "documentsTitle": "Delete documents",
+    "documentsBody": "Are you sure you want to delete {count} documents? All versions will be permanently removed and this cannot be undone.",
+    "folderTitle": "Delete folder",
+    "folderBodyNamed": "Are you sure you want to delete the folder \"{title}\"? All subfolders will be removed and its documents moved to the project root.",
+    "workflowTitle": "Delete workflow",
+    "workflowBodyNamed": "Are you sure you want to delete the workflow \"{title}\"? This cannot be undone.",
+    "workflowsTitle": "Delete workflows",
+    "workflowsBody": "Are you sure you want to delete {count} workflows? This cannot be undone.",
+    "contextTitle": "Delete context",
+    "contextBodyNamed": "Are you sure you want to delete the context \"{title}\"? All its sources and shares will be permanently removed and this cannot be undone."
   },
   "newWorkflow": {
     "breadcrumbRoot": "Workflows",
@@ -1007,7 +1191,8 @@
     "creating": "Creating…",
     "createReview": "Create Review",
     "runWorkflowMessage": "Run workflow",
-    "additionalInstructionsLabel": "Additional instructions"
+    "additionalInstructionsLabel": "Additional instructions",
+    "applyError": "Applying the workflow failed. Please try again."
   },
   "addColumn": {
     "tabularReview": "Tabular Review",
@@ -1045,7 +1230,8 @@
     "cancel": "Cancel",
     "create": "Create project",
     "creating": "Creating…",
-    "failedToCreate": "Failed to create project"
+    "failedToCreate": "Failed to create project",
+    "openProject": "Open project"
   },
   "addNewTR": {
     "projects": "Projects",
@@ -1069,6 +1255,7 @@
     "create": "Create"
   },
   "mcpToggle": {
+    "tooltip": "Legislation and connectors — turn sources on or off for this chat.",
     "loadingConnectors": "Loading context",
     "connectorStatus": "{enabled} of {total} context enabled",
     "connectors": "Context",
@@ -1077,7 +1264,9 @@
     "alwaysOn": "Always on",
     "defaultBadge": "Default",
     "manageConnectors": "Manage context",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "manageContextAria": "Manage context for this chat",
+    "errorAria": "Error: {error}"
   },
   "projectPage": {
     "untitledChat": "Untitled Chat",
@@ -1105,11 +1294,12 @@
     "newSubfolderInside": "New subfolder inside",
     "renameFolder": "Rename folder",
     "deleteFolder": "Delete folder",
+    "deleteFolderAction": "delete this folder",
     "folderName": "Folder name",
     "searchPlaceholder": "Search…",
     "peopleWithAccess": "People with access",
     "uploadDocumentFirst": "Upload a document first",
-    "dropFilesHere": "Drop PDF or DOCX files here",
+    "dropFilesHere": "Drop files here ({types})",
     "projectNotFound": "Project not found",
     "createNew": "+ Create New",
     "tabularEmptyDescription": "Extract data from project documents into tables using AI.",
@@ -1119,7 +1309,33 @@
     "downloadLimitTitle": "Download limit",
     "downloadLimitBody": "You can download at most {max} documents in one ZIP. Select fewer files or download in several batches.",
     "downloadFailedTitle": "Download failed",
-    "downloadFailedBody": "The documents could not be downloaded. Try again in a moment."
+    "downloadFailedBody": "The documents could not be downloaded. Try again in a moment.",
+    "loadingProject": "Loading matter…",
+    "openingChat": "Opening chat…",
+    "newChatTitle": "New chat",
+    "deleteChatTitle": "Delete chat",
+    "uploadDocumentsTitle": "Upload documents",
+    "collapseExplorer": "Collapse explorer",
+    "expandExplorer": "Expand explorer",
+    "docViewerEmptyTitle": "Click a document to view it.",
+    "docViewerEmptyHint": "Tip: drag a document from the Project explorer into the Assistant to have it read or edit it.",
+    "deleteFile": "Delete file",
+    "noDocumentsInProject": "No documents in this project.",
+    "loadingVersions": "Loading versions…",
+    "noVersionHistory": "No version history.",
+    "versionOriginal": "Original",
+    "renameVersion": "Rename version",
+    "downloadVersion": "Download this version",
+    "creatingChat": "Creating a new chat…",
+    "people": "People",
+    "deleteDocument": "delete this document",
+    "renameProject": "rename this project",
+    "renameChat": "rename this chat",
+    "deleteChat": "delete this chat",
+    "ownerOnlyDeleteChatsPartial": "delete {count} of the selected chats — only the chat creator can delete a chat",
+    "docViewerTabPlaceholder": "Document preview",
+    "explorerHeading": "Explorer",
+    "noSearchResults": "No results for that search."
   },
   "tabularReview": {
     "untitledReview": "Untitled Review",
@@ -1179,7 +1395,18 @@
     "flagDisplayGreen": "Green",
     "flagDisplayGrey": "Grey",
     "flagDisplayYellow": "Yellow",
-    "flagDisplayRed": "Red"
+    "flagDisplayRed": "Red",
+    "emptyHint": "Add columns and documents to get started.",
+    "citationTooltip": "Page {page}: \"{quote}\"",
+    "quoteUnverified": "Quote not found in the document",
+    "regenerate": "Regenerate",
+    "runProgressErrorTitle": "Run failed",
+    "runErrorInProgress": "A run is already in progress. Wait for it to finish and try again.",
+    "runErrorRateLimited": "You have reached your daily quota. Try later or upgrade your plan.",
+    "runErrorGeneric": "Starting the run failed. Please try again.",
+    "exportSheetName": "Review",
+    "exportDocumentHeader": "Document",
+    "exportErrorCell": "Error"
   },
   "tabularReviewsPage": {
     "title": "Tabular Reviews",
@@ -1205,6 +1432,7 @@
       "noReviews": "No reviews found"
     },
     "ownerOnlyRename": "rename this tabular review",
+    "ownerOnlyRemoveDocs": "remove documents from this tabular review",
     "ownerOnlyDelete": "delete this tabular review",
     "ownerOnlyDeletePartial": "delete {count} of the selected reviews — only the review creator can delete a review"
   },
@@ -1217,12 +1445,20 @@
     "instructionsTab": "Instructions",
     "sharingTab": "Sharing",
     "alertsToggle": "Alert me when a source changes",
+    "alertsTab": "Alerts",
+    "alertsEmpty": "No changes to tracked sources yet. Turn on 'Alert me when a source changes' and mark the sources you track.",
+    "alertChange_new_consolidated": "New consolidated version",
+    "alertChange_amendment": "Amendment",
+    "alertChange_effective_date": "Entry into force",
+    "alertChange_repeal": "Repealed",
     "openContext": "Open",
     "deactivate": "Deactivate",
     "recentAlerts": "{count} recent source {count, plural, one {change} other {changes}}",
     "toggleAria": "Activate or deactivate context",
     "deleteAria": "Delete context",
-    "composerAria": "Manage active contexts"
+    "composerAria": "Manage active contexts",
+    "composerTooltip": "Activate saved contexts that are added to this chat.",
+    "toggleFailed": "Could not change the context. Please try again."
   },
   "newContext": {
     "breadcrumbRoot": "Contexts",
@@ -1330,7 +1566,9 @@
         "missingTitle": "Workflow file is missing a title.",
         "badType": "Workflow type must be 'assistant' or 'tabular'.",
         "badColumns": "columns_config must be an array.",
-        "generic": "Failed to upload workflow."
+        "generic": "Failed to upload workflow.",
+        "badPrompt": "The workflow prompt is not in a valid format.",
+        "badPractice": "The practice area is not in a valid format."
       }
     },
     "detail": {
@@ -1435,12 +1673,23 @@
       "frGetArticle": "Fetch article",
       "frGetArticleVersions": "Article versions",
       "frListCodes": "Browse codes"
-    }
+    },
+    "bulkAcceptError": "Couldn't save one or more accepts.",
+    "bulkRejectError": "Couldn't save one or more rejects.",
+    "sourceFallback": "source",
+    "genericError": "Sorry, something went wrong."
   },
   "docPanel": {
     "citation": "Citation",
     "download": "Download",
-    "trackedChange": "Tracked Change"
+    "trackedChange": "Tracked Change",
+    "loadError": "Failed to load document.",
+    "exitDraftMode": "Exit Draft Mode",
+    "editSelection": "Edit selection (Draft Mode)",
+    "draftBadge": "Draft",
+    "acceptSaveFailed": "Couldn't save accept — please retry.",
+    "rejectSaveFailed": "Couldn't save reject — please retry.",
+    "emptyText": "This document contains no text."
   },
   "legalSource": {
     "sourcesHeading": "Sources",
@@ -1450,7 +1699,10 @@
     "notInForce": "Not in force",
     "viewOnEurLex": "Open on EUR-Lex",
     "viewOnNarodneNovine": "Open on Narodne novine",
+    "viewOnCourtPortal": "Open on the case-law portal",
     "viewOnLegifrance": "Open on Légifrance",
+    "viewOnPisrs": "Open on PISRS",
+    "viewOnGesetzeImInternet": "Open on Gesetze im Internet",
     "loadingFullText": "Loading full text…",
     "loadingLaw": "Loading law…",
     "fullTextError": "Couldn't load the full text.",
@@ -1458,7 +1710,21 @@
     "badge": {
       "eu": "EU",
       "hr": "HR",
-      "fr": "FR"
+      "fr": "FR",
+      "si": "SI",
+      "de": "DE",
+      "caselaw": "Case law"
+    },
+    "timeline": {
+      "sliderLabel": "Regulation version timeline",
+      "olderVersion": "Older version",
+      "newerVersion": "Newer version",
+      "inForceFrom": "in force since {date}",
+      "inForceFromTo": "in force from {from} to {to}",
+      "entersIntoForce": "enters into force on {date}",
+      "historicalNotice": "Historical version — not the text in force",
+      "futureNotice": "Future version — not yet in force",
+      "versionTextUnavailable": "The text of this version is not available."
     }
   },
   "wordAddin": {
@@ -1539,7 +1805,19 @@
     "litigation": "Litigation",
     "realEstate": "Real Estate",
     "privateEquity": "Private Equity",
-    "employment": "Employment"
+    "employment": "Employment",
+    "tax": "Tax",
+    "ip": "IP",
+    "competition": "Competition",
+    "techTransactions": "Tech Transactions",
+    "projectFinance": "Project Finance",
+    "ecVc": "EC/VC",
+    "privateCredit": "Private Credit",
+    "ecm": "ECM",
+    "dcm": "DCM",
+    "levFin": "Lev Fin",
+    "arbitration": "Arbitration",
+    "others": "Others"
   },
   "connectorsPage": {
     "title": "File sources",
@@ -1614,28 +1892,20 @@
   },
   "privacy": {
     "title": "Privacy & PII",
-    "subtitle": "Settings for the privacy proxy that anonymizes documents and prompts before they reach the language model.",
+    "subtitle": "A single anonymization mode covers every outbound flow — to the AI model and to external tools (e.g. web search) — until you override it per conversation.",
     "notConfigured": "PII Shield is not deployed in this environment yet — your choices are saved but currently have no effect.",
     "engineVersion": "Engine version",
     "loading": "Loading…",
     "saved": "Saved",
-    "modeLabel": "Default mode",
+    "modeLabel": "Anonymization mode",
     "modeOff": "Off",
-    "modeOffDesc": "Send everything to the AI in plaintext. No anonymization.",
-    "modeStandard": "Standard",
-    "modeStandardDesc": "Detect and mask PII automatically. No review prompt.",
-    "modeStrictLegal": "Strict (legal)",
-    "modeStrictLegalDesc": "Recommended for legal work — masks personal names, organisations and addresses by default and asks you to review every document.",
+    "modeOffDesc": "Send everything to the AI (LLM) and external tools (e.g. web search) in plaintext, whether typed into a text box or contained in a document. No anonymization.",
+    "modeStandard": "Standard (recommended)",
+    "modeStandardDesc": "The system detects and masks PII — personal names, organisations, addresses — in both text input and documents, by default. No review prompt; it all happens seamlessly.",
     "modeStrict": "Strict",
-    "modeStrictDesc": "Same as Strict (legal), plus the AI cannot make up new placeholders — it must use only those you confirmed.",
-    "reviewRequired": "Always show review prompt before sending to AI",
-    "reviewRequiredDesc": "Even in Standard mode, open the review modal once per document so you can confirm what gets masked.",
-    "disclosureLabel": "Disclosure policy for external tools",
-    "disclosureAsk": "Ask before each disclosure (recommended)",
-    "disclosureAllow": "Always allow",
-    "disclosureDeny": "Always deny",
+    "modeStrictDesc": "Same detection and masking as Standard, plus the system asks you to review every text input and every document — typed, imported or created by the system — both initially and later.",
     "demoTitle": "What the pre-AI review screen looks like",
-    "demoSubtitle": "In strict modes and when 'always require review' is on, a modal with the detected data opens before every AI call. Click below to see what it looks like on a sample contract.",
+    "demoSubtitle": "In Strict mode, a modal with the detected data opens before every AI call. Click below to see what it looks like on a sample contract.",
     "demoButton": "Open demo preview"
   },
   "pii": {
@@ -1643,7 +1913,9 @@
       "active": "PII Shield active",
       "inactive": "PII Shield off",
       "hidden": "{count} hidden",
-      "tooltip": "Personal data in this chat is replaced with placeholders before it reaches the AI."
+      "tooltip": "Personal data in this chat is replaced with placeholders before it reaches the AI.",
+      "tooltipOn": "PII protection is on. Personal data is replaced with placeholders before it reaches the AI.",
+      "tooltipOff": "PII protection is paused for this chat."
     },
     "previewModal": {
       "title": "Review detected PII",
@@ -1667,12 +1939,124 @@
         "HR_MBS": "MBS",
         "HR_COURT_NUMBER": "Court case",
         "HR_ZIP": "ZIPs",
-        "DATE_TIME": "Dates"
-      }
+        "DATE_TIME": "Dates",
+        "HR_ADDRESS": "Addresses"
+      },
+      "submitError": "Saving your choices failed. Please try again."
     },
     "rateLimit": {
       "title": "Document withheld",
       "body": "The PII proxy is temporarily unavailable. Try again in a few seconds."
     }
+  },
+  "adminmaxBugfix": {
+    "navLink": "BugFix",
+    "title": "AdminMax · BugFix status",
+    "subtitle": "Live bug status from GitHub: issue → PR → LIVE.",
+    "backToList": "← Back to the list",
+    "refresh": "Refresh",
+    "loading": "Loading…",
+    "statusOpen": "Open",
+    "statusPrOpen": "PR in review",
+    "statusMerged": "Merged — waiting for LIVE",
+    "statusLive": "Live — close the issue",
+    "statusClosed": "Closed",
+    "deployTitle": "Deploy",
+    "deployAhead": "main is {count, plural, one {# commit} other {# commits}} ahead of stable",
+    "deployUnknown": "The stable…main comparison is unavailable.",
+    "colNumber": "#",
+    "colTitle": "Title",
+    "colStatus": "Status",
+    "colPr": "Linked PR",
+    "colCreated": "Created",
+    "colClosed": "Closed",
+    "empty": "The repository has no issues.",
+    "fetchedAt": "Fetched: {time}",
+    "notConfiguredTitle": "GitHub token is not configured",
+    "notConfiguredBody": "Set the ADMINMAX_GITHUB_TOKEN (or GITHUB_TOKEN) environment variable on the backend service so this page can read the private repository {repo}. The repository can be changed via ADMINMAX_GITHUB_REPO."
+  },
+  "metadata": {
+    "title": "AI Platform",
+    "description": "AI-powered legal document analysis and contract review platform."
+  },
+  "errorPage": {
+    "title": "Something went wrong",
+    "description": "We encountered an unexpected error. This has been logged and our team will look into it.",
+    "home": "Home"
+  },
+  "notFoundPage": {
+    "title": "Page not found",
+    "description": "The page you're looking for doesn't exist or may have been moved.",
+    "goHome": "Go home"
+  },
+  "oauthConsent": {
+    "title": "Authorize access",
+    "wantsAccess": "{client} is requesting access to your Eulex Max account.",
+    "unknownClient": "An application",
+    "redirectLabel": "After approval you will be redirected to:",
+    "permissionsTitle": "Requested data",
+    "scopeOpenid": "Basic sign-in (account identity)",
+    "scopeEmail": "Your email address",
+    "scopeProfile": "Basic profile information",
+    "approve": "Approve",
+    "deny": "Deny",
+    "working": "One moment…",
+    "loading": "Loading request…",
+    "missingId": "The authorization request identifier is missing.",
+    "loadFailed": "The authorization request could not be loaded. Try again from the application requesting access.",
+    "actionFailed": "The action could not be completed. Please try again."
+  },
+  "googleDrivePicker": {
+    "importFailed": "{count, plural, one {# file could not be imported.} other {# files could not be imported.}}",
+    "oauthError": "OAuth error",
+    "errorTitle": "Google Drive error",
+    "ok": "OK",
+    "pickerTitle": "Select files from Google Drive"
+  },
+  "superDoc": {
+    "modeViewing": "Viewing",
+    "modeEditing": "Editing",
+    "modeGroupLabel": "Document mode",
+    "applyFailed": "The change could not be applied — please try again.",
+    "saveFailed": "Saving failed.",
+    "savedAgoSeconds": "Saved · {n}s ago",
+    "savedAgoMinutes": "Saved · {n} min ago",
+    "savedAgoHours": "Saved · {n} h ago",
+    "changes": "Changes",
+    "autoSavePausedTitle": "Auto-save is paused until the error is resolved or you save manually.",
+    "autoSaveScheduledTitle": "Auto-save in 30 s — click Save to save now.",
+    "unsavedChanges": "Unsaved changes",
+    "saveNowTitle": "Save now (Ctrl/Cmd+S)",
+    "noChangesToSave": "No changes to save",
+    "saving": "Saving…",
+    "contentError": "The document cannot be displayed — the file may be damaged or in an unsupported format.",
+    "typeInsert": "Added",
+    "typeDelete": "Deleted",
+    "typeFormat": "Formatting",
+    "typeReplacement": "Replacement",
+    "trackedChanges": "Tracked changes",
+    "closePanel": "Close panel",
+    "noUnresolvedChanges": "No unresolved changes.",
+    "errorBoundary": {
+      "title": "The document viewer is temporarily unavailable",
+      "body": "Try loading it again or open a different document. Your conversation with Eulex Desk and your other projects keep working normally.",
+      "retry": "Try again"
+    }
+  },
+  "draftMode": {
+    "quickActions": {
+      "soften": "Soften the wording",
+      "strengthenLiability": "Strengthen liability",
+      "rephraseNeutral": "Rephrase neutrally",
+      "shorten": "Shorten"
+    },
+    "editorAria": "Draft Mode editor",
+    "badge": "Draft",
+    "selectedText": "Selected text",
+    "instructionPlaceholder": "Write instructions for the edit…",
+    "instructionAria": "Instructions for the Draft Mode edit",
+    "generateAria": "Generate edit",
+    "generating": "Generating edit…",
+    "footerHint": "Enter to confirm · Esc to cancel"
   }
 }

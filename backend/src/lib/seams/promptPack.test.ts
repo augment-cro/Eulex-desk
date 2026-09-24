@@ -8,8 +8,17 @@ import {
     getPromptBlocks,
     getWorkflowPacks,
     refreshPromptPack,
+    touchPromptPack,
+    awaitInitialPromptPack,
     GENERIC_PROMPT_BLOCKS,
     __resetPromptPackForTests,
+    __setPromptPackForTests,
+    fillPromptTemplate,
+    getCapabilitiesPrompt,
+    getPiiAddendumOverride,
+    getTitleGenerationPrompt,
+    getWebSearchPrompt,
+    type PromptPack,
 } from "./promptPack.js";
 
 // NON-proprietary fixture pack — fake block texts only. The real pack lives
@@ -145,5 +154,157 @@ describe("promptPack client", () => {
         assert.equal(getPromptPack(), null);
         assert.equal(getPromptPackVersion(), null);
         assert.equal(getPromptBlocks(), GENERIC_PROMPT_BLOCKS);
+    });
+
+    // ── Cloud Run CPU-throttling guards (tracker #41) ───────────────────
+    it("touchPromptPack: with no pack, concurrent callers share ONE fetch and get the pack", async () => {
+        process.env.GOVERNANCE_URL = await startStub();
+        await Promise.all([touchPromptPack(), touchPromptPack(), touchPromptPack()]);
+        assert.equal(requests.length, 1);
+        assert.equal(getPromptPackVersion(), 7);
+    });
+
+    it("touchPromptPack: with a fresh pack it makes no request; with a stale one it revalidates in the background", async () => {
+        process.env.GOVERNANCE_URL = await startStub();
+        await refreshPromptPack();
+        assert.equal(requests.length, 1);
+        await touchPromptPack();
+        assert.equal(requests.length, 1, "fresh pack → no revalidation");
+        // Simulate "last attempt older than the interval" by pinning a pack
+        // without a fetch: lastAttemptAt resets to 0 on reset.
+        __resetPromptPackForTests();
+        __setPromptPackForTests(FIXTURE_PACK as PromptPack);
+        requests = [];
+        await touchPromptPack();
+        // fire-and-forget: give the round-trip a moment to land
+        for (let i = 0; i < 50 && requests.length === 0; i++) {
+            await new Promise((r) => setTimeout(r, 10));
+        }
+        assert.equal(requests.length, 1, "stale pack → one background revalidation");
+    });
+
+    it("touchPromptPack: bounded wait — returns on the bound when the service hangs, pack stays null", async () => {
+        process.env.GOVERNANCE_URL = "http://127.0.0.1:1"; // nothing listens here
+        const t0 = Date.now();
+        await touchPromptPack(50);
+        assert.ok(Date.now() - t0 < 2_000);
+        assert.equal(getPromptPack(), null);
+    });
+
+    it("touchPromptPack / awaitInitialPromptPack: zero network calls without GOVERNANCE_URL", async () => {
+        const originalFetch = globalThis.fetch;
+        let fetchCalls = 0;
+        globalThis.fetch = (async () => {
+            fetchCalls++;
+            throw new Error("seam network call attempted with GOVERNANCE_URL unset");
+        }) as typeof fetch;
+        try {
+            await touchPromptPack();
+            await awaitInitialPromptPack();
+            assert.equal(fetchCalls, 0);
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    it("awaitInitialPromptPack: resolves with the pack loaded, and immediately once cached", async () => {
+        process.env.GOVERNANCE_URL = await startStub();
+        await awaitInitialPromptPack();
+        assert.equal(getPromptPackVersion(), 7);
+        const t0 = Date.now();
+        await awaitInitialPromptPack();
+        assert.ok(Date.now() - t0 < 100);
+        assert.equal(requests.length, 1);
+    });
+});
+
+// ── Extended blocks (issue #67) ─────────────────────────────────────────
+// Unlike the core blocks (empty = insert nothing), an absent/empty extended
+// key means "not provided" and the getter serves the FULL in-code default —
+// the former hardcoded literal — so a pack that predates these keys changes
+// nothing (pure-refactor guarantee).
+
+describe("promptPack extended blocks (issue #67)", () => {
+    beforeEach(() => {
+        delete process.env.GOVERNANCE_URL;
+        delete process.env.GOVERNANCE_SERVICE_SECRET;
+        __resetPromptPackForTests();
+        requests = [];
+        serveMode = "ok";
+    });
+    after(() => {
+        // Close stubs started inside THIS suite — the first suite's after
+        // hook has already run and only closed the servers it knew about.
+        for (const server of servers) server.close();
+        __resetPromptPackForTests();
+    });
+
+    it("without a pack, the getters serve the in-code defaults", () => {
+        assert.ok(getWebSearchPrompt().includes("WEB SEARCH — three tools are LIVE"));
+        assert.ok(getCapabilitiesPrompt().startsWith("DOCX GENERATION:"));
+        assert.ok(getCapabilitiesPrompt().includes("{{METHOD_SECTION_HEADING}}"));
+        assert.ok(getTitleGenerationPrompt().includes("{{LANG_NAME}}"));
+        assert.equal(getPiiAddendumOverride("hr"), null);
+        assert.equal(getPiiAddendumOverride("en"), null);
+    });
+
+    it("a fetched pack that OMITS the extended keys keeps every default", async () => {
+        process.env.GOVERNANCE_URL = await startStub();
+        await refreshPromptPack();
+        assert.equal(getPromptPackVersion(), 7); // fixture pack is active…
+        // …but the extended surfaces are untouched.
+        assert.ok(getWebSearchPrompt().includes("WEB SEARCH — three tools are LIVE"));
+        assert.ok(getCapabilitiesPrompt().startsWith("DOCX GENERATION:"));
+        assert.equal(getPiiAddendumOverride("hr"), null);
+    });
+
+    it("non-empty pack values override the defaults; empty ones do not", () => {
+        const pack: PromptPack = {
+            version: 8,
+            blocks: {
+                ...GENERIC_PROMPT_BLOCKS,
+                web_search: "PACK WEB SEARCH",
+                pii_addendum: { hr: "PACK PII HR", en: "" },
+                capabilities: "",
+            },
+            workflow_packs: [],
+            enrichment_prompt: "",
+        };
+        __setPromptPackForTests(pack);
+        assert.equal(getWebSearchPrompt(), "PACK WEB SEARCH");
+        assert.equal(getPiiAddendumOverride("hr"), "PACK PII HR");
+        assert.equal(getPiiAddendumOverride("en"), null);
+        assert.ok(getCapabilitiesPrompt().startsWith("DOCX GENERATION:"));
+    });
+
+    it("fillPromptTemplate substitutes {{TOKEN}}s in ONE pass and leaves unknown tokens", () => {
+        const out = fillPromptTemplate("A={{A}} B={{B}} C={{C}}", {
+            A: "x{{B}}y", // must NOT be re-scanned
+            B: "$'$&", // regex-special replacement chars stay literal
+        });
+        assert.equal(out, "A=x{{B}}y B=$'$& C={{C}}");
+    });
+});
+
+describe("jurisdiction-of-the-question defaults (language ≠ jurisdiction)", () => {
+    beforeEach(() => __resetPromptPackForTests());
+
+    it("default web-search block routes unnamed-jurisdiction questions to the active connectors", () => {
+        const ws = getWebSearchPrompt();
+        assert.match(ws, /JURISDICTION OF THE QUESTION/);
+        assert.match(ws, /NOT a jurisdiction signal/);
+        // The HR official-sources tool must not fire for questions governed
+        // by another enabled jurisdiction.
+        assert.match(
+            ws,
+            /ONLY when the question actually concerns Croatian law/,
+        );
+    });
+
+    it("generic fallback jurisdictions block carries the same default rule", () => {
+        assert.match(
+            GENERIC_PROMPT_BLOCKS.jurisdictions,
+            /the language the question is written in is NOT a jurisdiction signal/,
+        );
     });
 });

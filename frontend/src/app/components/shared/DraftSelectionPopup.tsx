@@ -21,6 +21,7 @@ import {
     useRef,
     useState,
 } from "react";
+import { useTranslations } from "next-intl";
 import {
     AlertCircle,
     ChevronRight,
@@ -38,12 +39,14 @@ interface Props {
     onDismiss: () => void;
 }
 
-const QUICK_ACTIONS = [
-    { label: "Ublaži formulaciju", en: "Soften the wording" },
-    { label: "Pojačaj odgovornost", en: "Strengthen liability" },
-    { label: "Preformuliraj neutralno", en: "Rephrase neutrally" },
-    { label: "Skrati", en: "Shorten" },
-];
+// Ključevi u `draftMode.quickActions` — prijevod (label koji se i šalje
+// kao instrukcija modelu) radi se u komponenti.
+const QUICK_ACTION_KEYS = [
+    "soften",
+    "strengthenLiability",
+    "rephraseNeutral",
+    "shorten",
+] as const;
 
 export function DraftSelectionPopup({
     selection,
@@ -52,6 +55,8 @@ export function DraftSelectionPopup({
     onSubmit,
     onDismiss,
 }: Props) {
+    const t = useTranslations("draftMode");
+    const tc = useTranslations("common");
     const [instruction, setInstruction] = useState("");
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -138,7 +143,7 @@ export function DraftSelectionPopup({
             ref={containerRef}
             id="draft-selection-popup"
             role="dialog"
-            aria-label="Draft Mode editor"
+            aria-label={t("editorAria")}
             style={{
                 position: "fixed",
                 top: popupTop,
@@ -155,7 +160,7 @@ export function DraftSelectionPopup({
                         <PenLine className="w-3 h-3 text-primary-foreground" />
                     </div>
                     <span className="text-xs font-semibold text-foreground tracking-wide uppercase">
-                        Draft
+                        {t("badge")}
                     </span>
                 </div>
                 <button
@@ -164,7 +169,7 @@ export function DraftSelectionPopup({
                     onClick={onDismiss}
                     disabled={isSubmitting}
                     className="w-6 h-6 flex items-center justify-center rounded-full text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
-                    aria-label="Zatvori"
+                    aria-label={tc("close")}
                 >
                     <X className="w-3.5 h-3.5" />
                 </button>
@@ -173,7 +178,7 @@ export function DraftSelectionPopup({
             {/* Selection preview */}
             <div className="px-4 py-2.5 bg-muted border-b border-border">
                 <p className="text-[11px] text-muted-foreground/70 font-medium uppercase tracking-wide mb-1">
-                    Selektirani tekst
+                    {t("selectedText")}
                 </p>
                 <p className="text-xs text-muted-foreground italic leading-relaxed line-clamp-2">
                     "{previewText}"
@@ -182,18 +187,21 @@ export function DraftSelectionPopup({
 
             {/* Quick actions */}
             <div className="px-4 pt-3 pb-2 flex flex-wrap gap-1.5">
-                {QUICK_ACTIONS.map((qa) => (
-                    <button
-                        key={qa.label}
-                        type="button"
-                        id={`draft-quick-action-${qa.label.toLowerCase().replace(/\s+/g, "-")}`}
-                        onClick={() => handleQuickAction(qa.label)}
-                        disabled={isSubmitting}
-                        className="text-[11px] px-2.5 py-1 rounded-full bg-accent text-foreground hover:bg-secondary border border-border transition-all disabled:opacity-40 disabled:cursor-not-allowed font-medium"
-                    >
-                        {qa.label}
-                    </button>
-                ))}
+                {QUICK_ACTION_KEYS.map((key) => {
+                    const label = t(`quickActions.${key}`);
+                    return (
+                        <button
+                            key={key}
+                            type="button"
+                            id={`draft-quick-action-${label.toLowerCase().replace(/\s+/g, "-")}`}
+                            onClick={() => handleQuickAction(label)}
+                            disabled={isSubmitting}
+                            className="text-[11px] px-2.5 py-1 rounded-full bg-accent text-foreground hover:bg-secondary border border-border transition-all disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+                        >
+                            {label}
+                        </button>
+                    );
+                })}
             </div>
 
             {/* Custom instruction textarea */}
@@ -207,9 +215,9 @@ export function DraftSelectionPopup({
                         onChange={handleTextareaChange}
                         onKeyDown={handleKeyDown}
                         disabled={isSubmitting}
-                        placeholder="Napiši upute za izmjenu…"
+                        placeholder={t("instructionPlaceholder")}
                         className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground/70 px-3 py-2.5 outline-none min-h-[40px] max-h-[120px] leading-5 disabled:cursor-not-allowed"
-                        aria-label="Upute za Draft Mode izmjenu"
+                        aria-label={t("instructionAria")}
                     />
                     <button
                         id="draft-popup-submit-btn"
@@ -217,7 +225,7 @@ export function DraftSelectionPopup({
                         onClick={handleSubmit}
                         disabled={!instruction.trim() || isSubmitting}
                         className="mb-2 mr-2 flex items-center justify-center w-7 h-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-                        aria-label="Generiraj izmjenu"
+                        aria-label={t("generateAria")}
                     >
                         {isSubmitting ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -231,7 +239,7 @@ export function DraftSelectionPopup({
                 {isSubmitting && (
                     <div className="mt-2 flex items-center gap-2 text-xs text-foreground">
                         <Loader2 className="w-3 h-3 animate-spin" />
-                        <span>Generiranje izmjene…</span>
+                        <span>{t("generating")}</span>
                     </div>
                 )}
 
@@ -248,7 +256,7 @@ export function DraftSelectionPopup({
             {!isSubmitting && !lastError && (
                 <div className="px-4 pb-3 flex items-center justify-between">
                     <span className="text-[10px] text-muted-foreground/70">
-                        Enter za potvrdu · Esc za odustajanje
+                        {t("footerHint")}
                     </span>
                 </div>
             )}

@@ -59,14 +59,19 @@ export type ReasoningEffort = "low" | "medium" | "high";
 
 export type StreamChatParams = {
     model: string;
+    usagePhase?: "retriever" | "writer" | "fallback" | "single";
+    /** Stable per-user key; never derived from changing query text. */
+    promptCacheKey?: string;
+    /** Receives each reported API call immediately, including before errors. */
+    onUsage?: (usage: LlmUsage) => void;
     systemPrompt: string;
     /**
      * Optional dynamic tail appended AFTER `systemPrompt` in the system
      * message. Holds per-turn context that would otherwise bust prompt
      * caching of the large static prompt (e.g. the AVAILABLE DOCUMENTS
-     * list, whose doc-N slugs are reassigned each turn). The Claude
-     * adapter places it in a separate, UNcached system block so the static
-     * prefix keeps hitting the cache; non-caching adapters simply fold it
+     * list, whose doc-N slugs are reassigned each turn). Claude and Sol
+     * place it after the cached static instruction block so the prefix
+     * keeps hitting the cache; other adapters simply fold it
      * back onto `systemPrompt` (see streamChatWithTools).
      */
     systemDynamicSuffix?: string;
@@ -111,6 +116,25 @@ export type StreamChatParams = {
      * Cloud Run deploy without redeploying every caller.
      */
     enableWebSearch?: boolean;
+    /**
+     * Aborts the turn when the client disconnects (composer Stop, tab
+     * close). Forwarded to the provider SDK's request `signal` so the model
+     * stops generating promptly, and checked between tool iterations so no
+     * further tools run — otherwise tokens keep billing and documents keep
+     * mutating after cancel (issue #92). Undefined → no cancellation.
+     */
+    abortSignal?: AbortSignal;
+    /**
+     * Liveness hook for the stall watchdog (tracker #25). When set,
+     * streamChatWithTools wraps `callbacks` and `runTools` so this fires
+     * on every surfaced provider event (content/reasoning deltas,
+     * reasoning block ends, tool-call starts, tool-run boundaries) — the
+     * caller uses it to re-arm its idle deadline. Wrapped at the shared
+     * dispatch point so BOTH the single-model flow and the orchestrated
+     * retriever→writer flow (which spreads these params into each phase)
+     * inherit it without further wiring. Undefined → zero overhead.
+     */
+    onStreamActivity?: () => void;
 };
 
 /**
@@ -127,10 +151,39 @@ export type LlmUsage = {
     cacheReadInputTokens: number;
     /** Number of provider API calls that contributed to this usage. */
     iterations: number;
+    calls?: LlmCallUsage[];
+    /** A request ended without authoritative provider usage. */
+    incomplete?: boolean;
+};
+
+/** Audit receipt: provider metadata and token counts only, never prompt text. */
+export type LlmCallUsage = {
+    provider: Provider | "unknown";
+    model: string;
+    phase: NonNullable<StreamChatParams["usagePhase"]>;
+    endpoint?: string;
+    serviceTier?: string | null;
+    httpStatus?: number;
+    responseId?: string;
+    requestId?: string;
+    status:
+        | "reported"
+        | "missing"
+        | "error"
+        | "aborted"
+        | "rejected"
+        | "legacy";
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+    reasoningTokens?: number;
+    rawUsage?: Record<string, unknown>;
 };
 
 export type StreamChatResult = {
     fullText: string;
+    model?: string;
     /**
      * Token usage for the whole turn. Undefined when the provider
      * does not report usage (or when we did not yet wire it up for

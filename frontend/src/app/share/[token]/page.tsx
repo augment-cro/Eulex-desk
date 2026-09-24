@@ -38,6 +38,7 @@ import {
 } from "@/app/lib/mikeApi";
 import { UserMessage } from "@/app/components/assistant/UserMessage";
 import { AssistantMessage } from "@/app/components/assistant/AssistantMessage";
+import { harvestConversationLegalSources } from "@/app/components/shared/legalSourceUtils";
 import { SiteLogo } from "@/components/site-logo";
 
 type ErrorCode =
@@ -252,6 +253,10 @@ export default function SharedChatPage() {
                                     content={m.content ?? ""}
                                     events={m.events}
                                     annotations={m.annotations}
+                                    conversationLegalSources={harvestConversationLegalSources(
+                                        view.messages,
+                                        i,
+                                    )}
                                 />
                             ),
                         )

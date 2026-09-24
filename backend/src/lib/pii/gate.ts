@@ -2,17 +2,22 @@
  * PII-Shield mode gating helpers.
  *
  * The "mode" is the user-controlled privacy posture for a chat
- * session. Three values matter to the rest of the backend:
+ * session. Since #14 (PII settings simplification) exactly three
+ * user-facing values exist:
  *
- *   - "off"            — bypass the sidecar entirely.
- *   - "standard"       — anonymize at upload time, deanonymize on
- *                        response; tool args/results follow the policy
- *                        registry; no review modal.
- *   - "strict_legal"   — same as standard PLUS user review on each
- *                        new document; PERSON / ORG / ADDRESS are
- *                        masked by default.
- *   - "strict"         — same as strict_legal PLUS unknown placeholder
- *                        rejection (no fail-open) and tool-arg block.
+ *   - "off"      — bypass the sidecar entirely.
+ *   - "standard" — anonymize at upload time, deanonymize on response;
+ *                  tool args/results follow the policy registry; no
+ *                  review modal. Fails OPEN on sidecar errors.
+ *   - "strict"   — everything standard does PLUS user review before
+ *                  every AI call (initial and later additions), unknown
+ *                  placeholder rejection, tool-arg block, and
+ *                  fail-CLOSED semantics on sidecar errors.
+ *
+ * "strict_legal" is a retired legacy value (it sat between standard and
+ * strict). Old chats / profiles may still carry it until migration 207
+ * rewrites them, so every helper here treats it as an alias of
+ * "strict" — never drop that tolerance, a mis-read must err strict.
  *
  * The `effectiveMode` helper resolves a chat's mode from (1) explicit
  * chat metadata, (2) user defaults, (3) a global default — in that
@@ -28,14 +33,10 @@ export type EffectiveMode = PiiMode | "off";
 
 export interface UserPiiPrefs {
     pii_default_mode: EffectiveMode;
-    pii_review_required: boolean;
-    pii_disclosure_policy: "allow" | "deny" | "ask";
 }
 
 export const DEFAULT_USER_PII_PREFS: UserPiiPrefs = {
     pii_default_mode: "off",
-    pii_review_required: false,
-    pii_disclosure_policy: "ask",
 };
 
 export function effectiveMode(
@@ -45,10 +46,13 @@ export function effectiveMode(
     const candidate = (chatMode ?? userPrefs?.pii_default_mode ?? "off").toString();
     switch (candidate) {
         case "standard":
-        case "strict_legal":
-        case "strict":
         case "off":
             return candidate;
+        // Legacy alias — see the header note. Normalized here so the
+        // rest of the request pipeline only ever sees the three modes.
+        case "strict_legal":
+        case "strict":
+            return "strict";
         default:
             return "off";
     }
@@ -67,14 +71,25 @@ export function piiActive(mode: EffectiveMode | null | undefined): mode is PiiMo
 }
 
 export function isStrict(mode: EffectiveMode | null | undefined): boolean {
-    return mode === "strict";
+    return mode === "strict" || mode === "strict_legal";
 }
 
-export function requiresUserReview(
-    mode: EffectiveMode | null | undefined,
-    userPrefs: UserPiiPrefs | null | undefined,
-): boolean {
+/**
+ * True when the mode promises fail-CLOSED semantics: if the sidecar is
+ * unreachable, raw user content must be WITHHELD from the LLM rather
+ * than sent through unprotected (#48). Standard deliberately fails open
+ * (with a `[pii]` warn at the call site).
+ */
+export function failsClosed(mode: EffectiveMode | null | undefined): boolean {
+    return mode === "strict" || mode === "strict_legal";
+}
+
+/**
+ * Review is a property of the mode alone since #14: strict always
+ * reviews, standard never does (the retired `pii_review_required`
+ * toggle migrated its opt-ins into strict — see migration 207).
+ */
+export function requiresUserReview(mode: EffectiveMode | null | undefined): boolean {
     if (!piiActive(mode)) return false;
-    if (mode === "strict_legal" || mode === "strict") return true;
-    return !!userPrefs?.pii_review_required;
+    return mode === "strict" || mode === "strict_legal";
 }

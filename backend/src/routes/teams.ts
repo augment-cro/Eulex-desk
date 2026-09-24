@@ -15,6 +15,7 @@
  */
 
 import { Router } from "express";
+import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
 import type { Request, Response } from "express";
 import { requireAuth } from "../middleware/auth";
 import {
@@ -70,6 +71,8 @@ teamsRouter.post(
                 });
                 return;
             }
+            void recordAuditEvent({ userId, eventType: "team.member_invited", metadata: { team_id: teamId } });
+            void recordFeatureUse({ userId, feature: "team" });
             res.status(201).json({ member: result.member });
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);

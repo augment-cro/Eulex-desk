@@ -20,6 +20,10 @@ import type {
     MikeLegalSourceAnnotation,
     MikeMessage,
 } from "../shared/types";
+import {
+    harvestConversationLegalSources,
+    legalSourceDisplayTitle,
+} from "../shared/legalSourceUtils";
 import { useSidebar } from "@/app/contexts/SidebarContext";
 import { contextsServiceEnabled } from "@/app/lib/mikeApi";
 import { invalidateDocxBytes } from "@/app/hooks/useFetchDocxBytes";
@@ -263,7 +267,7 @@ export function ChatView({
                 kind: "legal-source",
                 id: ann.source.id,
                 documentId: ann.source.id,
-                filename: ann.source.title,
+                filename: legalSourceDisplayTitle(ann.source),
                 versionId: null,
                 versionNumber: null,
                 source: ann.source,
@@ -628,6 +632,7 @@ export function ChatView({
                 {/* Scrollable messages */}
                 <div
                     ref={messagesContainerRef}
+                    data-testid="chat-messages"
                     className="flex-1 w-full overflow-y-auto"
                     style={{ scrollbarGutter: "stable both-edges" }}
                 >
@@ -702,6 +707,10 @@ export function ChatView({
                                                     !!(msg as any).rateLimited
                                                 }
                                                 annotations={msg.annotations}
+                                                conversationLegalSources={harvestConversationLegalSources(
+                                                    messages,
+                                                    i,
+                                                )}
                                                 onCitationClick={openCitation}
                                                 onLegalSourceClick={
                                                     openLegalSource

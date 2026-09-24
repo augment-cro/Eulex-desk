@@ -18,6 +18,7 @@ import {
     useRef,
     useState,
 } from "react";
+import { useTranslations } from "next-intl";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { invalidateDocxBytes, useFetchDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 import {
@@ -55,9 +56,11 @@ type TrackChangeItem = {
     dbEditId?: string | null;
 };
 
-const MODE_LABELS: Record<DocumentMode, string> = {
-    viewing: "Pregled",
-    editing: "Uređivanje",
+// Prijevodi se rade u komponenti (module-level nema pristup hookovima) —
+// ovdje samo ključevi u `superDoc` namespace-u.
+const MODE_LABEL_KEYS: Record<DocumentMode, string> = {
+    viewing: "modeViewing",
+    editing: "modeEditing",
 };
 
 const MODE_ICONS: Record<DocumentMode, typeof Eye> = {
@@ -247,6 +250,8 @@ export function SuperDocView({
     draftModeEnabled = false,
     onDraftEditApplied,
 }: Props) {
+    const t = useTranslations("superDoc");
+    const tc = useTranslations("common");
     const wrapperRef = useRef<HTMLDivElement>(null);
     const superdocRef = useRef<SuperDocInstance | null>(null);
     const scrollCleanupRef = useRef<(() => void) | null>(null);
@@ -1022,9 +1027,7 @@ export function SuperDocView({
                 // Primjena nije uspjela — vrati stavku u panel (re-list
                 // stvarnog stanja) i javi korisniku umjesto da tiho
                 // spremimo nepromijenjeni dokument.
-                setSaveError(
-                    "Promjenu nije bilo moguće primijeniti — pokušajte ponovno.",
-                );
+                setSaveError(t("applyFailed"));
                 scheduleRefreshTrackChanges();
             } finally {
                 clearResolving();
@@ -1037,6 +1040,7 @@ export function SuperDocView({
             refreshTrackChanges,
             resolvingIds,
             scheduleRefreshTrackChanges,
+            t,
             trackChanges,
         ],
     );
@@ -1097,12 +1101,12 @@ export function SuperDocView({
             setSaveError(
                 err instanceof Error
                     ? err.message
-                    : "Spremanje nije uspjelo.",
+                    : t("saveFailed"),
             );
         } finally {
             setSaving(false);
         }
-    }, [documentId, onSaved, refreshDbEdits, saving]);
+    }, [documentId, onSaved, refreshDbEdits, saving, t]);
 
     // Sinkroniziraj ref na najsvježiju handleSave callback referencu —
     // koristi je handleDecide (deklariran prije handleSave) kad mora
@@ -1249,12 +1253,12 @@ export function SuperDocView({
         // refresha sam (nema useEffect koji bi ga setirao u state).
         void nowTick;
         const secs = Math.max(1, Math.floor((Date.now() - lastSavedAt) / 1000));
-        if (secs < 60) return `Spremljeno · prije ${secs}s`;
+        if (secs < 60) return t("savedAgoSeconds", { n: secs });
         const mins = Math.floor(secs / 60);
-        if (mins < 60) return `Spremljeno · prije ${mins} min`;
+        if (mins < 60) return t("savedAgoMinutes", { n: mins });
         const hours = Math.floor(mins / 60);
-        return `Spremljeno · prije ${hours} h`;
-    }, [lastSavedAt, nowTick]);
+        return t("savedAgoHours", { n: hours });
+    }, [lastSavedAt, nowTick, t]);
 
     if (loading && !docFile) {
         return (
@@ -1295,7 +1299,7 @@ export function SuperDocView({
                         type="button"
                         onClick={() => onWarningDismiss?.()}
                         className="text-warning hover:text-warning/80"
-                        aria-label="Dismiss warning"
+                        aria-label={tc("dismissWarning")}
                     >
                         ×
                     </button>
@@ -1309,9 +1313,9 @@ export function SuperDocView({
                     <div
                         className="inline-flex rounded-md border border-border bg-muted p-0.5"
                         role="radiogroup"
-                        aria-label="Način rada s dokumentom"
+                        aria-label={t("modeGroupLabel")}
                     >
-                        {(Object.keys(MODE_LABELS) as DocumentMode[]).map(
+                        {(Object.keys(MODE_LABEL_KEYS) as DocumentMode[]).map(
                             (m) => {
                                 const Icon = MODE_ICONS[m];
                                 const active = documentMode === m;
@@ -1329,7 +1333,7 @@ export function SuperDocView({
                                         }`}
                                     >
                                         <Icon className="h-3.5 w-3.5" />
-                                        {MODE_LABELS[m]}
+                                        {t(MODE_LABEL_KEYS[m])}
                                     </button>
                                 );
                             },
@@ -1351,7 +1355,7 @@ export function SuperDocView({
                             aria-pressed={panelOpen}
                         >
                             <MessageSquareText className="h-3.5 w-3.5" />
-                            Promjene
+                            {t("changes")}
                             {trackChanges.length > 0 && (
                                 <span
                                     className={`inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
@@ -1369,7 +1373,7 @@ export function SuperDocView({
                                 {saveError && (
                                     <span
                                         className="text-xs text-destructive"
-                                        title="Auto-save je pauziran dok se ne otkloni greška ili ručno ponovo pokrene Spremi."
+                                        title={t("autoSavePausedTitle")}
                                     >
                                         {saveError}
                                     </span>
@@ -1379,9 +1383,9 @@ export function SuperDocView({
                                     isDirty && (
                                         <span
                                             className="text-xs text-warning"
-                                            title="Automatsko spremanje za 30s — možete kliknuti Spremi za odmah."
+                                            title={t("autoSaveScheduledTitle")}
                                         >
-                                            Nespremljene promjene
+                                            {t("unsavedChanges")}
                                         </span>
                                     )}
                                 {!saveError &&
@@ -1404,8 +1408,8 @@ export function SuperDocView({
                                     aria-busy={saving}
                                     title={
                                         isDirty
-                                            ? "Spremi odmah (Ctrl/Cmd+S)"
-                                            : "Nema promjena za spremiti"
+                                            ? t("saveNowTitle")
+                                            : t("noChangesToSave")
                                     }
                                 >
                                     {saving ? (
@@ -1413,7 +1417,7 @@ export function SuperDocView({
                                     ) : (
                                         <Save className="h-3.5 w-3.5" />
                                     )}
-                                    {saving ? "Spremam…" : "Spremi"}
+                                    {saving ? t("saving") : tc("save")}
                                 </button>
                             </>
                         )}
@@ -1476,9 +1480,7 @@ export function SuperDocView({
                                 "[SuperDoc] content parse error",
                                 error,
                             );
-                            setContentError(
-                                "Dokument nije moguće prikazati — datoteka je možda oštećena ili u nepodržanom formatu.",
-                            );
+                            setContentError(t("contentError"));
                         }}
                         /* SuperDoc-ov interno catch-all za exception-e
                            koje on sam baca tijekom dispatch-a transakcija
@@ -1639,11 +1641,12 @@ function DraftModeOverlay({
 //      `Spremi` upload-a novu verziju u GCS pa Mike chat učita stanje.
 // ──────────────────────────────────────────────────────────────────────
 
-const TYPE_LABEL: Record<string, string> = {
-    insert: "Dodano",
-    delete: "Obrisano",
-    format: "Formatiranje",
-    replacement: "Zamjena",
+// Ključevi u `superDoc` namespace-u — prijevod se radi u komponenti.
+const TYPE_LABEL_KEYS: Record<string, string> = {
+    insert: "typeInsert",
+    delete: "typeDelete",
+    format: "typeFormat",
+    replacement: "typeReplacement",
 };
 
 /**
@@ -1686,6 +1689,8 @@ function TrackChangesBubble({
     onDecide: (id: string, decision: "accept" | "reject") => void;
     resolvingIds: Set<string>;
 }) {
+    const t = useTranslations("superDoc");
+    const tEdit = useTranslations("assistant.editCard");
     const bubbleRef = useRef<HTMLDivElement>(null);
     const dragStateRef = useRef<{
         startX: number;
@@ -1756,7 +1761,7 @@ function TrackChangesBubble({
                 visibility: pos === null ? "hidden" : undefined,
             }}
             role="dialog"
-            aria-label="Tracked changes"
+            aria-label={t("trackedChanges")}
         >
             <div
                 onMouseDown={onDragStart}
@@ -1764,7 +1769,7 @@ function TrackChangesBubble({
             >
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
                     <GripVertical className="h-3.5 w-3.5 text-muted-foreground/70" />
-                    Promjene
+                    {t("changes")}
                     <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                         {items.length}
                     </span>
@@ -1773,7 +1778,7 @@ function TrackChangesBubble({
                     type="button"
                     onClick={onClose}
                     className="rounded p-0.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-                    aria-label="Zatvori panel"
+                    aria-label={t("closePanel")}
                 >
                     <X className="h-3.5 w-3.5" />
                 </button>
@@ -1781,7 +1786,7 @@ function TrackChangesBubble({
             <div className="flex-1 overflow-y-auto">
                 {items.length === 0 ? (
                     <p className="px-3 py-6 text-center text-xs text-muted-foreground/70">
-                        Nema nerazriješenih promjena.
+                        {t("noUnresolvedChanges")}
                     </p>
                 ) : (
                     <ul className="divide-y divide-border">
@@ -1796,7 +1801,9 @@ function TrackChangesBubble({
                                     className="flex flex-col items-start gap-0.5 text-left"
                                 >
                                     <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                        {TYPE_LABEL[it.type] ?? it.type}
+                                        {TYPE_LABEL_KEYS[it.type]
+                                            ? t(TYPE_LABEL_KEYS[it.type])
+                                            : it.type}
                                         {shouldShowAuthor(
                                             it.author,
                                             Boolean(it.dbEditId),
@@ -1847,7 +1854,7 @@ function TrackChangesBubble({
                                                             size={10}
                                                         />
                                                     )}
-                                                    Odbij
+                                                    {tEdit("reject")}
                                                 </button>
                                                 <button
                                                     type="button"
@@ -1872,7 +1879,7 @@ function TrackChangesBubble({
                                                             size={10}
                                                         />
                                                     )}
-                                                    Prihvati
+                                                    {tEdit("accept")}
                                                 </button>
                                             </>
                                         );

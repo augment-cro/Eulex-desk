@@ -181,6 +181,7 @@ describe("isLegalMcpServer", () => {
     assert.equal(isLegalMcpServer({ slug: "zakon-ai", name: "zakon.ai" }), true);
     assert.equal(isLegalMcpServer({ slug: "x", name: "Narodne novine" }), true);
     assert.equal(isLegalMcpServer({ slug: "legifrance", name: "Légifrance" }), true);
+    assert.equal(isLegalMcpServer({ slug: "sggz", name: "ZAGREB" }), true);
   });
   it("keeps generic connectors (Drive/Notion/…) out of scope enforcement", () => {
     assert.equal(isLegalMcpServer({ slug: "gdrive", name: "Google Drive" }), false);

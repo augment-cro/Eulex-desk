@@ -4,6 +4,8 @@ import React, {
     createContext,
     useContext,
     useEffect,
+    useMemo,
+    useRef,
     useState,
     useCallback,
     ReactNode,
@@ -18,9 +20,7 @@ import {
     type OAuthUser,
 } from "@/lib/oauth";
 
-const API_BASE =
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
-
+import { API_BASE } from "@/app/lib/apiBase";
 // JWT `sub` is the WordPress user_id (numeric string). All app tables
 // (chats.user_id, documents.user_id, tabular_reviews.user_id, …) store
 // the *internal* users.id UUID instead. Owner-check UI compares
@@ -56,13 +56,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [user, setUser] = useState<OAuthUser | null>(null);
     const [authLoading, setAuthLoading] = useState(true);
 
+    // Identity currently applied to `user`, so re-running the bootstrap for
+    // the SAME person is a no-op. AUTH_TOKEN_EVENT fires on every
+    // storeTokens(), mikeApi refreshes on every 401, and each pass used to
+    // call setUser twice (decoded, then again with the internal UUID) — and
+    // UserProfileContext refetches on every one of those. Under DB pressure
+    // that became self-sustaining: 401 → refresh → event → 3× /user/profile
+    // → 401 … 221 profile calls in 9 minutes from one session (tracker #32).
+    // Tier is part of the key so an upgrade still propagates on the next
+    // token; a plain refresh for an unchanged user does nothing.
+    const appliedIdentityRef = useRef<string | null>(null);
+
     const applyDecoded = useCallback(
         async (decoded: OAuthUser | null, accessToken: string | null) => {
             if (!decoded) {
+                appliedIdentityRef.current = null;
                 setUser(null);
                 setAuthLoading(false);
                 return;
             }
+            const identity = `${decoded.email || decoded.id}|${decoded.tier}|${decoded.tier_level_id}`;
+            if (appliedIdentityRef.current === identity) {
+                // Same person, fresher token — nothing downstream changes.
+                setAuthLoading(false);
+                return;
+            }
+            appliedIdentityRef.current = identity;
             // Show the UI as soon as possible with the JWT-derived user.
             setUser(decoded);
             setAuthLoading(false);
@@ -146,23 +165,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
     }, [loadUser]);
 
-    const handleSignOut = async () => {
+    const handleSignOut = useCallback(async () => {
+        // Drop the cached contexts-service token so the next user in this
+        // tab can't reuse it (issue #124).
+        const { clearContextsServiceToken } = await import("@/app/lib/mikeApi");
+        clearContextsServiceToken();
         await oauthSignOut();
+        appliedIdentityRef.current = null;
         setUser(null);
-    };
+    }, []);
+
+    // Memoised: an unmemoised object literal here handed every consumer a new
+    // context value on each render of this provider, re-running their effects
+    // for a session that had not actually changed (tracker #32).
+    const value = useMemo(
+        () => ({
+            user,
+            isAuthenticated: !!user,
+            authLoading,
+            tier: user?.tier ?? ("free" as const),
+            signOut: handleSignOut,
+        }),
+        [user, authLoading, handleSignOut],
+    );
 
     return (
-        <AuthContext.Provider
-            value={{
-                user,
-                isAuthenticated: !!user,
-                authLoading,
-                tier: user?.tier ?? "free",
-                signOut: handleSignOut,
-            }}
-        >
-            {children}
-        </AuthContext.Provider>
+        <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
     );
 }
 

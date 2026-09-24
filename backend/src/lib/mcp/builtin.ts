@@ -25,7 +25,13 @@ import { query } from "../db";
 import { McpHttpClient } from "./client";
 import { prefixedToolName } from "./servers";
 import type { LoadedMcpServer, McpServerRow } from "./types";
-import { mintEulexPartnerToken, isEulexPartnerConfigured } from "./partnerJwt";
+import {
+    mintEulexPartnerToken,
+    isEulexPartnerConfigured,
+    type EulexPartnerTier,
+} from "./partnerJwt";
+import { resolveMcpDailyLimit, checkAndCountMcpCall } from "./quota";
+import { tierKeyForLevelId } from "../entitlements";
 
 const SLUG_RE = /^[a-z0-9_-]{1,20}$/;
 const BUILTIN_SLUG_PREFIX = "sys-";
@@ -80,8 +86,11 @@ const EULEX_SLUG = `${BUILTIN_SLUG_PREFIX}eulex`;
 const EULEX_NAME = "EU";
 const EULEX_URL = "https://mcp.eulex.ai/mcp";
 
-function buildEulexPartnerEntry(userId: string): ParsedEntry | null {
-    const token = mintEulexPartnerToken(userId);
+function buildEulexPartnerEntry(
+    userId: string,
+    tier: EulexPartnerTier,
+): ParsedEntry | null {
+    const token = mintEulexPartnerToken(userId, tier);
     if (!token) return null;
     return {
         slug: EULEX_SLUG,
@@ -308,6 +317,7 @@ async function readUserBuiltinPrefs(
 export async function loadBuiltinMcpServers(
     userId?: string,
     db?: Db,
+    tierLevelId?: number,
 ): Promise<LoadedMcpServer[]> {
     let entries: ParsedEntry[];
     try {
@@ -320,10 +330,21 @@ export async function loadBuiltinMcpServers(
 
     // Inject the EULEX partner connector (hardcoded, not from mcp.json).
     // Requires MAX_EULEX_PARTNER_SECRET and a userId for JWT minting.
+    // The partner token asserts the user's real tier (free stays free);
+    // unknown tier keeps the historical "plus" default.
     if (userId && isEulexPartnerConfigured()) {
-        const eulexEntry = buildEulexPartnerEntry(userId);
+        const eulexTier: EulexPartnerTier =
+            typeof tierLevelId === "number" &&
+            tierKeyForLevelId(tierLevelId) === "free"
+                ? "free"
+                : "plus";
+        const eulexEntry = buildEulexPartnerEntry(userId, eulexTier);
         if (eulexEntry) entries = [...entries, eulexEntry];
     }
+
+    // Per-tier daily cap on built-in MCP tool calls (0 = unlimited).
+    // Resolved once per request; enforced in the callTool closures below.
+    const mcpDailyLimit = userId ? await resolveMcpDailyLimit(tierLevelId) : 0;
 
     if (entries.length === 0) return [];
 
@@ -367,13 +388,32 @@ export async function loadBuiltinMcpServers(
                 row,
                 tools,
                 toolNameMap,
+                instructions: client.getInstructions(),
                 client: {
-                    callTool: (name, args) => client.callTool(name, args),
+                    callTool: async (name, args) => {
+                        if (userId && mcpDailyLimit > 0) {
+                            const over = await checkAndCountMcpCall(
+                                userId,
+                                mcpDailyLimit,
+                                name,
+                            );
+                            if (over) return over;
+                        }
+                        return client.callTool(name, args);
+                    },
                     // Built-in tools don't emit legal-source structuredContent;
                     // expose the rich shape as text-only for type parity.
-                    callToolRich: async (name, args) => ({
-                        text: await client.callTool(name, args),
-                    }),
+                    callToolRich: async (name, args) => {
+                        if (userId && mcpDailyLimit > 0) {
+                            const over = await checkAndCountMcpCall(
+                                userId,
+                                mcpDailyLimit,
+                                name,
+                            );
+                            if (over) return { text: over };
+                        }
+                        return { text: await client.callTool(name, args) };
+                    },
                     close: () => client.close(),
                 },
             };

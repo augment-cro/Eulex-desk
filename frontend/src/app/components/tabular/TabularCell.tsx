@@ -41,6 +41,7 @@ function CellMarkdown({
     onCitationClick,
     onExpand,
     inline,
+    unverifiedCitations,
 }: {
     text: string;
     citations: ParsedCitation[];
@@ -49,7 +50,11 @@ function CellMarkdown({
     onCitationClick?: (page: number, quote: string) => void;
     onExpand: () => void;
     inline?: boolean;
+    /** Badge ordinals whose quote wasn't found in the document (#22). */
+    unverifiedCitations?: ReadonlySet<number>;
 }) {
+    // Named tTabular — the inner `code` renderer already binds `t` locally.
+    const tTabular = useTranslations("tabularReview");
     return (
         <ReactMarkdown
             remarkPlugins={[remarkGfm]}
@@ -89,9 +94,21 @@ function CellMarkdown({
                         const idx = parseInt(citMatch[1]);
                         const citation = citations[idx];
                         if (citation) {
+                            // #22 — quote not found in the source document:
+                            // same badge, warning tint + tooltip note.
+                            const isUnverified =
+                                unverifiedCitations?.has(idx) ?? false;
+                            const tooltip = tTabular("citationTooltip", {
+                                page: citation.page,
+                                quote: citation.quote,
+                            });
                             return (
                                 <span
-                                    title={`Page ${citation.page}: "${citation.quote}"`}
+                                    title={
+                                        isUnverified
+                                            ? `${tooltip} — ${tTabular("quoteUnverified")}`
+                                            : tooltip
+                                    }
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         if (onCitationClick) {
@@ -103,7 +120,11 @@ function CellMarkdown({
                                             onExpand();
                                         }
                                     }}
-                                    className="mx-0.5 inline-flex items-center justify-center rounded-full bg-secondary w-3.5 h-3.5 text-[9px] font-medium text-foreground align-super cursor-pointer hover:bg-accent transition-colors"
+                                    className={`mx-0.5 inline-flex items-center justify-center rounded-full w-3.5 h-3.5 text-[9px] font-medium align-super cursor-pointer transition-colors ${
+                                        isUnverified
+                                            ? "bg-warning/15 text-warning hover:bg-warning/25"
+                                            : "bg-secondary text-foreground hover:bg-accent"
+                                    }`}
                                 >
                                     {idx + 1}
                                 </span>
@@ -188,6 +209,14 @@ export function TabularCell({
         cell.content.summary,
     );
 
+    // #22 — citation verification. Ordinals arrive per field from the
+    // backend in badge order; cells persisted before the feature simply
+    // have no fields and render exactly as before.
+    const unverifiedCitations = new Set(
+        cell.content.unverified_citations?.summary ?? [],
+    );
+    const hasUnverified = cell.content.unverified === true;
+
     const firstLine = processed.split("\n").find((l) => l.trim()) ?? processed;
     const collapsedDisplay = firstLine.replace(/^[-*•]\s+/, "");
 
@@ -214,6 +243,12 @@ export function TabularCell({
                         title={cell.content.flag}
                     />
                 )}
+                {hasUnverified && (
+                    <span
+                        className="absolute right-1.5 bottom-1.5 h-1.5 w-1.5 rounded-full bg-warning/70"
+                        title={t("quoteUnverified")}
+                    />
+                )}
                 <div className="line-clamp-1 w-full min-w-0">
                     <CellMarkdown
                         text={collapsedDisplay}
@@ -223,6 +258,7 @@ export function TabularCell({
                         onCitationClick={onCitationClick}
                         onExpand={onExpand}
                         inline
+                        unverifiedCitations={unverifiedCitations}
                     />
                 </div>
             </div>
@@ -237,6 +273,12 @@ export function TabularCell({
                                 title={cell.content.flag}
                             />
                         )}
+                        {hasUnverified && (
+                            <span
+                                className="absolute right-1.5 bottom-1.5 h-1.5 w-1.5 rounded-full bg-warning/70"
+                                title={t("quoteUnverified")}
+                            />
+                        )}
                         <CellMarkdown
                             text={processed}
                             citations={citations}
@@ -244,6 +286,7 @@ export function TabularCell({
                             column={column}
                             onCitationClick={handleCitationClickInOverlay}
                             onExpand={handleSeeDetails}
+                            unverifiedCitations={unverifiedCitations}
                         />
                     </div>
                     <div className="shrink-0 border-t border-border px-2 py-1.5 flex items-center justify-end">

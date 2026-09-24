@@ -40,3 +40,27 @@ export function normalizeUploadFilename(name: string): string {
   }
   return fixMisdecodedUtf8AsLatin1(s);
 }
+
+/**
+ * Display filename for a document the assistant generates, built from the
+ * title the model chose. Letters and digits of every script survive —
+ * Croatian titles keep č ć đ š ž (the old ASCII-only filter turned
+ * "Očitovanje na tužbu" into "Oitovanje na tubu") — and only characters
+ * that are unsafe in a filename or a header are dropped. Storage keys never
+ * use this name (see storage.generatedDocKey); only the document row and
+ * download headers do.
+ */
+export function generatedDocumentFilename(title: string, ext: string): string {
+  const cleaned = (title ?? "")
+    .normalize("NFC")
+    // Separators become spaces so "Šteta/naknada" stays two words.
+    .replace(/[\\/:|]+/g, " ")
+    .replace(/[^\p{L}\p{M}\p{N} _.,()-]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const stem = Array.from(cleaned)
+    .slice(0, 64)
+    .join("")
+    .replace(/^[\s.]+|[\s.]+$/g, "");
+  return `${stem || "document"}.${ext}`;
+}

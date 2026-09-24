@@ -54,6 +54,7 @@ interface Props {
 export function TRView({ reviewId, projectId }: Props) {
     const { setSidebarOpen } = useSidebar();
     const tTR = useTranslations("tabularReview");
+    const tTRPage = useTranslations("tabularReviewsPage");
     const [review, setReview] = useState<TabularReview | null>(null);
     const [project, setProject] = useState<MikeProject | null>(null);
     const [cells, setCells] = useState<TabularCell[]>([]);
@@ -61,6 +62,7 @@ export function TRView({ reviewId, projectId }: Props) {
     const [columns, setColumns] = useState<ColumnConfig[]>([]);
     const [loading, setLoading] = useState(true);
     const [generating, setGenerating] = useState(false);
+    const [runError, setRunError] = useState<string | null>(null);
     const [runModalOpen, setRunModalOpen] = useState(false);
     const [savingColumn, setSavingColumn] = useState(false);
     const [savingColumnsConfig, setSavingColumnsConfig] = useState(false);
@@ -262,6 +264,7 @@ export function TRView({ reviewId, projectId }: Props) {
         }
 
         setGenerating(true);
+        setRunError(null);
         setRunModalOpen(true);
 
         // Optimistically set empty/pending/error cells to generating (skip done cells)
@@ -298,6 +301,23 @@ export function TRView({ reviewId, projectId }: Props) {
         try {
             track("tabular_review_run", { column_count: columns.length });
             const response = await streamTabularGeneration(reviewId);
+            // A non-2xx (409 concurrent-run/lease, 402 quota, 429, 500) still
+            // has a body, so the old `!response.body` check let it through —
+            // the reader found no data lines, cells reverted, and the modal
+            // flipped to a green "Completed 0/N" (issue #114). Detect it.
+            if (!response.ok) {
+                let code: string | null = null;
+                try {
+                    code = (await response.clone().json())?.code ?? null;
+                } catch {
+                    /* non-JSON error body */
+                }
+                const err = new Error(`HTTP ${response.status}`);
+                (err as { status?: number; code?: string | null }).status =
+                    response.status;
+                (err as { status?: number; code?: string | null }).code = code;
+                throw err;
+            }
             if (!response.body) throw new Error("No body");
 
             const reader = response.body.getReader();
@@ -340,6 +360,15 @@ export function TRView({ reviewId, projectId }: Props) {
             }
         } catch (err) {
             console.error("Generation failed", err);
+            const status = (err as { status?: number })?.status;
+            const code = (err as { code?: string })?.code;
+            setRunError(
+                status === 409 || code === "GENERATION_IN_PROGRESS"
+                    ? tTR("runErrorInProgress")
+                    : status === 429 || code === "RATE_LIMITED"
+                      ? tTR("runErrorRateLimited")
+                      : tTR("runErrorGeneric"),
+            );
         } finally {
             // The SSE stream can be cut mid-run (Cloud Run request timeout,
             // network drop) while the backend keeps writing results to the
@@ -458,14 +487,23 @@ export function TRView({ reviewId, projectId }: Props) {
 
     async function handleDeleteColumn(columnIndex: number) {
         const previousColumns = columns;
+        const previousCells = cells;
         const nextColumns = columns.filter(
             (column) => column.index !== columnIndex,
         );
         setColumns(nextColumns);
+        // Prune this column's cells too. getNextColumnIndex reuses the
+        // highest index+1, so a new column can reclaim the deleted column's
+        // index; leaving the old `done` cells in state made the new column
+        // render the deleted one's answers (issue #113).
+        setCells((prev) =>
+            prev.filter((cell) => cell.column_index !== columnIndex),
+        );
         try {
             await saveColumnsConfig(nextColumns);
         } catch (err) {
             setColumns(previousColumns);
+            setCells(previousCells);
             console.error("Failed to delete column", err);
         }
     }
@@ -480,6 +518,13 @@ export function TRView({ reviewId, projectId }: Props) {
     }
 
     async function handleDeleteDocuments() {
+        // Backend owner-gates document removal (#26; adding stays allowed
+        // for collaborators) — warn instead of optimistically removing rows
+        // the server will refuse to detach.
+        if (review?.is_owner === false) {
+            setOwnerOnlyAction(tTRPage("ownerOnlyRemoveDocs"));
+            return;
+        }
         const remaining = documents.filter(
             (d) => !selectedDocIds.includes(d.id),
         );
@@ -512,6 +557,12 @@ export function TRView({ reviewId, projectId }: Props) {
 
     async function handleTitleCommit(newTitle: string) {
         if (!newTitle || newTitle === review?.title) return;
+        // Backend owner-gates renames (#26); surface the permission popup
+        // instead of a silent 403 (mirrors the tabular reviews list page).
+        if (review?.is_owner === false) {
+            setOwnerOnlyAction(tTRPage("ownerOnlyRename"));
+            return;
+        }
         setReview((prev) => (prev ? { ...prev, title: newTitle } : prev));
         await updateTabularReview(reviewId, { title: newTitle });
     }
@@ -611,6 +662,11 @@ export function TRView({ reviewId, projectId }: Props) {
                                         columns,
                                         documents,
                                         cells,
+                                        labels: {
+                                            sheetName: tTR("exportSheetName"),
+                                            documentHeader: tTR("exportDocumentHeader"),
+                                            errorCell: tTR("exportErrorCell"),
+                                        },
                                     })
                                 }
                                 disabled={columns.length === 0 || documents.length === 0}
@@ -910,6 +966,7 @@ export function TRView({ reviewId, projectId }: Props) {
             <TRRunProgressModal
                 open={runModalOpen}
                 generating={generating}
+                runError={runError}
                 documents={documents}
                 columns={columns}
                 cells={cells}

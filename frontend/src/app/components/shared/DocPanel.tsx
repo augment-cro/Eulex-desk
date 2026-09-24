@@ -18,6 +18,7 @@ import type {
     MikeEditAnnotation,
 } from "./types";
 
+import { API_BASE } from "@/app/lib/apiBase";
 function isDocxFilename(name: string): boolean {
     const ext = name.split(".").pop()?.toLowerCase();
     return ext === "docx" || ext === "doc";
@@ -113,6 +114,7 @@ export function DocPanel({
     onSaved,
     onDraftEditApplied,
 }: Props) {
+    const t = useTranslations("docPanel");
     // Draft Mode — lokalni toggle za SuperDoc inline selekcijsko uređivanje.
     // Aktivan samo za DOCX dokumente (SuperDoc path); DocView (PDF) ignorira.
     const [draftModeEnabled, setDraftModeEnabled] = useState(false);
@@ -178,11 +180,11 @@ export function DocPanel({
                                     ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90"
                                     : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
                             }`}
-                            title={draftModeEnabled ? "Izađi iz Draft moda" : "Uredi selekciju (Draft Mode)"}
+                            title={draftModeEnabled ? t("exitDraftMode") : t("editSelection")}
                             aria-pressed={draftModeEnabled}
                         >
                             <Pencil className="h-3.5 w-3.5" />
-                            Draft
+                            {t("draftBadge")}
                         </button>
                     )}
                     <DownloadButton
@@ -372,6 +374,8 @@ function EditResolveButtons({
         message: string;
     }) => void;
 }) {
+    const t = useTranslations("assistant.editCard");
+    const tp = useTranslations("docPanel");
     const [busy, setBusy] = useState(false);
     const [status, setStatus] = useState<"pending" | "accepted" | "rejected">(
         edit.status,
@@ -410,9 +414,7 @@ function EditResolveButtons({
                     data: { session },
                 } = await supabase.auth.getSession();
                 const token = session?.access_token;
-                const apiBase =
-                    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ||
-                    "http://localhost:3001";
+                const apiBase = API_BASE;
                 const resp = await fetch(
                     `${apiBase}/single-documents/${edit.document_id}/edits/${edit.edit_id}/${verb}`,
                     {
@@ -456,17 +458,16 @@ function EditResolveButtons({
                     versionId: edit.version_id ?? null,
                     message:
                         verb === "accept"
-                            ? "Couldn't save accept — please retry."
-                            : "Couldn't save reject — please retry.",
+                            ? tp("acceptSaveFailed")
+                            : tp("rejectSaveFailed"),
                 });
             } finally {
                 setBusy(false);
             }
         },
-        [busy, resolved, edit, onResolveStart, onResolved, onError],
+        [busy, resolved, edit, onResolveStart, onResolved, onError, tp],
     );
 
-    const t = useTranslations("assistant.editCard");
     const inFlight = busy || !!isReloading;
     return (
         <div className="flex items-center gap-2">
@@ -514,8 +515,7 @@ function DownloadButton({
                 data: { session },
             } = await supabase.auth.getSession();
             const token = session?.access_token;
-            const apiBase =
-                process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
+            const apiBase = API_BASE;
             const qs = versionId
                 ? `?version_id=${encodeURIComponent(versionId)}`
                 : "";

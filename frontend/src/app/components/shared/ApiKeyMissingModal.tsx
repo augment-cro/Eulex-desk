@@ -20,7 +20,9 @@ export function ApiKeyMissingModal({ open, onClose, provider, message }: Props) 
     const tc = useTranslations("common");
     if (!open) return null;
 
-    const providerName = provider ? providerLabel(provider) : "this provider";
+    const providerName = provider
+        ? providerLabel(provider)
+        : t("genericProvider");
     const body =
         message ?? t("message", { provider: providerName });
 

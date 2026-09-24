@@ -34,6 +34,8 @@ interface Props {
 
 export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) {
     const tFmt = useTranslations("columnFormats");
+    const tA = useTranslations("addColumn");
+    const tW = useTranslations("workflowsPage");
     const [draft, setDraft] = useState<ColumnDraft>({
         name: column.name,
         prompt: column.prompt,
@@ -124,9 +126,9 @@ export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) 
                 {/* Header */}
                 <div className="flex items-center justify-between px-6 pt-5 pb-2">
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
-                        <span>Workflows</span>
+                        <span>{tW("title")}</span>
                         <span>›</span>
-                        <span>Edit column</span>
+                        <span>{tA("editColumn")}</span>
                     </div>
                     <button
                         onClick={onClose}
@@ -158,14 +160,14 @@ export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) 
                                             } : {}),
                                         });
                                     }}
-                                    placeholder="Column name"
+                                    placeholder={tA("columnName")}
                                     className="flex-1 text-2xl font-serif text-foreground placeholder:text-muted-foreground/70 focus:outline-none bg-transparent"
                                     autoFocus
                                 />
                                 <button
                                     type="button"
                                     onClick={() => setPresetsOpen((v) => !v)}
-                                    title="Column presets"
+                                    title={tA("columnPresets")}
                                     className="mt-1.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                                 >
                                     <ChevronDown className={`h-4 w-4 transition-transform ${presetsOpen ? "rotate-180" : ""}`} />
@@ -177,7 +179,7 @@ export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) 
                                             onClick={() => { update({ name: "", prompt: "", format: "text", tags: [], tagInput: "" }); setPresetsOpen(false); }}
                                             className="w-full px-3 py-2 text-left text-sm text-muted-foreground/70 hover:bg-accent transition-colors border-b border-border"
                                         >
-                                            No Preset
+                                            {tA("noPreset")}
                                         </button>
                                         {PROMPT_PRESETS.map((preset) => (
                                             <button
@@ -199,7 +201,7 @@ export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) 
 
                         {/* Format */}
                         <div className="mt-4">
-                            <label className="text-sm font-medium text-muted-foreground">Format</label>
+                            <label className="text-sm font-medium text-muted-foreground">{tA("format")}</label>
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                     <button className="mt-1 flex items-center justify-between rounded-md border border-input bg-surface-elevated px-2 py-1.5 text-sm text-foreground hover:border-muted-foreground focus:outline-none">
@@ -229,7 +231,7 @@ export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) 
                         {/* Tag input */}
                         {draft.format === "tag" && (
                             <div className="mt-3">
-                                <label className="text-sm font-medium text-muted-foreground">Tags</label>
+                                <label className="text-sm font-medium text-muted-foreground">{tA("tags")}</label>
                                 <div className="mt-1 flex flex-wrap gap-1.5 rounded-md border border-input px-2 py-1.5 focus-within:border-muted-foreground">
                                     {draft.tags.map((tag, tagIdx) => (
                                         <span
@@ -252,17 +254,17 @@ export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) 
                                         onChange={(e) => update({ tagInput: e.target.value })}
                                         onKeyDown={handleTagKeyDown}
                                         onBlur={commitTag}
-                                        placeholder="Add tag…"
+                                        placeholder={tA("addTag")}
                                         className="min-w-[80px] flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
                                     />
                                 </div>
-                                <p className="mt-1 text-xs text-muted-foreground/70">Press Enter or comma to add a tag.</p>
+                                <p className="mt-1 text-xs text-muted-foreground/70">{tA("pressEnterToAddTag")}</p>
                             </div>
                         )}
 
                         {/* Prompt */}
                         <div className="mt-4 flex items-center justify-between">
-                            <label className="text-sm font-medium text-muted-foreground">Prompt</label>
+                            <label className="text-sm font-medium text-muted-foreground">{tA("prompt")}</label>
                             <button
                                 type="button"
                                 onClick={autoGeneratePrompt}
@@ -274,14 +276,14 @@ export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) 
                                 ) : (
                                     <Plus className="h-4 w-4" />
                                 )}
-                                Auto-Generate Prompt
+                                {tA("autoGeneratePrompt")}
                             </button>
                         </div>
                         <textarea
                             rows={6}
                             value={draft.prompt}
                             onChange={(e) => update({ prompt: e.target.value })}
-                            placeholder="Write the analysis prompt — describe what Eulex Desk should extract from each document for this column…"
+                            placeholder={tA("promptPlaceholder")}
                             className="mt-2 w-full rounded-md border border-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/70 focus:border-muted-foreground focus:outline-none bg-transparent resize-none leading-relaxed"
                         />
                     </div>
@@ -293,7 +295,7 @@ export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) 
                             onClick={onDelete}
                             className="rounded-lg px-4 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
                         >
-                            Delete
+                            {tA("delete")}
                         </button>
                         <div className="flex items-center gap-2">
                             <button
@@ -301,14 +303,14 @@ export function WFEditColumnModal({ column, onClose, onSave, onDelete }: Props) 
                                 onClick={onClose}
                                 className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:bg-accent transition-colors"
                             >
-                                Cancel
+                                {tA("cancel")}
                             </button>
                             <button
                                 type="submit"
                                 disabled={!draft.name.trim() || !draft.prompt.trim()}
                                 className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
                             >
-                                Save changes
+                                {tA("saveChanges")}
                             </button>
                         </div>
                     </div>

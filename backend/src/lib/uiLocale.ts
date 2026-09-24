@@ -21,7 +21,7 @@ export function parseUiLocale(req: Request): UiLocale {
  */
 export function shortLocaleRule(locale: UiLocale): string {
     if (locale === "hr") {
-        return '- Write the output ONLY in Croatian (hrvatski književni standard), regardless of the language the user typed in — use Croatian vocabulary and grammatical forms ("je li" not "da li", "uvjet" not "uslov", "tko" not "ko", "kojem" not "kom"), never Serbian or Bosnian variants.';
+        return '- Write the output ONLY in Croatian (hrvatski književni standard), regardless of the language the user typed in — use Croatian vocabulary and grammatical forms ("je li" not "da li", "uvjet" not "uslov", "tko" not "ko", "kojem" not "kom"), never Serbian or Bosnian variants. Write in Latin script (latinica) ONLY — never Cyrillic; the output must contain no Cyrillic characters.';
     }
     return "- Write the output ONLY in English, regardless of the language the user typed in.";
 }
@@ -96,6 +96,7 @@ export function localeContextForLlm(
             "JEZIK SUČELJA (obavezno): Korisnik koristi hrvatski (Hrvatska) u aplikaciji.",
             "Za sva polja koja korisnik vidi u sučelju (sažetak, obrazloženje/reasoning, oznake, naslove stupaca ako nisu citati iz dokumenta) piši isključivo standardnim hrvatskim: hrvatski pravopis i pravna terminologija.",
             "Izbjegavaj srpske, bosanske i crnogorske varijante (npr. izrazito srpske glagolske forme ili vokabular koji nije uobičajen u hrvatskom pravnom diskursu). Ako dokument sadrži drugi jezik, citiraj točno iz dokumenta, ali vlastiti sadržaj formuliraj na hrvatskom.",
+            "PISMO (obavezno): piši isključivo latinicom. Nikada ne koristi ćirilicu — odgovor ne smije sadržavati nijedan ćirilični znak.",
             "Ne miješaj engleski u korisnički tekst osim citata iz dokumenta ili međunarodnih naziva kada je nužno.",
             "KRITIČNO — JEZIK RAZMIŠLJANJA: Tvoj thinking/reasoning blok (interno razmišljanje koje korisnik vidi u sučelju pod 'Proces razmišljanja') MORA u cijelosti biti na HRVATSKOM jeziku. SVAKA rečenica u thinking bloku mora biti na hrvatskom. Korisnik vidi taj tekst u sučelju i očekuje ga na hrvatskom. ZABRANJENO je razmišljati na engleskom — ako thinking blok sadrži engleski tekst, to je greška. Piši thinking na hrvatskom od prve do zadnje rečenice.",
             "DIJAKRITICI U ARGUMENTIMA ALATA: Kad poziveš generate_docx, edit_document ili bilo koji drugi alat, svi argumenti koji sadrže hrvatski tekst MORAJU koristiti ispravne dijakritike: č, ć, š, ž, đ (i velika: Č, Ć, Š, Ž, Đ). Nikada nemoj koristiti ASCII zamjene (c umjesto č, s umjesto š itd.). Ovo se primjenjuje na heading, content, find, replace i sva ostala tekstualna polja u tool call argumentima.",

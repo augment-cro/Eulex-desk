@@ -16,6 +16,7 @@ import {
     FileText,
     Loader2,
     Plus,
+    Scale,
     Trash2,
     Upload,
     X,
@@ -42,8 +43,14 @@ import { ChatInput } from "@/app/components/assistant/ChatInput";
 import type { ChatInputHandle } from "@/app/components/assistant/ChatInput";
 import { ProjectExplorer } from "@/app/components/projects/ProjectExplorer";
 import { DocView } from "@/app/components/shared/DocView";
+import { LegalSourcePanel } from "@/app/components/shared/LegalSourcePanel";
+import {
+    harvestConversationLegalSources,
+    legalSourceDisplayTitle,
+} from "@/app/components/shared/legalSourceUtils";
 import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
 import { ShareChatModal } from "@/app/components/shared/ShareChatModal";
+import { UploadFailuresAlert } from "@/app/components/shared/UploadFailuresAlert";
 import { useConfirmDialog } from "@/app/components/modals/confirm-dialog";
 import { useTranslations } from "next-intl";
 import { DocxViewer } from "@/app/components/shared/DocxViewer";
@@ -52,21 +59,29 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import { useSidebar } from "@/app/contexts/SidebarContext";
 import type {
+    CitationPinpoint,
     CitationQuote,
+    LegalSource,
     MikeCitationAnnotation,
     MikeDocument,
     MikeEditAnnotation,
+    MikeLegalSourceAnnotation,
     MikeMessage,
     MikeProject,
 } from "@/app/components/shared/types";
 import { expandCitationToEntries } from "@/app/components/shared/types";
-import { track, fileTypeOf } from "@/app/lib/analytics";
+import { uploadFilesBulk, type UploadFailure } from "@/app/lib/bulkUpload";
+import {
+    SUPPORTED_UPLOAD_ACCEPT,
+    SUPPORTED_UPLOAD_LABEL,
+} from "@/app/lib/supportedFileTypes";
 
 interface Props {
     params: Promise<{ id: string; chatId: string }>;
 }
 
 type DocTab = {
+    kind: "doc";
     documentId: string;
     filename: string;
     quotes?: CitationQuote[];
@@ -75,6 +90,35 @@ type DocTab = {
     warning?: string | null;
     scrollTop?: number;
 };
+
+/**
+ * A legal source (EU/HR/FR) opened from a citation in the assistant panel.
+ * Renders `LegalSourcePanel` in the center document panel — issue #60.
+ * Mirrors ChatView's `LegalSourceTab` (AssistantSidePanel) prop-for-prop.
+ */
+type LegalTab = {
+    kind: "legal";
+    /** Stable identity — the harvested source id (scope + path / celex).
+     *  Re-clicking the same article refocuses this tab instead of
+     *  duplicating it. */
+    key: string;
+    source: LegalSource;
+    /** Exact cited passage to highlight (empty when opened from a chip). */
+    quote: string;
+    /** All article numbers cited for this regulation across the message. */
+    citedArticleNumbers?: string[];
+    /** Stavak/točka pinpoint parsed from the clicked reference's prose. */
+    pinpoint?: CitationPinpoint | null;
+    /** Bumped per click so re-clicking an open article re-scrolls to it. */
+    focusNonce: number;
+};
+
+type CenterTab = DocTab | LegalTab;
+
+/** Stable tab identity used for `activeTabId`, keys and refs. */
+function centerTabId(tab: CenterTab): string {
+    return tab.kind === "doc" ? tab.documentId : tab.key;
+}
 
 type EditScrollTarget = {
     key: string;
@@ -202,7 +246,7 @@ function Divider({ onDrag }: { onDrag: (dx: number) => void }) {
     );
 }
 
-export default function ProjectAssistantChatPage({ params }: Props) {
+function ProjectAssistantChatPageInner({ params }: Props) {
     const { id: projectId, chatId } = use(params);
     const router = useRouter();
 
@@ -234,10 +278,11 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     // Upload state
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [uploading, setUploading] = useState(false);
+    const [uploadFailures, setUploadFailures] = useState<UploadFailure[]>([]);
     const [explorerDragOver, setExplorerDragOver] = useState(false);
 
     // Tabs
-    const [tabs, setTabs] = useState<DocTab[]>([]);
+    const [tabs, setTabs] = useState<CenterTab[]>([]);
     const [activeTabId, setActiveTabId] = useState<string | null>(null);
     const [activeQuotes, setActiveQuotes] = useState<CitationQuote[] | null>(
         null,
@@ -249,7 +294,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         () => new Set(),
     );
 
-    const activeTab = tabs.find((t) => t.documentId === activeTabId) ?? null;
+    const activeTab = tabs.find((t) => centerTabId(t) === activeTabId) ?? null;
     const tabBarRef = useRef<HTMLDivElement | null>(null);
     const tabItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -388,7 +433,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 consumedEditEventsRef.current.add(key);
                 setTabs((prev) =>
                     prev.map((t) =>
-                        t.documentId === ev.document_id
+                        t.kind === "doc" && t.documentId === ev.document_id
                             ? {
                                   ...t,
                                   versionId: ev.version_id,
@@ -504,21 +549,25 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         versionId?: string | null,
     ) {
         setTabs((prev) => {
-            const existing = prev.find((t) => t.documentId === docId);
+            const existing = prev.find(
+                (t): t is DocTab => t.kind === "doc" && t.documentId === docId,
+            );
             if (existing) {
                 if (
                     versionId !== undefined &&
                     existing.versionId !== versionId
                 ) {
                     return prev.map((t) =>
-                        t.documentId === docId ? { ...t, versionId } : t,
+                        t.kind === "doc" && t.documentId === docId
+                            ? { ...t, versionId }
+                            : t,
                     );
                 }
                 return prev;
             }
             return [
                 ...prev,
-                { documentId: docId, filename, quotes, versionId },
+                { kind: "doc", documentId: docId, filename, quotes, versionId },
             ];
         });
         setActiveTabId(docId);
@@ -526,30 +575,77 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         setSelectedDocId(docId);
     }
 
-    function closeTab(docId: string) {
+    // Monotonic counter for legal-source clicks — mirrors ChatView's
+    // legalFocusNonceRef so re-clicking an already-open article re-scrolls
+    // the panel to it instead of keeping the old scroll position.
+    const legalFocusNonceRef = useRef(0);
+
+    /**
+     * Issue #60 — open a legal source (EU/HR/FR) as a CENTER tab, next to
+     * the document tabs. Called from AssistantMessage when the user clicks
+     * an underlined legal reference ("Članak 15") or an "Izvori" chip.
+     * Deduped by the stable source id: re-clicking the same article
+     * refreshes the existing tab (quote/pinpoint/focusNonce) and focuses it.
+     */
+    const openLegalSource = useCallback(
+        (ann: MikeLegalSourceAnnotation, citedArticleNumbers?: string[]) => {
+            const key = ann.source.id;
+            const tab: LegalTab = {
+                kind: "legal",
+                key,
+                source: ann.source,
+                quote: ann.quote,
+                citedArticleNumbers,
+                pinpoint: ann.pinpoint ?? null,
+                focusNonce: ++legalFocusNonceRef.current,
+            };
+            setTabs((prev) => {
+                const idx = prev.findIndex(
+                    (t) => t.kind === "legal" && t.key === key,
+                );
+                if (idx >= 0) {
+                    const copy = prev.slice();
+                    copy[idx] = tab;
+                    return copy;
+                }
+                return [...prev, tab];
+            });
+            setActiveTabId(key);
+            setActiveQuotes(null);
+            setSelectedDocId(null);
+        },
+        [],
+    );
+
+    function closeTab(tabId: string) {
         setTabs((prev) => {
-            const next = prev.filter((t) => t.documentId !== docId);
-            if (activeTabId === docId) {
-                const idx = prev.findIndex((t) => t.documentId === docId);
+            const next = prev.filter((t) => centerTabId(t) !== tabId);
+            if (activeTabId === tabId) {
+                const idx = prev.findIndex((t) => centerTabId(t) === tabId);
                 const fallback = next[idx] ?? next[idx - 1] ?? null;
-                setActiveTabId(fallback?.documentId ?? null);
+                setActiveTabId(fallback ? centerTabId(fallback) : null);
                 setActiveQuotes(null);
-                setSelectedDocId(fallback?.documentId ?? null);
+                setSelectedDocId(
+                    fallback?.kind === "doc" ? fallback.documentId : null,
+                );
             }
             return next;
         });
     }
 
-    function switchTab(docId: string) {
-        setActiveTabId(docId);
+    function switchTab(tab: CenterTab) {
+        setActiveTabId(centerTabId(tab));
         setActiveQuotes(null);
-        setSelectedDocId(docId);
+        setSelectedDocId(tab.kind === "doc" ? tab.documentId : null);
     }
 
     // ── Handlers ──────────────────────────────────────────────────────────────
     const handleSubmit = useCallback(
         (message: MikeMessage) => {
-            if (!activeTab) return handleChat(message);
+            // Only a project document counts as "displayed" context for the
+            // model — an open legal-source tab is reference material.
+            if (!activeTab || activeTab.kind !== "doc")
+                return handleChat(message);
             return handleChat(message, {
                 displayedDoc: {
                     filename: activeTab.filename,
@@ -610,7 +706,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         invalidateDocxBytes(args.documentId);
         setTabs((prev) =>
             prev.map((t) =>
-                t.documentId === args.documentId
+                t.kind === "doc" && t.documentId === args.documentId
                     ? {
                           ...t,
                           versionId: args.versionId ?? t.versionId,
@@ -624,7 +720,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     const patchTab = (documentId: string, patch: Partial<DocTab>) => {
         setTabs((prev) =>
             prev.map((t) =>
-                t.documentId === documentId ? { ...t, ...patch } : t,
+                t.kind === "doc" && t.documentId === documentId
+                    ? { ...t, ...patch }
+                    : t,
             ),
         );
     };
@@ -653,7 +751,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         invalidateDocxBytes(docId);
         setTabs((prev) =>
             prev.map((t) =>
-                t.documentId === docId
+                t.kind === "doc" && t.documentId === docId
                     ? {
                           ...t,
                           versionId: args.versionId,
@@ -694,7 +792,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
 
     async function handleDeleteChat() {
         if (chatOwnerId && user?.id && chatOwnerId !== user.id) {
-            setOwnerOnlyAction("delete this chat");
+            // Was a raw English literal spliced into the hr sentence
+            // "Samo vlasnik predmeta može …" (issue #105).
+            setOwnerOnlyAction(tProject("deleteChat"));
             return;
         }
         const trimmedTitle = chatTitle?.trim();
@@ -717,40 +817,29 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     }
 
     // ── Upload ────────────────────────────────────────────────────────────────
+    // Shared by the explorer's upload button and its file drop (a drop
+    // bypasses `accept`, so the helper's pre-filter matters most there).
     async function uploadFiles(files: File[]) {
         if (!files.length) return;
         setUploading(true);
+        setUploadFailures([]);
         try {
-            const uploaded = await Promise.all(
-                files.map(async (f) => {
-                    const fileType = fileTypeOf(f);
-                    try {
-                        const doc = await uploadProjectDocument(projectId, f);
-                        track("document_uploaded", {
-                            surface: "project",
-                            file_type: fileType,
-                            result: "success",
-                        });
-                        return doc;
-                    } catch (err) {
-                        track("document_uploaded", {
-                            surface: "project",
-                            file_type: fileType,
-                            result: "error",
-                        });
-                        throw err;
-                    }
-                }),
-            );
-            setProject((prev) => {
-                if (!prev) return prev;
-                return {
-                    ...prev,
-                    documents: [...(prev.documents ?? []), ...uploaded],
-                };
+            // Each document joins the explorer as soon as it lands, so one
+            // failed file never hides the others.
+            const { failures } = await uploadFilesBulk(files, {
+                upload: (f) => uploadProjectDocument(projectId, f),
+                surface: "project",
+                onUploaded: (doc) =>
+                    setProject((prev) =>
+                        prev
+                            ? {
+                                  ...prev,
+                                  documents: [...(prev.documents ?? []), doc],
+                              }
+                            : prev,
+                    ),
             });
-        } catch (err) {
-            console.error("Upload failed:", err);
+            setUploadFailures(failures);
         } finally {
             setUploading(false);
             if (fileInputRef.current) fileInputRef.current.value = "";
@@ -799,6 +888,21 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     };
 
     const handleDeleteFolder = async (folderId: string) => {
+        // Backend owner-gates folder deletion (#26) and would 404 silently;
+        // surface a clear permission warning instead.
+        if (project && project.is_owner === false) {
+            setOwnerOnlyAction(tProject("deleteFolderAction"));
+            return;
+        }
+        // Cascades every subfolder — confirm first (issue #99).
+        const folder = (project?.folders ?? []).find((f) => f.id === folderId);
+        const okFolder = await confirmDialog({
+            title: tDelete("folderTitle"),
+            message: tDelete("folderBodyNamed", { title: folder?.name ?? "" }),
+            confirmLabel: tDelete("deleteAction"),
+            destructive: true,
+        });
+        if (!okFolder) return;
         const toDelete = new Set<string>();
         function collectIds(id: string) {
             toDelete.add(id);
@@ -864,6 +968,17 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     };
 
     const handleDeleteDoc = async (docId: string) => {
+        // Permanent, all-versions delete — confirm first (issue #99).
+        const doc = (project?.documents ?? []).find((d) => d.id === docId);
+        const okDoc = await confirmDialog({
+            title: tDelete("documentTitle"),
+            message: tDelete("documentBodyNamed", {
+                title: doc?.filename ?? "",
+            }),
+            confirmLabel: tDelete("deleteAction"),
+            destructive: true,
+        });
+        if (!okDoc) return;
         await deleteDocument(docId);
         setProject((prev) =>
             prev
@@ -875,7 +990,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                   }
                 : prev,
         );
-        setTabs((prev) => prev.filter((t) => t.documentId !== docId));
+        setTabs((prev) =>
+            prev.filter((t) => t.kind !== "doc" || t.documentId !== docId),
+        );
         if (activeTabId === docId) {
             setActiveTabId(null);
             setActiveQuotes(null);
@@ -946,7 +1063,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     <button
                         onClick={handleNewChat}
                         disabled={creatingChat}
-                        title="New chat"
+                        title={tProject("newChatTitle")}
                         className="flex items-center justify-center p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
                     >
                         {creatingChat ? (
@@ -958,7 +1075,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     <button
                         onClick={handleDeleteChat}
                         disabled={deletingChat}
-                        title="Delete chat"
+                        title={tProject("deleteChatTitle")}
                         className="flex items-center justify-center p-1.5 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
                     >
                         {deletingChat ? (
@@ -1003,13 +1120,13 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                             {/* Explorer header */}
                             <div className="h-10 flex items-center justify-between px-3 border-b border-border shrink-0">
                                 <span className="text-xs text-foreground">
-                                    Explorer
+                                    {tProject("explorerHeading")}
                                 </span>
                                 <div className="flex items-center gap-1">
                                     <input
                                         ref={fileInputRef}
                                         type="file"
-                                        accept=".pdf,.docx,.doc"
+                                        accept={SUPPORTED_UPLOAD_ACCEPT}
                                         multiple
                                         className="hidden"
                                         onChange={(e) =>
@@ -1025,7 +1142,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             fileInputRef.current?.click()
                                         }
                                         disabled={uploading}
-                                        title="Upload documents"
+                                        title={tProject(
+                                            "uploadDocumentsTitle",
+                                        )}
                                         className="p-1 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
                                     >
                                         {uploading ? (
@@ -1038,13 +1157,19 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                         onClick={() =>
                                             setExplorerCollapsed(true)
                                         }
-                                        title="Collapse explorer"
+                                        title={tProject("collapseExplorer")}
                                         className="p-1 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors"
                                     >
                                         <ChevronLeft className="h-3.5 w-3.5" />
                                     </button>
                                 </div>
                             </div>
+
+                            <UploadFailuresAlert
+                                failures={uploadFailures}
+                                onDismiss={() => setUploadFailures([])}
+                                className="mx-2 mt-2 w-auto shrink-0"
+                            />
 
                             {/* Drop overlay */}
                             <div
@@ -1073,7 +1198,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                 {explorerDragOver && (
                                     <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
                                         <p className="text-xs text-foreground font-medium">
-                                            Drop to upload
+                                            {tProject("dropFilesHere", {
+                                                types: SUPPORTED_UPLOAD_LABEL,
+                                            })}
                                         </p>
                                     </div>
                                 )}
@@ -1102,7 +1229,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                         <div className="h-10 flex items-center justify-center border-b border-border shrink-0 px-1">
                             <button
                                 onClick={() => setExplorerCollapsed(false)}
-                                title="Expand explorer"
+                                title={tProject("expandExplorer")}
                                 className="p-1 rounded text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors"
                             >
                                 <ChevronRight className="h-3.5 w-3.5" />
@@ -1120,11 +1247,54 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     >
                         {tabs.length === 0 ? (
                             <span className="px-4 self-center text-xs text-foreground">
-                                Pregled dokumenta
+                                {tProject("docViewerTabPlaceholder")}
                             </span>
                         ) : (
                             tabs.map((tab) => {
-                                const isActive = tab.documentId === activeTabId;
+                                const tabKey = centerTabId(tab);
+                                const isActive = tabKey === activeTabId;
+                                // Legal-source tab: Scale icon + law title,
+                                // same chrome as doc tabs (issue #60).
+                                if (tab.kind === "legal") {
+                                    return (
+                                        <div
+                                            key={tabKey}
+                                            ref={(el) => {
+                                                tabItemRefs.current[tabKey] =
+                                                    el;
+                                            }}
+                                            onClick={() => switchTab(tab)}
+                                            className={`group flex items-center gap-1.5 px-3 h-full border-r border-border cursor-pointer shrink-0 max-w-[260px] transition-colors ${
+                                                isActive
+                                                    ? "bg-secondary"
+                                                    : "bg-background hover:bg-accent"
+                                            }`}
+                                        >
+                                            <Scale
+                                                className={`h-3.5 w-3.5 shrink-0 ${isActive ? "text-foreground" : "text-muted-foreground/70"}`}
+                                            />
+                                            <span
+                                                className={`text-xs truncate ${isActive ? "text-foreground font-medium" : "text-muted-foreground"}`}
+                                                title={legalSourceDisplayTitle(
+                                                    tab.source,
+                                                )}
+                                            >
+                                                {legalSourceDisplayTitle(
+                                                    tab.source,
+                                                )}
+                                            </span>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    closeTab(tabKey);
+                                                }}
+                                                className={`shrink-0 transition-colors ${isActive ? "text-muted-foreground hover:text-foreground" : "text-muted-foreground/70 hover:text-muted-foreground"}`}
+                                            >
+                                                <X className="h-3 w-3" />
+                                            </button>
+                                        </div>
+                                    );
+                                }
                                 const ext = tab.filename
                                     .split(".")
                                     .pop()
@@ -1156,9 +1326,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             tabItemRefs.current[tab.documentId] =
                                                 el;
                                         }}
-                                        onClick={() =>
-                                            switchTab(tab.documentId)
-                                        }
+                                        onClick={() => switchTab(tab)}
                                         className={`group flex items-center gap-1.5 px-3 h-full border-r border-border cursor-pointer shrink-0 max-w-[260px] transition-colors ${
                                             isActive
                                                 ? "bg-secondary"
@@ -1200,7 +1368,20 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     </div>
                     <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                         {activeTab ? (
-                            isDocxTab(activeTab.filename) ? (
+                            activeTab.kind === "legal" ? (
+                                // Same prop mapping as AssistantSidePanel's
+                                // legal-source tab (main assistant).
+                                <LegalSourcePanel
+                                    key={activeTab.key}
+                                    source={activeTab.source}
+                                    quote={activeTab.quote}
+                                    citedArticleNumbers={
+                                        activeTab.citedArticleNumbers
+                                    }
+                                    pinpoint={activeTab.pinpoint}
+                                    focusNonce={activeTab.focusNonce}
+                                />
+                            ) : isDocxTab(activeTab.filename) ? (
                                 <DocxViewer
                                     key={activeTab.documentId}
                                     documentId={activeTab.documentId}
@@ -1252,12 +1433,10 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                             <div className="flex items-center justify-center h-full px-8 bg-muted">
                                 <div className="text-center space-y-3">
                                     <p className="font-serif text-foreground text-xl">
-                                        Kliknite na dokument za prikaz.
+                                        {tProject("docViewerEmptyTitle")}
                                     </p>
                                     <p className="font-serif text-base text-muted-foreground">
-                                        Savjet: povucite dokument iz Projektnog
-                                        explorera u Asistenta da ga uputite na
-                                        čitanje ili uređivanje.
+                                        {tProject("docViewerEmptyHint")}
                                     </p>
                                 </div>
                             </div>
@@ -1344,8 +1523,15 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                                 !!(msg as any).rateLimited
                                             }
                                             annotations={msg.annotations}
+                                            conversationLegalSources={harvestConversationLegalSources(
+                                                messages,
+                                                i,
+                                            )}
                                             onCitationClick={
                                                 handleCitationClick
+                                            }
+                                            onLegalSourceClick={
+                                                openLegalSource
                                             }
                                             minHeight={
                                                 i === lastAssistantIdx
@@ -1419,5 +1605,20 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             )}
             {confirmDialogEl}
         </div>
+    );
+}
+
+// Key the stateful page on projectId:chatId so navigating between chats or
+// projects via the sidebar fully remounts it. Next's App Router otherwise
+// reuses this component across param changes, leaking the prior chat's doc
+// tabs / title / loaded-flag into the next — and passing a stale doc as
+// chat context across projects (issue #104).
+export default function ProjectAssistantChatPage({ params }: Props) {
+    const { id, chatId } = use(params);
+    return (
+        <ProjectAssistantChatPageInner
+            key={`${id}:${chatId}`}
+            params={params}
+        />
     );
 }

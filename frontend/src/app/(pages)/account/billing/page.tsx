@@ -8,6 +8,7 @@ import {
     useRateLimitStatus,
 } from "@/app/hooks/useRateLimitStatus";
 import { TopupModal } from "@/app/components/shared/TopupModal";
+import { PlanChangeSection } from "./PlanChangeSection";
 
 function fmt(n: number): string {
     return new Intl.NumberFormat("hr-HR").format(n);
@@ -97,6 +98,8 @@ export default function AccountBillingPage() {
             )}
 
             <TopupModal open={topupOpen} onClose={() => setTopupOpen(false)} />
+
+            <PlanChangeSection />
         </div>
     );
 }

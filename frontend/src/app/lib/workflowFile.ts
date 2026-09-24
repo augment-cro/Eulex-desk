@@ -13,7 +13,9 @@ export type WorkflowFileErrorCode =
     | "unsupportedVersion"
     | "missingTitle"
     | "badType"
-    | "badColumns";
+    | "badColumns"
+    | "badPrompt"
+    | "badPractice";
 
 export interface WorkflowFile {
     format: typeof WORKFLOW_FILE_FORMAT;
@@ -93,8 +95,44 @@ export function parseWorkflowFile(raw: string): WorkflowFile {
     if (obj.type !== "assistant" && obj.type !== "tabular") {
         throw new WorkflowFileError("badType");
     }
-    if (obj.columns_config != null && !Array.isArray(obj.columns_config)) {
-        throw new WorkflowFileError("badColumns");
+    // prompt_md must be a string (or absent) — a non-string here reaches
+    // the editor's setContent and crashes it (issue #121).
+    if (obj.prompt_md != null && typeof obj.prompt_md !== "string") {
+        throw new WorkflowFileError("badPrompt");
+    }
+    if (obj.practice != null && typeof obj.practice !== "string") {
+        throw new WorkflowFileError("badPractice");
+    }
+    let columns: ColumnConfig[] | null = null;
+    if (obj.columns_config != null) {
+        if (!Array.isArray(obj.columns_config)) {
+            throw new WorkflowFileError("badColumns");
+        }
+        // Validate every column item's shape — a non-numeric `index` breaks
+        // the `.sort((a,b)=>a.index-b.index)` + React keys downstream (#121).
+        columns = obj.columns_config.map((raw): ColumnConfig => {
+            if (!raw || typeof raw !== "object") {
+                throw new WorkflowFileError("badColumns");
+            }
+            const c = raw as Record<string, unknown>;
+            if (
+                typeof c.index !== "number" ||
+                !Number.isFinite(c.index) ||
+                typeof c.name !== "string" ||
+                typeof c.prompt !== "string"
+            ) {
+                throw new WorkflowFileError("badColumns");
+            }
+            return {
+                index: c.index,
+                name: c.name,
+                prompt: c.prompt,
+                ...(typeof c.format === "string" ? { format: c.format } : {}),
+                ...(Array.isArray(c.tags)
+                    ? { tags: c.tags.filter((t): t is string => typeof t === "string") }
+                    : {}),
+            } as ColumnConfig;
+        });
     }
     return {
         format: WORKFLOW_FILE_FORMAT,
@@ -103,8 +141,7 @@ export function parseWorkflowFile(raw: string): WorkflowFile {
         type: obj.type,
         practice: (obj.practice as string | null | undefined) ?? null,
         prompt_md: (obj.prompt_md as string | null | undefined) ?? null,
-        columns_config:
-            (obj.columns_config as ColumnConfig[] | null | undefined) ?? null,
+        columns_config: columns,
     };
 }
 

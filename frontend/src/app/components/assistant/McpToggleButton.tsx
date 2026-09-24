@@ -10,12 +10,22 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type {
     McpServer,
     BuiltinMcpServer,
 } from "@/app/lib/mikeApi";
 import { useMcpServers } from "@/app/contexts/McpServersContext";
-import { CountryFlag, connectorFlagCode } from "@/app/components/shared/CountryFlag";
+import {
+    ConnectorEmblem,
+    CountryFlag,
+    connectorEmblem,
+    connectorFlagCode,
+} from "@/app/components/shared/CountryFlag";
 
 /**
  * Sit next to "Documents" / "Workflows" in the chat input. Opens a popover
@@ -57,29 +67,37 @@ export function McpToggleButton() {
 
     return (
         <DropdownMenu onOpenChange={setOpen}>
-            <DropdownMenuTrigger asChild>
-                <button
-                    type="button"
-                    aria-label="Manage context for this chat"
-                    title={
-                        servers === null
-                            ? t("loadingConnectors")
-                            : t("connectorStatus", { enabled: enabledCount, total: totalCount })
-                    }
-                    className={`flex items-center gap-1.5 rounded-lg px-2 h-8 text-sm transition-colors ${
-                        enabledCount > 0
-                            ? "bg-brand text-brand-foreground hover:bg-brand/90"
-                            : `text-foreground hover:bg-accent ${open ? "bg-secondary" : ""}`
-                    }`}
-                >
-                    <Plug className="h-3.5 w-3.5" />
-                    {enabledCount > 0 && totalCount > 0 && (
-                        <span className="text-xs font-medium text-brand-foreground">
-                            {enabledCount}
-                        </span>
-                    )}
-                </button>
-            </DropdownMenuTrigger>
+            <Tooltip>
+                <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                        <button
+                            type="button"
+                            aria-label={t("manageContextAria")}
+                            className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2 h-8 text-sm transition-colors ${
+                                enabledCount > 0
+                                    ? "bg-brand text-brand-foreground hover:bg-brand/90"
+                                    : `text-foreground hover:bg-accent ${open ? "bg-secondary" : ""}`
+                            }`}
+                        >
+                            <Plug className="h-3.5 w-3.5 shrink-0" />
+                            {enabledCount > 0 && totalCount > 0 && (
+                                <span className="text-xs font-medium text-brand-foreground">
+                                    {enabledCount}
+                                </span>
+                            )}
+                        </button>
+                    </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-60">
+                    {t("tooltip")}{" "}
+                    {servers === null
+                        ? t("loadingConnectors")
+                        : t("connectorStatus", {
+                              enabled: enabledCount,
+                              total: totalCount,
+                          })}
+                </TooltipContent>
+            </Tooltip>
             <DropdownMenuContent align="start" className="w-72 p-1">
                 <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">
                     {t("legislation")}
@@ -126,6 +144,7 @@ function BuiltinRow({
     defaultLabel: string;
 }) {
     const flag = connectorFlagCode(server.slug);
+    const emblem = connectorEmblem(server.slug);
     return (
         <button
             type="button"
@@ -136,11 +155,13 @@ function BuiltinRow({
             <span className="flex items-center gap-2 min-w-0">
                 {flag ? (
                     <CountryFlag code={flag} label={server.name} />
+                ) : emblem ? (
+                    <ConnectorEmblem src={emblem.src} label={server.name} />
                 ) : (
                     <Plug className="h-3.5 w-3.5 text-muted-foreground/70 shrink-0" />
                 )}
                 <span className="truncate">
-                    {flag ? flag.toUpperCase() : server.name}
+                    {flag ? flag.toUpperCase() : emblem ? emblem.short : server.name}
                 </span>
                 <span className="text-[10px] uppercase tracking-wide text-foreground/70 bg-accent px-1 py-0.5 rounded shrink-0 leading-none">
                     {defaultLabel}
@@ -160,7 +181,7 @@ function McpRow({
     server: McpServer;
     busy: boolean;
     onToggle: () => void;
-    t: (key: string) => string;
+    t: (key: string, values?: Record<string, string>) => string;
 }) {
     const safeName =
         server.name.trim().length > 0 ? server.name.trim() : t("untitled");
@@ -177,7 +198,9 @@ function McpRow({
                 {server.last_error && (
                     <AlertCircle
                         className="h-3 w-3 text-destructive shrink-0"
-                        aria-label={`Error: ${server.last_error}`}
+                        aria-label={t("errorAria", {
+                            error: server.last_error,
+                        })}
                     />
                 )}
             </span>

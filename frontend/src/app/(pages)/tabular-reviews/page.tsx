@@ -295,7 +295,7 @@ export default function TabularReviewsPage() {
     );
 
     return (
-        <div className="flex-1 overflow-y-auto bg-background">
+        <div className="flex-1 h-full overflow-y-auto bg-background">
             {/* Page header */}
             <div className="flex items-center justify-between px-8 py-4">
                 <h1 className="text-2xl font-medium font-serif text-foreground">

@@ -17,6 +17,7 @@ export function WFColumnViewModal({ col, onClose }: Props) {
     const tW = useTranslations("workflowsPage");
     const tA = useTranslations("addColumn");
     const tC = useTranslations("common");
+    const tD = useTranslations("displayWorkflow");
     const tFmt = useTranslations("columnFormats");
     const FormatIcon = formatIcon(col.format ?? "text");
 
@@ -77,7 +78,7 @@ export function WFColumnViewModal({ col, onClose }: Props) {
                         </p>
                         <div className="text-base text-foreground leading-relaxed font-serif prose prose-base max-w-none">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                {col.prompt || "_No prompt defined._"}
+                                {col.prompt || tD("noPromptDefined")}
                             </ReactMarkdown>
                         </div>
                     </div>

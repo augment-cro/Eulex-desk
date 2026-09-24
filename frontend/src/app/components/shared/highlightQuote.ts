@@ -10,8 +10,11 @@ export async function getPdfJs() {
     return pdfjsLib;
 }
 
-export const STANDARD_FONT_DATA_URL =
-    "https://unpkg.com/pdfjs-dist@4.10.38/standard_fonts/";
+// Self-hosted copy of node_modules/pdfjs-dist/standard_fonts/ (pinned
+// 4.10.38) committed under frontend/public/standard_fonts/ — no third-party
+// CDN in the render path (issue #68). Trailing slash is required by pdf.js.
+// If pdfjs-dist is ever bumped, re-copy the directory from node_modules.
+export const STANDARD_FONT_DATA_URL = "/standard_fonts/";
 
 const HIGHLIGHT_CLASS = "pdf-text-highlight";
 const ORIGINAL_TEXT_ATTR = "data-original-text";

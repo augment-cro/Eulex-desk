@@ -10,10 +10,14 @@ import { Switch } from "@/components/ui/switch";
 import { useContexts } from "@/app/contexts/ContextsContext";
 import { listContextAlertCounts } from "@/app/lib/mikeApi";
 import { NewContextModal } from "./NewContextModal";
+import { useConfirmDialog } from "@/app/components/modals/confirm-dialog";
 
 export function ContextsList() {
     const t = useTranslations("contextsPage");
     const tNew = useTranslations("newContext");
+    const tDelete = useTranslations("confirmDelete");
+    const { confirm: confirmDialog, dialog: confirmDialogEl } =
+        useConfirmDialog();
     const { items, enabled, loading, toggle, remove } = useContexts();
     const router = useRouter();
     const searchParams = useSearchParams();
@@ -22,6 +26,7 @@ export function ContextsList() {
         searchParams.get("edit"),
     );
     const [limitHit, setLimitHit] = useState(false);
+    const [toggleFailed, setToggleFailed] = useState(false);
     const [alertCounts, setAlertCounts] = useState<Record<string, number>>({});
 
     useEffect(() => {
@@ -39,6 +44,25 @@ export function ContextsList() {
     async function handleToggle(id: string, next: boolean) {
         const res = await toggle(id, next);
         setLimitHit(res.limited === true);
+        // A non-limit failure (backend cap race, 500, network) used to revert
+        // the switch silently — surface it (issue #126 F4).
+        setToggleFailed(!res.ok && res.limited !== true);
+    }
+
+    async function handleDelete(id: string, name: string) {
+        // Permanent — cascades sources/shares. Confirm first (issue #126).
+        const ok = await confirmDialog({
+            title: tDelete("contextTitle"),
+            message: tDelete("contextBodyNamed", { title: name }),
+            confirmLabel: tDelete("deleteAction"),
+            destructive: true,
+        });
+        if (!ok) return;
+        try {
+            await remove(id);
+        } catch (err) {
+            console.error("[contexts] delete failed", err);
+        }
     }
 
     function closeEditor() {
@@ -64,6 +88,11 @@ export function ContextsList() {
                 {limitHit && (
                     <p className="mb-3 text-sm text-destructive">
                         {tNew("outOfActiveLimit")}
+                    </p>
+                )}
+                {toggleFailed && !limitHit && (
+                    <p className="mb-3 text-sm text-destructive">
+                        {t("toggleFailed")}
                     </p>
                 )}
 
@@ -151,7 +180,10 @@ export function ContextsList() {
                                             <button
                                                 type="button"
                                                 onClick={() =>
-                                                    void remove(context.id)
+                                                    void handleDelete(
+                                                        context.id,
+                                                        context.name,
+                                                    )
                                                 }
                                                 aria-label={t("deleteAria")}
                                                 title={t("deleteAria")}
@@ -174,6 +206,7 @@ export function ContextsList() {
             {editId && (
                 <NewContextModal contextId={editId} onClose={closeEditor} />
             )}
+            {confirmDialogEl}
         </div>
     );
 }

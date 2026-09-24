@@ -11,11 +11,15 @@
  */
 
 import { Router } from "express";
+import {
+    fillPromptTemplate,
+    getDraftSelectionEditPrompt,
+} from "../lib/seams/promptPack";
 import { requireAuth } from "../middleware/auth";
 import { enforceRateLimit } from "../lib/rateLimit";
 import { createServerSupabase } from "../lib/supabase";
 import { downloadFile, uploadFile } from "../lib/storage";
-import { loadActiveVersion } from "../lib/documentVersions";
+import { contentSha256, loadActiveVersion } from "../lib/documentVersions";
 import { applyTrackedEdits } from "../lib/docxTrackedChanges";
 import { buildDownloadUrl } from "../lib/downloadTokens";
 import { completeText, providerForModel } from "../lib/llm";
@@ -170,18 +174,10 @@ draftRouter.post(
                 ? "Croatian (Respond with the replacement text in Croatian)"
                 : "the same language as the selected text";
 
-        const systemPrompt = `You are a precise legal document editor. The user has selected a passage from a legal document and wants it revised according to their instruction.
-
-Your task: produce a minimal, targeted edit to the selected text.
-
-Rules:
-- Return ONLY valid JSON in the exact format: {"find": "...", "replace": "...", "reason": "..."}
-- "find" must be a SUBSTRING of the selected text (keep it as short as possible — ideally just the changed words, not the full selection)
-- "replace" is the replacement for "find" (empty string means deletion)
-- "reason" is a very short, user-facing explanation (max 15 words) in ${langHint}
-- Do NOT include markdown, prose, or any text outside the JSON object
-- Preserve original legal terminology where appropriate
-- Be conservative — minimal changes are better than sweeping rewrites`;
+        const systemPrompt = fillPromptTemplate(
+            getDraftSelectionEditPrompt(),
+            { LANG_HINT: langHint },
+        );
 
         const userPrompt = `Document context before selection:
 "${(contextBefore ?? "").slice(-200)}"
@@ -211,6 +207,7 @@ Return JSON only:`;
             if (usage) {
                 void recordLlmUsage({
                     userId,
+                    client: "draft",
                     provider: providerForModel("claude-3-5-haiku-20241022"),
                     model: "claude-3-5-haiku-20241022",
                     usage,
@@ -343,6 +340,8 @@ Return JSON only:`;
                 source: "assistant_edit",
                 version_number: nextVersionNumber,
                 display_name: inheritedDisplayName,
+                size_bytes: editedBytes.byteLength,
+                content_sha256: contentSha256(editedBytes),
             })
             .select("id")
             .single();

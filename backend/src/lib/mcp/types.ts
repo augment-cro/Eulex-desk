@@ -28,6 +28,10 @@ export type LoadedMcpServer = {
     tools: OpenAIToolSchema[];
     /** prefixed tool name → original MCP tool name */
     toolNameMap: Map<string, string>;
+    /** The server's initialize-time `instructions` (its own tool-usage
+     *  guidance), when it ships any — surfaced into the system prompt by
+     *  buildMcpPromptAddenda. */
+    instructions?: string;
     client: {
         callTool: (
             toolName: string,

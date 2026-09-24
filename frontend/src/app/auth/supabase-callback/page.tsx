@@ -30,10 +30,21 @@ function SupabaseCallbackHandler() {
         if (exchanged.current) return;
         exchanged.current = true;
 
+        // Raw Supabase/OAuth error strings are English — map known error
+        // codes to localized copy and never render the raw message
+        // (it still goes to the console for diagnostics).
         const oauthError = searchParams.get("error");
         const errorDesc = searchParams.get("error_description");
+        const errorCode = searchParams.get("error_code");
         if (oauthError) {
-            setError(errorDesc || oauthError);
+            console.error("[auth/supabase-callback]", oauthError, errorCode, errorDesc);
+            setError(
+                errorCode === "otp_expired"
+                    ? t("callbackLinkExpired")
+                    : oauthError === "access_denied"
+                      ? t("callbackAccessDenied")
+                      : t("callbackGenericError"),
+            );
             return;
         }
 
@@ -45,9 +56,14 @@ function SupabaseCallbackHandler() {
             setPendingNext(consumePostLoginRedirect() ?? "/assistant");
             setTokensReady(true);
         };
-        const fail = (msg?: string, err?: unknown) => {
+        const fail = (err?: unknown) => {
             if (err) console.error("[auth/supabase-callback]", err);
-            setError(msg || "Authentication failed.");
+            const code = (err as { code?: string } | null | undefined)?.code;
+            setError(
+                code === "otp_expired"
+                    ? t("callbackLinkExpired")
+                    : t("callbackGenericError"),
+            );
         };
 
         // Passwordless magic link / e-mail confirmation arrive as a stateless
@@ -63,27 +79,27 @@ function SupabaseCallbackHandler() {
                 .auth.verifyOtp({ token_hash: tokenHash, type: type ?? "email" })
                 .then(({ data, error: sbError }) => {
                     if (sbError || !data.session) {
-                        fail(sbError?.message);
+                        fail(sbError);
                         return;
                     }
                     onSession(data.session);
                 })
-                .catch((err: Error) => fail(err.message, err));
+                .catch((err: Error) => fail(err));
         } else if (code) {
             getSupabase()
                 .auth.exchangeCodeForSession(code)
                 .then(({ data, error: sbError }) => {
                     if (sbError || !data.session) {
-                        fail(sbError?.message);
+                        fail(sbError);
                         return;
                     }
                     onSession(data.session);
                 })
-                .catch((err: Error) => fail(err.message, err));
+                .catch((err: Error) => fail(err));
         } else {
-            setError("Missing authorization code.");
+            setError(t("callbackMissingCode"));
         }
-    }, [searchParams]);
+    }, [searchParams, t]);
 
     useEffect(() => {
         if (tokensReady && isAuthenticated && pendingNext) {

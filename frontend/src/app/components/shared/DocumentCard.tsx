@@ -1,6 +1,7 @@
 "use client";
 
 import { FileText, File, X, AlertCircle, Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { MikeDocument } from "./types";
 
 interface Props {
@@ -27,6 +28,7 @@ function formatBytes(bytes: number): string {
 }
 
 export function DocumentCard({ document, onRemove, onClick, selected }: Props) {
+  const t = useTranslations("documents");
   const isError = document.status === "error";
   const isProcessing = document.status === "pending" || document.status === "processing";
 
@@ -57,9 +59,9 @@ export function DocumentCard({ document, onRemove, onClick, selected }: Props) {
         </p>
         <p className="text-xs text-muted-foreground/70">
           {isProcessing
-            ? "Processing…"
+            ? t("processing")
             : isError
-            ? "Upload failed"
+            ? t("uploadFailed")
             : [
                 document.size_bytes != null ? formatBytes(document.size_bytes) : null,
                 document.page_count ? `${document.page_count}p` : null,
@@ -76,7 +78,7 @@ export function DocumentCard({ document, onRemove, onClick, selected }: Props) {
             onRemove(document.id);
           }}
           className="shrink-0 rounded p-0.5 text-muted-foreground/70 hover:bg-accent hover:text-muted-foreground"
-          aria-label="Remove document"
+          aria-label={t("removeDocument")}
         >
           <X className="h-3.5 w-3.5" />
         </button>

@@ -111,11 +111,62 @@ export function _resetTierLimitsStoreForTesting(): void {
 // Flag
 // ---------------------------------------------------------------------------
 
+/** The raw flag value, normalized to a boolean (env only — no Supabase check). */
+function tiersFlagRequested(): boolean {
+    const raw = (process.env.TIERS_FROM_SUPABASE ?? "").trim().toLowerCase();
+    return raw !== "" && raw !== "0" && raw !== "false" && raw !== "off";
+}
+
 /** True when tier definitions are served from Supabase. */
 export function tiersFromSupabase(): boolean {
-    const raw = (process.env.TIERS_FROM_SUPABASE ?? "").trim().toLowerCase();
-    const on = raw !== "" && raw !== "0" && raw !== "false" && raw !== "off";
-    return on && deps.isSupabaseConfigured();
+    return tiersFlagRequested() && deps.isSupabaseConfigured();
+}
+
+/**
+ * Boot-time divergence guard (issue #69). TIERS_FROM_SUPABASE silently
+ * switches the tier-limits source of truth, and `tiersFromSupabase()`
+ * additionally requires Supabase admin env — so a set flag with missing
+ * SUPABASE_URL / SUPABASE_SECRET_KEY would be SILENTLY ignored and the
+ * instance would diverge from its siblings. At startup we therefore:
+ *
+ *   - log the flag's raw value and the EFFECTIVE tier-definition source
+ *     prominently, so prod/staging divergence is visible in boot logs;
+ *   - throw (fail fast, before the listener starts) when the flag is set
+ *     but Supabase admin is not configured — that combination is always
+ *     a deployment mistake, never a valid steady state.
+ *
+ * The inverse combination (flag unset while Supabase admin IS configured)
+ * is valid — Supabase env also serves auth — so it only gets a log line,
+ * not a failure.
+ */
+export function assertTierSourceConfigAtBoot(): void {
+    const raw = (process.env.TIERS_FROM_SUPABASE ?? "").trim();
+    const rawLabel = raw === "" ? "(unset)" : JSON.stringify(raw);
+    const requested = tiersFlagRequested();
+    const supabaseConfigured = deps.isSupabaseConfigured();
+
+    if (requested && !supabaseConfigured) {
+        throw new Error(
+            `[boot] TIERS_FROM_SUPABASE=${rawLabel} requests Supabase as the ` +
+                "tier-definition source, but Supabase admin is NOT configured " +
+                "(SUPABASE_URL / SUPABASE_SECRET_KEY missing or empty). The flag " +
+                "would be silently ignored and this instance would read tier " +
+                "limits from the mike DB, diverging from the intended config. " +
+                "Fix the environment: set the Supabase admin vars, or unset " +
+                "TIERS_FROM_SUPABASE.",
+        );
+    }
+
+    const source = tiersFromSupabase()
+        ? "Supabase `tier_limits` (service-role PostgREST)"
+        : "mike DB `public.tier_limits`";
+    const note =
+        !requested && supabaseConfigured
+            ? " — note: Supabase admin IS configured, but the flag is off, so the mike DB stays authoritative for tiers"
+            : "";
+    console.log(
+        `[boot] TIERS_FROM_SUPABASE=${rawLabel} → tier-definition source: ${source}${note}`,
+    );
 }
 
 // ---------------------------------------------------------------------------

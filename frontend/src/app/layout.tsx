@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { EB_Garamond } from "next/font/google";
 import { NextIntlClientProvider } from "next-intl";
-import { getLocale, getMessages } from "next-intl/server";
+import { getLocale, getMessages, getTranslations } from "next-intl/server";
 import "./globals.css";
 import "flag-icons/css/flag-icons.min.css";
 import { Providers } from "@/components/providers";
@@ -15,19 +15,21 @@ const ebGaramond = EB_Garamond({
     weight: ["400", "500", "600", "700"],
 });
 
-export const metadata: Metadata = {
-    title: "AI Platform",
-    description:
-        "AI-powered legal document analysis and contract review platform.",
-    robots: { index: false, follow: true },
-    icons: {
-        icon: [
-            { url: "/icon.svg", type: "image/svg+xml" },
-            { url: "/favicon.ico" },
-        ],
-        apple: "/apple-touch-icon.png",
-    },
-};
+export async function generateMetadata(): Promise<Metadata> {
+    const t = await getTranslations("metadata");
+    return {
+        title: t("title"),
+        description: t("description"),
+        robots: { index: false, follow: true },
+        icons: {
+            icon: [
+                { url: "/icon.svg", type: "image/svg+xml" },
+                { url: "/favicon.ico" },
+            ],
+            apple: "/apple-touch-icon.png",
+        },
+    };
+}
 
 export default async function RootLayout({
     children,

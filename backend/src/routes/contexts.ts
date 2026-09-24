@@ -3,6 +3,7 @@ import { requireAuth } from "../middleware/auth";
 import { query } from "../lib/db";
 import { contextsClient } from "../lib/seams/contextsClient";
 import { safeErrorMessage } from "../lib/safeError";
+import { checkProjectAccess } from "../lib/access";
 
 /**
  * Generic contexts runtime routes — the core-owned state for the optional
@@ -107,6 +108,37 @@ export const pgContextsRuntimeStore: ContextsRuntimeStore = {
 /** The provider client surface these routes need (injectable for tests). */
 export type ProviderClient = Pick<typeof contextsClient, "isConfigured" | "list">;
 
+/**
+ * Authorization of the ATTACH target (project/workflow), injectable for
+ * tests. A context attach applies its instructions + scope filter to the
+ * target's runs, so the caller must have rights to the target — not just
+ * visibility of the context (issue #125).
+ */
+export interface TargetAccessChecker {
+    canAccessProject(userId: string, userEmail: string | undefined, projectId: string): Promise<boolean>;
+    canEditWorkflow(userId: string, userEmail: string | undefined, workflowId: string): Promise<boolean>;
+}
+
+export const pgTargetAccessChecker: TargetAccessChecker = {
+    async canAccessProject(userId, userEmail, projectId) {
+        const access = await checkProjectAccess(projectId, userId, userEmail);
+        return access.ok;
+    },
+    async canEditWorkflow(userId, userEmail, workflowId) {
+        const { rows } = await query<{ id: string }>(
+            `SELECT w.id FROM public.workflows w
+              WHERE w.id = $1 AND w.is_system = false
+                AND ( w.user_id = $2
+                   OR EXISTS ( SELECT 1 FROM public.workflow_shares s
+                                WHERE s.workflow_id = w.id
+                                  AND lower(s.shared_with_email) = lower($3)
+                                  AND s.allow_edit = true ) )`,
+            [workflowId, userId, userEmail ?? ""],
+        );
+        return rows.length > 0;
+    },
+};
+
 function handleError(res: Response, err: unknown): void {
     res.status(500).json({ detail: safeErrorMessage(err) });
 }
@@ -130,6 +162,7 @@ export function makeContextsRouter(
     store: ContextsRuntimeStore = pgContextsRuntimeStore,
     auth: RequestHandler = requireAuth,
     client: ProviderClient = contextsClient,
+    targetAccess: TargetAccessChecker = pgTargetAccessChecker,
 ): Router {
     const r = Router();
 
@@ -207,23 +240,44 @@ export function makeContextsRouter(
         return false;
     }
 
+    const ownsProject = (res: Response, projectId: string) =>
+        targetAccess.canAccessProject(
+            res.locals.userId as string,
+            res.locals.userEmail as string | undefined,
+            projectId,
+        );
+    const ownsWorkflow = (res: Response, workflowId: string) =>
+        targetAccess.canEditWorkflow(
+            res.locals.userId as string,
+            res.locals.userEmail as string | undefined,
+            workflowId,
+        );
+
     r.post("/:id/workflows/:workflowId", auth, wrapAsync(async (req, res) => {
         if (!(await requireVisible(req, res))) return;
+        if (!(await ownsWorkflow(res, req.params.workflowId)))
+            return void res.status(404).json({ detail: "Workflow not found" });
         await store.linkWorkflow(req.params.id, req.params.workflowId);
         res.status(201).json({ ok: true });
     }));
     r.delete("/:id/workflows/:workflowId", auth, wrapAsync(async (req, res) => {
         if (!(await requireVisible(req, res))) return;
+        if (!(await ownsWorkflow(res, req.params.workflowId)))
+            return void res.status(404).json({ detail: "Workflow not found" });
         await store.unlinkWorkflow(req.params.id, req.params.workflowId);
         res.status(204).send();
     }));
     r.post("/:id/projects/:projectId", auth, wrapAsync(async (req, res) => {
         if (!(await requireVisible(req, res))) return;
+        if (!(await ownsProject(res, req.params.projectId)))
+            return void res.status(404).json({ detail: "Project not found" });
         await store.linkProject(req.params.id, req.params.projectId);
         res.status(201).json({ ok: true });
     }));
     r.delete("/:id/projects/:projectId", auth, wrapAsync(async (req, res) => {
         if (!(await requireVisible(req, res))) return;
+        if (!(await ownsProject(res, req.params.projectId)))
+            return void res.status(404).json({ detail: "Project not found" });
         await store.unlinkProject(req.params.id, req.params.projectId);
         res.status(204).send();
     }));

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import {
     AdminUnauthorizedError,
     clearAdminToken,
@@ -193,6 +194,7 @@ function paginationRange(current: number, total: number): (number | "…")[] {
 // ── component ────────────────────────────────────────────────────────────
 
 export default function AdminMaxDashboardPage() {
+    const tBugfix = useTranslations("adminmaxBugfix");
     const router = useRouter();
     const searchParams = useSearchParams();
 
@@ -429,15 +431,45 @@ export default function AdminMaxDashboardPage() {
                     </button>
                     <Link
                         href="/adminmax/analytics"
-                        className="rounded-md border border-action/40 px-3 py-1.5 text-sm font-medium text-action hover:bg-action/10"
+                        className="rounded-md border border-foreground/60 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
                     >
                         Analitika
                     </Link>
                     <Link
+                        href="/adminmax/chats"
+                        className="rounded-md border border-foreground/60 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
+                    >
+                        Razgovori
+                    </Link>
+                    <Link
+                        href="/adminmax/audit"
+                        className="rounded-md border border-foreground/60 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
+                    >
+                        Audit
+                    </Link>
+                    <Link
                         href="/adminmax/tiers"
-                        className="rounded-md border border-action/40 px-3 py-1.5 text-sm font-medium text-action hover:bg-action/10"
+                        className="rounded-md border border-foreground/60 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
                     >
                         Tier limiti
+                    </Link>
+                    <Link
+                        href="/adminmax/promos"
+                        className="rounded-md border border-foreground/60 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
+                    >
+                        Promo kodovi
+                    </Link>
+                    <Link
+                        href="/adminmax/databases"
+                        className="rounded-md border border-foreground/60 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
+                    >
+                        Baze
+                    </Link>
+                    <Link
+                        href="/adminmax/bugfix"
+                        className="rounded-md border border-foreground/60 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
+                    >
+                        {tBugfix("navLink")}
                     </Link>
                     <button
                         onClick={logout}
@@ -455,7 +487,7 @@ export default function AdminMaxDashboardPage() {
             )}
 
             {/* ── totals cards ───────────────────────────────────── */}
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
                 <SummaryCard
                     label="Ukupno korisnika"
                     value={fmtInt(totals?.total_users ?? 0)}
@@ -480,6 +512,26 @@ export default function AdminMaxDashboardPage() {
                                       page: 1,
                                   }))
                             : undefined
+                    }
+                />
+                {/* Glavni broj je broj *pretplata* u Stripeu (status active),
+                    a ne broj platiša — jedan customer može držati više
+                    aktivnih pretplata (npr. upgrade koji ne otkaže staru),
+                    pa se broj korisnika nosi u podnaslovu. MRR je zbroj svih
+                    tih pretplata, dakle uključuje i eventualne duplikate. */}
+                <SummaryCard
+                    label="Aktivne pretplate"
+                    value={
+                        totals?.paid_subs_count == null
+                            ? "—"
+                            : fmtInt(totals.paid_subs_count)
+                    }
+                    subValue={
+                        totals?.paid_users_count == null
+                            ? "aktivne Stripe pretplate"
+                            : totals.paid_mrr_cents != null
+                              ? `${fmtInt(totals.paid_users_count)} korisnika · MRR €${fmtInt(Math.round(totals.paid_mrr_cents / 100))}`
+                              : `${fmtInt(totals.paid_users_count)} korisnika`
                     }
                 />
                 <SummaryCard

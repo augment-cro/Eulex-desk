@@ -19,12 +19,17 @@ import {
 } from "lucide-react";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { setMessageFlag } from "@/app/lib/mikeApi";
+import { API_BASE } from "@/app/lib/apiBase";
 import { mcpToolLabelKey } from "@/app/lib/mcpToolLabels";
 import { displayCitationQuote, formatCitationPage } from "../shared/types";
 import {
+    articleBaseOf,
     articleNumberOf,
     citedArticleNumbersFor,
+    hasArticleSuffix,
+    normalizeArticleNumber,
     parsePinpoint,
+    upgradeSourceArticleSuffix,
 } from "../shared/legalSourceUtils";
 import type {
     AssistantEvent,
@@ -111,8 +116,7 @@ function BulkEditActions({
                 data: { session },
             } = await supabase.auth.getSession();
             const token = session?.access_token;
-            const apiBase =
-                process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
+            const apiBase = API_BASE;
 
             // Sequential so the per-document version counter advances in a
             // predictable order and the viewer doesn't race between bumps.
@@ -177,8 +181,8 @@ function BulkEditActions({
                         versionId: annotation.version_id ?? null,
                         message:
                             verb === "accept"
-                                ? "Couldn't save one or more accepts."
-                                : "Couldn't save one or more rejects.",
+                                ? t("bulkAcceptError")
+                                : t("bulkRejectError"),
                     });
                 }
                 done++;
@@ -926,8 +930,6 @@ function DocDownloadBlock({
     // Only backend-relative URLs are accepted. The download fetch carries
     // the user's bearer token, so any absolute URL from tool output is
     // refused to keep the token from leaking off-origin.
-    const API_BASE =
-        process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://localhost:3001";
     const isSafeHref = download_url.startsWith("/");
     const href = isSafeHref ? `${API_BASE}${download_url}` : null;
     const [busy, setBusy] = useState(false);
@@ -1147,6 +1149,34 @@ function preprocessCitations(
             const idx = citationsList.length;
             // Legal source → underline the reference text (WP-style), no pill.
             if (ann.type === "legal_source_data") {
+                // Issue #43 — the MCP sometimes drops a suffixed article's
+                // letter (label "17" for 17.a). When the prose around THIS
+                // marker names the suffixed form of the same base number,
+                // upgrade the source so the underline label, the tab title
+                // and the panel scroll all carry the suffix.
+                let source = ann.source;
+                {
+                    const own = articleNumberOf(source.articleLabel);
+                    if (own && !hasArticleSuffix(own)) {
+                        const ctx =
+                            before.slice(-140) +
+                            " " +
+                            text.slice(
+                                (offset as number) + full.length,
+                                (offset as number) + full.length + 140,
+                            );
+                        for (const m of ctx.matchAll(ARTICLE_REF_RE)) {
+                            const n = normalizeArticleNumber(m[1]);
+                            if (hasArticleSuffix(n) && articleBaseOf(n) === own) {
+                                source = upgradeSourceArticleSuffix(
+                                    source,
+                                    m[1],
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
                 // Stavak/točka pinpoint for THIS occurrence. The prose right
                 // after the marker usually carries it ("[1] stavak 2. točka
                 // a)" renders as "članak 38. stavak 2. točka a)"); fall back
@@ -1161,19 +1191,29 @@ function preprocessCitations(
                 );
                 if (!pinpoint) {
                     const tail = before.slice(-140);
-                    const ownNum = articleNumberOf(ann.source.articleLabel);
+                    const ownNum = articleNumberOf(source.articleLabel);
                     let last: RegExpExecArray | null = null;
                     for (const m of tail.matchAll(ARTICLE_REF_RE)) last = m;
-                    if (last && ownNum && last[1]?.toLowerCase() === ownNum) {
+                    if (
+                        last &&
+                        ownNum &&
+                        // normalize, not toLowerCase — prose writes "17.a",
+                        // the normalized own number is "17a".
+                        normalizeArticleNumber(last[1] ?? "") === ownNum
+                    ) {
                         pinpoint = parsePinpoint(
                             tail.slice(last.index + last[0].length),
                         );
                     }
                 }
-                citationsList.push(pinpoint ? { ...ann, pinpoint } : ann);
+                citationsList.push({
+                    ...ann,
+                    source,
+                    ...(pinpoint ? { pinpoint } : {}),
+                });
                 const raw = (
-                    ann.source.articleLabel ||
-                    ann.source.title ||
+                    source.articleLabel ||
+                    source.title ||
                     "izvor"
                 )
                     .trim()
@@ -1213,9 +1253,20 @@ function preprocessCitations(
 }
 
 // Article-reference auto-linking. Matches "Članak 5", "čl. 153", "članka 17",
-// "Article 6", "Art. 5" (HR + EN), Unicode-boundary aware.
+// "čl. 17.a" (suffixed articles), "Article 6", "Art. 5" (HR + EN),
+// Unicode-boundary aware. The suffix letter must be adjacent to the digits or
+// the dot (NO whitespace) — free prose like "članak 17. i 18." must never
+// capture "17i".
+// Stem-based so ALL Croatian declensions link: člank\w* (članka, članku,
+// člankom, članke), članc\w* (članci, člancima), članak\w* (članak,
+// članaka). Enumerating forms missed the instrumental — "uređeno je člankom
+// 153." rendered unlinked. Safe to be loose here: autoLinkLegalRefs only
+// links numbers that map to exactly one harvested source.
+// Cross-language coverage: HR stems + EN article/art. + FR article (same
+// stem) + IT articol\w* (articolo/articoli) + DE artikel\w* + German-style
+// section signs § / §§ ("§ 153", "§§ 12-14").
 const ARTICLE_REF_RE =
-    /(?<![\p{L}\p{N}])(?:članci|članak|članka|članku|čl\.?|articles?|art\.?)\s*(\d+[a-z]?)/giu;
+    /(?<![\p{L}\p{N}])(?:članc\w*|člank\w*|članak\w*|articol\w*|artikel\w*|articles?|art\.?|čl\.?|§{1,2})\s*(\d+(?:\.?[a-z](?![a-z]))?)/giu;
 
 /**
  * Second citation pass: turn bare article references in the prose into
@@ -1234,8 +1285,12 @@ function autoLinkLegalRefs(
     // article number → source; null marks an ambiguous number (skip those).
     const byNumber = new Map<string, LegalSource | null>();
     for (const s of legalSources) {
-        const num = s.articleLabel?.match(/\d+[a-z]?/i)?.[0]?.toLowerCase();
-        if (!num) continue;
+        // Labels are clean strings ("Članak 17.a", "Članak 17. a") — an
+        // optional space before the suffix letter is safe here, unlike in
+        // free prose (ARTICLE_REF_RE).
+        const raw = s.articleLabel?.match(/\d+(?:\.?\s?[a-z](?![a-z]))?/i)?.[0];
+        if (!raw) continue;
+        const num = normalizeArticleNumber(raw);
         byNumber.set(num, byNumber.has(num) ? null : s);
     }
     if (byNumber.size === 0) return text;
@@ -1243,7 +1298,28 @@ function autoLinkLegalRefs(
     return text.replace(
         ARTICLE_REF_RE,
         (full: string, num: string, offset: number) => {
-            const src = byNumber.get(num.toLowerCase());
+            const norm = normalizeArticleNumber(num);
+            let src = byNumber.get(norm);
+            // Issue #43 — suffixed prose ref ("čl. 17.a") with no exact
+            // source: the MCP sometimes returns the BASE number ("17") for a
+            // suffixed article. Fall back to the base-number source when it
+            // is unambiguous AND no sibling source claims another suffixed
+            // variant of the same base (17.b would make "17" a real
+            // ambiguity), and upgrade its labels so the suffix survives into
+            // the tab/header/scroll.
+            if (src === undefined && hasArticleSuffix(norm)) {
+                const base = articleBaseOf(norm);
+                const candidate = byNumber.get(base);
+                const siblingSuffixed = [...byNumber.keys()].some(
+                    (k) =>
+                        k !== norm &&
+                        hasArticleSuffix(k) &&
+                        articleBaseOf(k) === base,
+                );
+                if (candidate && !siblingSuffixed) {
+                    src = upgradeSourceArticleSuffix(candidate, num);
+                }
+            }
             if (!src) return full; // unknown or ambiguous number
             // Skip if a citation pill token already follows (model cited it).
             const after = text.slice(
@@ -1270,6 +1346,88 @@ function autoLinkLegalRefs(
             return `[${full}](#legal-cite-${idx})`;
         },
     );
+}
+
+// Croatian court-decision references in prose: an optional court-register
+// abbreviation (longest-first so "Revr" wins over "Rev"), an optional
+// space/dash separator, then "number/year" with an optional "-N" suffix
+// ("Revr 123/2019", "Gž-456/2020", "Rev 2551/2018-2") — plus full ECLI tokens
+// ("ECLI:HR:VSRH:2019:1234"). Case-SENSITIVE on purpose: with /i the
+// preposition "u" ("u 12/19") would match the "U" register. Unicode-boundary
+// aware like ARTICLE_REF_RE. No capture groups (the replace callback relies
+// on (match, offset) positions).
+const CASE_REF_RE =
+    /(?<![\p{L}\p{N}])(?:ECLI:HR:[A-Z0-9]+:\d{4}:[A-Z0-9.]+|(?:Povrv|Revr|Revd|Rev|UsII|UsI|Us|Gž|Kž|Pž|Ovr|Sti|St|Tt|Pl|Su|Pp|Gr|Pn|Ps|Jt|R1|R2|K|P|O|U)[\s-]?\d+\/\d{2,4}(?:-\d+)?)(?![\p{L}\p{N}])/gu;
+
+/** Comparison key for a case number / ECLI: strip spaces, dashes and dots,
+ *  lowercase — so "Revr 123/2019", "Revr-123/2019" and "revr 123/2019" meet. */
+function normalizeCaseRef(ref: string): string {
+    return ref.replace(/[\s\-.]/g, "").toLowerCase();
+}
+
+/**
+ * Caselaw sibling of `autoLinkLegalRefs`: turn bare Croatian case-number /
+ * ECLI references in the prose into the same clickable underlined references,
+ * mapped to harvested court-decision sources. Conservative on purpose — a
+ * reference is linked ONLY when it resolves to exactly one harvested caselaw
+ * source (case-number-looking text with no matching source is never linked),
+ * and never inside an existing legal-cite link (whose label often embeds the
+ * case number itself).
+ */
+function autoLinkCaseLawRefs(
+    text: string,
+    legalSources: LegalSource[],
+    citationsList: MikeAnnotation[],
+): string {
+    // normalized case number / ECLI → source; null marks a collision (skip).
+    // Registry numbers carry a trailing SUBNUMBER ("Revr-1511/2016-2") that
+    // prose usually omits ("Revr-1511/2016"), so each source is indexed under
+    // BOTH the full form and the base with the trailing "-N" (after the /year
+    // part only) stripped. A Set per source keeps a source from colliding
+    // with itself when the two forms coincide.
+    const byCaseNumber = new Map<string, LegalSource | null>();
+    for (const s of legalSources) {
+        if (s.kind !== "caselaw") continue;
+        const keys = new Set<string>();
+        for (const raw of [s.caseNumber, s.ecli]) {
+            if (!raw) continue;
+            keys.add(normalizeCaseRef(raw));
+            const base = raw.replace(/(\/\d{2,4})-\d+\s*$/, "$1");
+            if (base !== raw) keys.add(normalizeCaseRef(base));
+        }
+        for (const k of keys) {
+            byCaseNumber.set(k, byCaseNumber.has(k) ? null : s);
+        }
+    }
+    if (byCaseNumber.size === 0) return text;
+
+    // Ranges already wrapped as [label](#legal-cite-N) by the earlier passes
+    // — rewriting inside them would nest links and break the markdown.
+    const protectedRanges: Array<[number, number]> = [];
+    for (const m of text.matchAll(/\[[^\]\n]*\]\(#legal-cite-\d+\)/g)) {
+        const start = m.index ?? 0;
+        protectedRanges.push([start, start + m[0].length]);
+    }
+
+    return text.replace(CASE_REF_RE, (full: string, offset: number) => {
+        if (protectedRanges.some(([a, b]) => offset >= a && offset < b)) {
+            return full;
+        }
+        const src = byCaseNumber.get(normalizeCaseRef(full));
+        if (!src) return full; // unknown or ambiguous reference — never guess
+        // Skip if a citation pill token already follows (model cited it).
+        const after = text.slice(offset + full.length, offset + full.length + 6);
+        if (after.includes("§")) return full;
+        const idx = citationsList.length;
+        // No pinpoint / cited-article numbers — decisions have no articles.
+        citationsList.push({
+            type: "legal_source_data",
+            ref: 0,
+            source: src,
+            quote: "",
+        });
+        return `[${full}](#legal-cite-${idx})`;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,6 +1470,7 @@ function PiiRenderedMarkdown({
     piiSessionId?: string | null;
 }) {
     const hasPlaceholder = containsPiiPlaceholder(text);
+    const tPiiBadge = useTranslations("assistant.piiBadge");
     const {
         text: renderedText,
         loading,
@@ -1326,10 +1485,10 @@ function PiiRenderedMarkdown({
                     className="mb-1 inline-flex items-center gap-1.5 text-[10px] font-sans uppercase tracking-wider text-muted-foreground/70"
                     title={
                         rendered
-                            ? "PII shield: original values restored on your device only."
+                            ? tPiiBadge("restoredTooltip")
                             : loading
-                              ? "PII shield: restoring original values…"
-                              : "PII shield: placeholders shown (de-anon failed)."
+                              ? tPiiBadge("restoringTooltip")
+                              : tPiiBadge("failedTooltip")
                     }
                 >
                     {loading ? (
@@ -1341,10 +1500,10 @@ function PiiRenderedMarkdown({
                     )}
                     <span>
                         {loading
-                            ? "Decrypting PII…"
+                            ? tPiiBadge("decrypting")
                             : rendered
-                              ? "PII restored locally"
-                              : "PII placeholders"}
+                              ? tPiiBadge("restored")
+                              : tPiiBadge("placeholders")}
                     </span>
                 </div>
             )}
@@ -1736,6 +1895,16 @@ interface Props {
      * PII Shield is "off" for the chat or when render fails.
      */
     piiSessionId?: string | null;
+    /**
+     * Legal sources harvested from EARLIER assistant turns in this
+     * conversation. Follow-up answers often reuse the already-fetched
+     * sources without calling the legal tools again, so this turn carries
+     * no `legal_sources` events of its own — without this fallback the
+     * article references in those answers render as plain text (issue
+     * #149). Used only for auto-linking; the "Izvori" list below the
+     * answer stays scoped to this turn's own sources.
+     */
+    conversationLegalSources?: LegalSource[];
 }
 
 export function AssistantMessage({
@@ -1765,12 +1934,14 @@ export function AssistantMessage({
     flagged = false,
     onFlagChange,
     piiSessionId,
+    conversationLegalSources,
 }: Props) {
     const messageKey = useId();
     const t = useTranslations("streaming");
     const tShare = useTranslations("shareChat");
     const tCommon = useTranslations("common");
     const tActions = useTranslations("messageActions");
+    const tErrors = useTranslations("assistant.errors");
     const contentDivRef = useRef<HTMLDivElement | null>(null);
     const [isCopied, setIsCopied] = useState(false);
     const [isFlagged, setIsFlagged] = useState<boolean>(flagged);
@@ -1836,25 +2007,45 @@ export function AssistantMessage({
         return [...byId.values()];
     })();
 
+    // Auto-linking additionally falls back to sources from earlier turns —
+    // a follow-up answered from conversation context has no legal_sources
+    // events of its own, but its article references still point at the
+    // sources consulted earlier (issue #149). This turn's own sources win
+    // on id collisions.
+    const legalSourcesForLinking: LegalSource[] = (() => {
+        if (!conversationLegalSources?.length) return legalSourcesForList;
+        const byId = new Map<string, LegalSource>();
+        for (const s of legalSourcesForList) byId.set(s.id, s);
+        for (const s of conversationLegalSources) {
+            if (!byId.has(s.id)) byId.set(s.id, s);
+        }
+        return [...byId.values()];
+    })();
+
     // Pre-process citations for all content events. Each [N] marker resolves
     // to exactly one annotation (models are instructed to use shared refs
     // only for cross-page continuations via the [[PAGE_BREAK]] sentinel).
     // A second pass auto-links bare article references ("Članak 5. GDPR-a",
     // "Article 6") to harvested legal sources even when the model omitted the
-    // [N] marker — so the pill is reliable, not model-dependent.
+    // [N] marker — so the pill is reliable, not model-dependent. A third pass
+    // does the same for Croatian case-law references ("Revr 123/2019", ECLI).
     const citationsList: MikeAnnotation[] = [];
     const processedTexts: string[] = [];
     if (events) {
         for (const event of events) {
             processedTexts.push(
                 event.type === "content"
-                    ? autoLinkLegalRefs(
-                          preprocessCitations(
-                              event.text,
-                              annotations,
+                    ? autoLinkCaseLawRefs(
+                          autoLinkLegalRefs(
+                              preprocessCitations(
+                                  event.text,
+                                  annotations,
+                                  citationsList,
+                              ),
+                              legalSourcesForLinking,
                               citationsList,
                           ),
-                          legalSourcesForList,
+                          legalSourcesForLinking,
                           citationsList,
                       )
                     : "",
@@ -2482,7 +2673,7 @@ export function AssistantMessage({
     };
 
     return (
-        <div style={{ minHeight }}>
+        <div style={{ minHeight }} data-testid="chat-message" data-role="assistant">
             <ResponseStatus status={status} />
             <div className="w-full font-sans relative mt-2">
                 {events && events.length > 0 ? (
@@ -2663,7 +2854,7 @@ export function AssistantMessage({
                 {isError && (
                     <div className="mt-2 flex items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm font-serif text-destructive">
                         <span className="leading-snug">
-                            {errorMessage ?? "Sorry, something went wrong."}
+                            {errorMessage ?? tErrors("generic")}
                         </span>
                     </div>
                 )}
