@@ -16,6 +16,7 @@ import {
     runLLMStream,
     PiiShieldUnavailableError,
     type ChatMessage,
+    type LegalSource,
 } from "../lib/chatTools";
 import {
     completeText,
@@ -23,6 +24,13 @@ import {
     LlmStreamStallError,
 } from "../lib/llm";
 import { recordLlmUsage } from "../lib/llmUsage";
+import {
+    LEGAL_REFS_MODEL,
+    describeLegalRefs,
+    legalSourcesFromPersistedContent,
+    resolveLegalRefs,
+} from "../lib/legalRefs";
+import { buildScopeSet } from "../lib/seams/scopeEnforcement";
 import { emptyUsage, getErrorUsage, type UsageContext } from "../lib/llm/usage";
 import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
 import { buildUsageEvent } from "../lib/usageEvent";
@@ -41,7 +49,16 @@ import {
     safeRefusal,
     writeSseRefusal,
 } from "../lib/promptSecurity";
-import { loadContextsForTurn } from "../lib/seams/contextsRuntime";
+import {
+    contextsUnavailableNote,
+    loadContextsForTurn,
+    scopeAllowlistsForTurn,
+    type UnavailableContextItem,
+} from "../lib/seams/contextsRuntime";
+import { tierGrants } from "../lib/entitlements";
+import { addContextDocuments } from "../lib/seams/contextDocuments";
+import { registerContextTasks } from "../lib/seams/contextTasks";
+import { registerTurn, requestTurnStop } from "../lib/turnStop";
 import { governanceClient } from "../lib/seams/governanceClient";
 
 export const chatRouter = Router();
@@ -729,6 +746,25 @@ export function parseEnrichedVariants(
     }
 }
 
+// POST /chat/:chatId/stop — explicit Stop for the caller's live turn on this
+// chat (tracker #96). Works for assistant, project and tabular-review chats:
+// every streaming route registers its turn under the chat id. Only the user
+// who started the turn can stop it; an unknown or finished turn is a no-op.
+chatRouter.post("/:chatId/stop", requireAuth, async (req, res) => {
+    const userId = res.locals.userId as string;
+    const { chatId } = req.params;
+    if (!/^[0-9a-f-]{36}$/i.test(chatId)) {
+        return void res.status(400).json({ detail: "Invalid chat id" });
+    }
+    try {
+        const status = await requestTurnStop(chatId, userId);
+        res.json({ ok: true, status });
+    } catch (err) {
+        console.error("[chat/stop] failed", err);
+        res.status(500).json({ detail: "Failed to stop" });
+    }
+});
+
 // POST /chat/:chatId/generate-title
 chatRouter.post("/:chatId/generate-title", requireAuth, enforceRateLimit(), async (req, res) => {
     const userId = res.locals.userId as string;
@@ -850,6 +886,8 @@ chatRouter.post("/:chatId/generate-title", requireAuth, enforceRateLimit(), asyn
                         LANG_NAME: langName,
                     }) + `\n\n${titleGuard.safeText}`,
                 maxTokens: 64,
+                // Titles: thinking stays on, at the lowest effort.
+                effort: "low",
                 apiKeys: api_keys,
             });
             title = titleText.trim() || message.slice(0, 60);
@@ -950,10 +988,14 @@ chatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) => {
             .json({ detail: "messages array is required" });
     }
 
-    const reasoningEffort: "low" | "medium" | "high" | undefined =
+    // "high" when the client sends none (the Word add-in never does). Main
+    // chat runs Opus 5.5 at high: a blind 10-question test on 2026-09-24
+    // preferred high over medium 6:1 (+19 % cost). An explicit effort from
+    // the client (evals pin one) is still honoured.
+    const reasoningEffort: "low" | "medium" | "high" =
         effort === "low" || effort === "medium" || effort === "high"
             ? effort
-            : undefined;
+            : "high";
 
     console.log("[chat/stream] incoming request", {
         userId,
@@ -1198,16 +1240,46 @@ chatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) => {
         }
     }
 
+    // Contexts active for this turn: globally-toggled ∪ contexts attached
+    // to the applied workflow, resolved by the configured context provider.
+    // The provider re-checks access per requester, so a private context
+    // attached to a shared workflow never leaks; built-in (non-UUID)
+    // workflow ids skip the link lookup; each part fails soft on its own —
+    // see loadContextsForTurn. Never breaks chat, and does nothing at all
+    // when no provider is configured. What fails to load (a context, a
+    // context document) is collected, told to the model and shown under
+    // the answer.
+    const contextsUnavailable: UnavailableContextItem[] = [];
+    const activeContexts = await loadContextsForTurn({
+        userId,
+        email: userEmail ?? null,
+        query: lastUserContent,
+        systemContexts: await tierGrants(res.locals.tierLevelId, "systemContexts"),
+        workflowId: lastUser?.workflow?.id ?? null,
+        unavailable: contextsUnavailable,
+    });
+
     const { docIndex, docStore } = await buildDocContext(
         messages,
         userId,
         db,
         chatId,
     );
+    // Documents of the active contexts (e.g. AZOP guidance PDFs in an EULEX
+    // system context) join the turn's available documents.
+    await addContextDocuments({
+        docIndex,
+        docStore,
+        active: activeContexts,
+        db,
+        unavailable: contextsUnavailable,
+    });
     const docAvailability = Object.entries(docIndex).map(([doc_id, info]) => ({
         doc_id,
         filename: info.filename,
+        ...(info.read_only ? { context: true } : {}),
     }));
+    const contextsNote = contextsUnavailableNote(contextsUnavailable);
     const enrichedMessages = await enrichWithPriorEvents(
         messages,
         chatId,
@@ -1225,11 +1297,20 @@ chatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) => {
         localeContextForLlm(uiLocale, { omitReferenceTime: true }),
         docIndex,
         // Governance prompt_blocks ride the same uncached dynamic suffix as
-        // the reference-time line — never the cached static prefix.
-        [referenceTimeContext(uiLocale), ...governancePromptBlocks].join("\n\n"),
+        // the reference-time line — never the cached static prefix. So does
+        // the note on context sources that did not load this turn.
+        [
+            referenceTimeContext(uiLocale),
+            ...governancePromptBlocks,
+            ...(contextsNote ? [contextsNote] : []),
+        ].join("\n\n"),
+        uiLocale,
     );
 
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
+    // Tasks of the active EULEX contexts are workflows too (ctx-<context
+    // id>-<task id>): read_workflow and a selected task's marker find them.
+    registerContextTasks(workflowStore, activeContexts);
 
     console.log("[chat/stream] starting LLM stream", {
         apiMessageCount: apiMessages.length,
@@ -1304,24 +1385,16 @@ chatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) => {
     ]);
     const mcpServers = [...userMcpServers, ...builtinMcpServers];
 
-    // Contexts active for this turn: globally-toggled ∪ contexts attached
-    // to the applied workflow, resolved by the configured context provider.
-    // The provider re-checks access per requester, so a private context
-    // attached to a shared workflow never leaks; built-in (non-UUID)
-    // workflow ids skip the link lookup; each part fails soft on its own —
-    // see loadContextsForTurn. Never breaks chat, and does nothing at all
-    // when no provider is configured.
-    const activeContexts = await loadContextsForTurn({
-        userId,
-        email: userEmail ?? null,
-        query: lastUserContent,
-        workflowId: lastUser?.workflow?.id ?? null,
-    });
 
     // Wall-clock timer for cost telemetry — see recordLlmUsage call below.
     const turnStartedAt = Date.now();
     let usageRecorded = false;
     let completedUsage: UsageContext | undefined;
+    // Explicit Stop (#96): POST /chat/:chatId/stop aborts this controller —
+    // behind Cloud Run the disconnect above never fires.
+    const unregisterTurn = chatId
+        ? registerTurn(chatId, userId, turnAbort)
+        : () => {};
 
     try {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
@@ -1422,6 +1495,9 @@ chatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) => {
             canExportDocx,
             webSearchEnabled: web_search,
             activeContexts,
+            contextsUnavailable,
+            // update_plan is offered while a workflow is in play.
+            workflowSelected: messages.some((m) => m.role === "user" && !!m.workflow),
             abortSignal: turnAbort.signal,
             // Stall watchdog (#25): the same controller — after
             // LLM_STREAM_DEADLINE_MS of provider silence runLLMStream
@@ -1429,6 +1505,9 @@ chatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) => {
             // LlmStreamStallError (mapped to the terminal SSE error in
             // the catch below).
             turnAbort,
+            // Reasoning in the other language is translated (lib/reasoningLanguage).
+            uiLocale,
+            chatId,
         });
         if (usage) completedUsage = { usage, model: selectedModel, extraCostUsd: webSearchCostUsd };
 
@@ -1436,6 +1515,82 @@ chatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) => {
             fullTextLen: fullText?.length ?? 0,
             eventCount: events?.length ?? 0,
         });
+
+        // Article-reference resolution (lib/legalRefs, tracker #45): regex
+        // spans → act (regex, then Haiku, then corpus lookup), streamed as a
+        // `legal_refs` event plus any sources the lookup added, and persisted
+        // with the message. Runs after the text is on screen; every failure
+        // degrades to the frontend's own regex linker. MCP servers are still
+        // open here (closed in the finally below).
+        if (events.some((e) => e.type === "content")) {
+            const t0 = Date.now();
+            try {
+                const answer = events
+                    .filter((e): e is { type: "content"; text: string } => e.type === "content")
+                    .map((e) => e.text)
+                    .join("");
+                const turnSources: LegalSource[] = [];
+                for (const e of events) {
+                    if (e.type === "legal_sources") turnSources.push(...e.sources);
+                }
+                const { data: priorRows } = await db
+                    .from("chat_messages")
+                    .select("content")
+                    .eq("chat_id", chatId)
+                    .eq("role", "assistant");
+                const registry: LegalSource[] = [];
+                const seenIds = new Set<string>();
+                for (const s of [
+                    ...turnSources,
+                    ...legalSourcesFromPersistedContent(
+                        (priorRows ?? []) as Array<{ content: unknown }>,
+                    ),
+                ]) {
+                    if (seenIds.has(s.id)) continue;
+                    seenIds.add(s.id);
+                    registry.push(s);
+                }
+                const resolved = await resolveLegalRefs({
+                    answer,
+                    registry,
+                    servers: mcpServers,
+                    whitelist: buildScopeSet(scopeAllowlistsForTurn(activeContexts)),
+                    apiKeys,
+                });
+                if (resolved) {
+                    if (resolved.newSources.length > 0) {
+                        const lsEvent = {
+                            type: "legal_sources" as const,
+                            sources: resolved.newSources,
+                        };
+                        write(`data: ${JSON.stringify(lsEvent)}\n\n`);
+                        events.push(lsEvent);
+                    }
+                    write(`data: ${JSON.stringify(resolved.event)}\n\n`);
+                    events.push(resolved.event);
+                    if (resolved.usage) {
+                        void recordLlmUsage({
+                            userId,
+                            client: "legal-refs",
+                            provider: providerForModel(LEGAL_REFS_MODEL),
+                            model: LEGAL_REFS_MODEL,
+                            chatId,
+                            usage: resolved.usage,
+                            durationMs: resolved.stats.modelMs,
+                            status: "ok",
+                        });
+                    }
+                    const s = resolved.stats;
+                    console.log(
+                        `[legal-refs] chat=${chatId} refs=${s.refs} regex=${s.regex} model=${s.model} lookup=${s.lookup} unverified=${s.unverified} unresolved=${s.unresolved} extra=${s.extra} extra_rejected=${s.extraRejected} new_sources=${resolved.newSources.length} registry=${registry.length} model_ms=${s.modelMs} lookup_ms=${s.lookupMs} total_ms=${Date.now() - t0} sources=[${registry.map((x) => x.id).join(" ")}] detail=[${describeLegalRefs(resolved.event)}]`,
+                    );
+                }
+            } catch (err) {
+                console.warn(
+                    `[legal-refs] chat=${chatId} failed after ${Date.now() - t0}ms — frontend regex only: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            }
+        }
 
         // docTexts → citation-quote verification on `citation_data` (#22);
         // same texts the streamed `citations` event was verified against.
@@ -1610,6 +1765,7 @@ chatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) => {
             /* ignore */
         }
     } finally {
+        unregisterTurn();
         clearInterval(heartbeat);
         await closeMcpServers(mcpServers);
         res.end();

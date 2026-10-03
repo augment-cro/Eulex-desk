@@ -36,8 +36,8 @@ export type UserModelSettings = {
  * configures preferred providers in the Eulex Desk web app once, and the
  * add-in should "just work". Order of preference:
  *
- *   1. Claude   — Sonnet 4.6 (primary; prod always has a server key wired
- *                via Secret Manager, see cloudbuild.yaml).
+ *   1. Claude   — DEFAULT_MAIN_MODEL, Opus 5.5 (primary; prod always has a
+ *                server key wired via Secret Manager, see cloudbuild.yaml).
  *   2. LocalLLM — if the operator wired up an in-house endpoint and the
  *                user has no Claude entitlement.
  *   3. Gemini   — 3.1 Pro
@@ -49,7 +49,7 @@ export type UserModelSettings = {
  * is at least obvious in logs.
  */
 export function resolveDefaultMainModel(apiKeys?: UserApiKeys): string {
-    if (apiKeys?.claude?.trim()) return "claude-sonnet-5";
+    if (apiKeys?.claude?.trim()) return DEFAULT_MAIN_MODEL;
     if (process.env.VLLM_BASE_URL?.trim()) return "localllm-main";
     if (apiKeys?.gemini?.trim()) return "gemini-3.1-pro-preview";
     if (apiKeys?.mistral?.trim()) return "mistral-large-latest";
@@ -80,7 +80,7 @@ export function resolveDefaultMainModel(apiKeys?: UserApiKeys): string {
  * whatever provider keys are wired up.
  */
 export function resolveColumnSuggesterModel(apiKeys?: UserApiKeys): string {
-    if (apiKeys?.claude?.trim()) return "claude-sonnet-5";
+    if (apiKeys?.claude?.trim()) return "claude-sonnet-5-5";
     if (apiKeys?.gemini?.trim()) return "gemini-3.1-pro-preview";
     if (apiKeys?.mistral?.trim()) return "mistral-large-latest";
     if (apiKeys?.openai?.trim()) return "gpt-5.5";
@@ -116,14 +116,15 @@ function resolveTitleModel(apiKeys: UserApiKeys): string {
 
 /**
  * Fast model for INLINE ghost text (autocomplete + inline question
- * refinement). Unlike resolveTitleModel — which returns Sonnet for Claude —
- * this picks each provider's low/fast tier so inline suggestions feel snappy.
+ * refinement). Picks each provider's low/fast tier so inline suggestions
+ * feel snappy; for Claude that is Sonnet 5.5 since Haiku was retired
+ * (2026-09-29) — call it at effort "low".
  * The task is easy (complete a sentence / rephrase one question), so latency
  * matters more than raw capability. Output language is pinned by
  * shortLocaleRule, which keeps even the small models on Croatian.
  */
 export function resolveInlineModel(apiKeys: UserApiKeys): string {
-    if (apiKeys.claude?.trim()) return "claude-haiku-4-5";
+    if (apiKeys.claude?.trim()) return "claude-sonnet-5-5";
     if (process.env.VLLM_BASE_URL?.trim()) return "localllm-lite";
     if (apiKeys.gemini?.trim()) return "gemini-3.1-flash-lite-preview";
     if (apiKeys.openai?.trim()) return "gpt-5.4-nano";
@@ -132,11 +133,11 @@ export function resolveInlineModel(apiKeys: UserApiKeys): string {
         process.env.ANTHROPIC_API_KEY?.trim() ||
         process.env.CLAUDE_API_KEY?.trim()
     )
-        return "claude-haiku-4-5";
+        return "claude-sonnet-5-5";
     if (process.env.GEMINI_API_KEY?.trim()) return "gemini-3.1-flash-lite-preview";
     if (process.env.OPENAI_API_KEY?.trim()) return "gpt-5.4-nano";
     if (process.env.MISTRAL_API_KEY?.trim()) return "mistral-small-latest";
-    return "claude-haiku-4-5";
+    return "claude-sonnet-5-5";
 }
 
 /**

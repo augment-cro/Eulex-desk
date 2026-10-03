@@ -1,4 +1,23 @@
-import type { LlmUsage } from "./types";
+import type { LlmCallUsage, LlmUsage } from "./types";
+
+/** Aggregate usage as one receipt, explicitly labelled a legacy estimate. */
+export function legacyReceipt(
+    provider: LlmCallUsage["provider"],
+    model: string,
+    phase: LlmCallUsage["phase"],
+    u: LlmUsage,
+): LlmCallUsage {
+    return {
+        provider,
+        model,
+        phase,
+        status: "legacy",
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+        cacheCreationInputTokens: u.cacheCreationInputTokens,
+        cacheReadInputTokens: u.cacheReadInputTokens,
+    };
+}
 
 export function emptyUsage(): LlmUsage {
     return {

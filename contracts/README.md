@@ -10,6 +10,8 @@ standalone (the "standalone-core rule"). Any third party may implement these.
 | `pre-inference-hook.openapi.json` | `GOVERNANCE_URL` | core → service |
 | `prompt-pack.openapi.json` | `GOVERNANCE_URL` | core → service (fetch-and-cache + enrich proxy) |
 | `audit-sink.openapi.json` | `AUDIT_SINK_URL` | core → service (fire-and-forget) |
+| `billing-provider.openapi.json` | `BILLING_PROVIDER_URL` | core → service (+ service → core `/internal/billing/grants`) |
+| `operator.openapi.json` | `OPERATOR_API_CALLERS` | console → core (`/operator/v1`, generic admin API: users, tiers, credits, usage, audit; 404 when unset; no console logic in the core) |
 | `service-identity.md` | `*_SERVICE_SECRET` / `AUDIT_SINK_SECRET` | both |
 
 Versioning: each document carries `info.version` (semver). Breaking changes

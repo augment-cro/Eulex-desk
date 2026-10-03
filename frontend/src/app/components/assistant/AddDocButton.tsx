@@ -63,6 +63,10 @@ interface Props {
     // legacy code path runs unchanged.
     // -----------------------------------------------------------------
     onPiiReview?: (doc: MikeDocument) => Promise<boolean>;
+    /** Chat the composer belongs to (null on the fresh assistant page).
+     *  Forwarded with each upload so the backend can pre-warm the PII
+     *  analysis for this chat. */
+    chatId?: string | null;
 }
 
 export function AddDocButton({
@@ -71,6 +75,7 @@ export function AddDocButton({
     onOpenIntegrationPicker,
     selectedDocIds = [],
     onPiiReview,
+    chatId = null,
 }: Props) {
     const [isOpen, setIsOpen] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -129,7 +134,7 @@ export function AddDocButton({
             // allSettled semantics: the files that did upload are attached
             // even when others fail; the failures get their own notice.
             const { uploaded, failures } = await uploadFilesBulk(files, {
-                upload: uploadStandaloneDocument,
+                upload: (file) => uploadStandaloneDocument(file, { chatId }),
                 surface: "standalone",
             });
             setUploadFailures(failures);

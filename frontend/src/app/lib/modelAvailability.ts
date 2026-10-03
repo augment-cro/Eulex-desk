@@ -24,11 +24,23 @@ export type ApiKeys = {
 
 export function getModelProvider(modelId: string): ModelProvider | null {
     const model = MODELS.find((m) => m.id === modelId);
-    if (!model) return null;
-    if (model.group === "Anthropic") return "claude";
-    if (model.group === "OpenAI" || model.group === "LocalLLM") return "openai";
-    if (model.group === "Mistral") return "mistral";
-    return "gemini";
+    if (model) {
+        if (model.group === "Anthropic") return "claude";
+        if (model.group === "OpenAI" || model.group === "LocalLLM") return "openai";
+        if (model.group === "Mistral") return "mistral";
+        return "gemini";
+    }
+    // Ids the composer picker no longer lists still run on the server: the
+    // tabular default (claude-sonnet-5-5) and stored profile values such as
+    // the DB default 'claude-sonnet-5'. Since MODELS shrank to Opus 5.5
+    // (2026-09-22) this returned null for them, and "Pokreni" in Analize
+    // silently did nothing. Derive the provider from the id, as the backend
+    // does (providerForModel); the backend resolves the model itself.
+    if (modelId.startsWith("claude")) return "claude";
+    if (modelId.startsWith("gemini")) return "gemini";
+    if (modelId.startsWith("mistral")) return "mistral";
+    if (modelId.startsWith("localllm") || /^(gpt-|o\d)/.test(modelId)) return "openai";
+    return null;
 }
 
 function hasKey(

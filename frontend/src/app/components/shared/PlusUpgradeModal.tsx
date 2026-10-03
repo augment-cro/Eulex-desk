@@ -34,6 +34,8 @@ import {
 } from "@/components/ui/dialog";
 
 import { API_BASE } from "@/app/lib/apiBase";
+import { getBankTransferConfig, type BankTransferConfig } from "@/app/lib/mikeApi";
+import { BankTransferQuotePanel } from "@/app/components/billing/BankTransferQuotePanel";
 type ConfigResponse = {
     plusEnabled: boolean;
     proEnabled?: boolean;
@@ -95,19 +97,12 @@ export function PlusUpgradeModal({
     onClose,
     onUpgraded,
     plan = "plus",
-    dailyTokens = null,
 }: {
     open: boolean;
     onClose: () => void;
     onUpgraded?: () => void;
     /** Which plan to check out. Defaults to "plus" (the banner callers). */
     plan?: UpgradePlan;
-    /**
-     * Daily token quota of the plan being bought, from GET /billing/plans
-     * (`dailyTokens`) — the DB-backed truth, never hardcoded in copy.
-     * `null`/`0` when the caller has no plans data → generic perk line.
-     */
-    dailyTokens?: number | null;
 }) {
     const t = useTranslations("rateLimit");
     const tPlan = useTranslations("account.plan");
@@ -175,6 +170,45 @@ export function PlusUpgradeModal({
         action: "upgraded" | "scheduled";
         periodEnd: number | null;
     } | null>(null);
+    // ── payment method (virman) ─────────────────────────────────────
+    // With bank-transfer quotes on, the user picks card or virman BEFORE
+    // anything is created in Stripe; otherwise it is card, as before.
+    // null = not chosen yet (or the virman lookup is still running).
+    const tBank = useTranslations("bankTransfer");
+    const [payMethod, setPayMethod] = useState<"card" | "bank" | null>(null);
+    const [bankConfig, setBankConfig] = useState<BankTransferConfig | null>(null);
+
+    useEffect(() => {
+        if (!open) {
+            setPayMethod(null);
+            setBankConfig(null);
+            return;
+        }
+        let cancelled = false;
+        let resolved = false;
+        const fallBackToCard = () => {
+            if (!cancelled) setPayMethod((m) => m ?? "card");
+        };
+        // The virman option is optional: never hold the card flow on it.
+        const timer = setTimeout(() => {
+            if (!resolved) fallBackToCard();
+        }, 4000);
+        getBankTransferConfig()
+            .then((cfg) => {
+                resolved = true;
+                if (cancelled) return;
+                if (cfg.enabled && cfg.eligible !== false) setBankConfig(cfg);
+                else fallBackToCard();
+            })
+            .catch(() => {
+                resolved = true;
+                fallBackToCard();
+            });
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+        };
+    }, [open]);
     const billingBusinessComplete =
         !billingBusiness ||
         (billingOrg.trim().length > 0 &&
@@ -234,6 +268,8 @@ export function PlusUpgradeModal({
         }
         // Nothing is created server-side until billing details are in.
         if (!billingReady) return;
+        // Card only: the virman branch never touches Stripe.
+        if (payMethod !== "card") return;
         // Already handled by /change-plan — don't start a checkout.
         if (changeDone) return;
         let cancelled = false;
@@ -453,6 +489,7 @@ export function PlusUpgradeModal({
         billingPhone,
         changeDone,
         onUpgraded,
+        payMethod,
     ]);
 
     function applyPromo() {
@@ -512,18 +549,9 @@ export function PlusUpgradeModal({
                 </DialogHeader>
 
                 <ul className="mt-4 space-y-2 rounded-xl bg-gradient-to-br from-warning/10 to-warning/5 p-4 text-sm text-foreground ring-1 ring-warning/20">
-                    {/* Daily quota perk — interpolated from the plan catalog
-                        (DB truth), not hardcoded copy. Generic line when the
-                        caller had no plans data. */}
-                    <FeatureLi>
-                        {dailyTokens && dailyTokens > 0
-                            ? t("plusUpgradePerks.tokens", {
-                                  tokens: new Intl.NumberFormat(
-                                      locale === "hr" ? "hr-HR" : "en-US",
-                                  ).format(dailyTokens),
-                              })
-                            : t("plusUpgradePerks.tokensFallback")}
-                    </FeatureLi>
+                    {/* Daily quota perk — worded as usage, never as a token
+                        count (users don't buy tokens). */}
+                    <FeatureLi>{t("plusUpgradePerks.tokensFallback")}</FeatureLi>
                     {(tPlan.raw(`tiers.${plan}.features`) as string[]).map(
                         (f, i) => (
                             <FeatureLi key={i}>{f}</FeatureLi>
@@ -531,10 +559,57 @@ export function PlusUpgradeModal({
                     )}
                 </ul>
 
+                {/* ── payment method: card or virman quote ───────────── */}
+                {payMethod === null &&
+                    (bankConfig ? (
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="h-auto flex-col items-start gap-0.5 whitespace-normal p-3 text-left"
+                                onClick={() => setPayMethod("card")}
+                            >
+                                <span className="text-sm font-medium">{tBank("methodCard")}</span>
+                                <span className="text-xs font-normal text-muted-foreground">
+                                    {tBank("methodCardHint")}
+                                </span>
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="h-auto flex-col items-start gap-0.5 whitespace-normal p-3 text-left"
+                                onClick={() => setPayMethod("bank")}
+                            >
+                                <span className="text-sm font-medium">{tBank("methodBank")}</span>
+                                <span className="text-xs font-normal text-muted-foreground">
+                                    {tBank("methodBankHint")}
+                                </span>
+                            </Button>
+                        </div>
+                    ) : (
+                        <p className="mt-4 text-center text-sm text-muted-foreground">
+                            {tBank("loading")}
+                        </p>
+                    ))}
+
+                {payMethod === "bank" && bankConfig && (
+                    <BankTransferQuotePanel
+                        plan={plan}
+                        planName={tPlan(`tiers.${plan}.name`)}
+                        seats={seats}
+                        config={bankConfig}
+                        onBack={() => setPayMethod(null)}
+                        onDone={(quote) => {
+                            if (quote?.provisionalUntil) onUpgraded?.();
+                            onClose();
+                        }}
+                    />
+                )}
+
                 {/* ── billing details step (tracker #33) ─────────────
                     Shown until name + country are confirmed. Nothing is
                     created on the server before this passes. */}
-                {!billingReady && (
+                {payMethod === "card" && !billingReady && (
                     <form
                         className="mt-4 space-y-3 rounded-lg border border-border p-3"
                         onSubmit={(e) => {
@@ -794,77 +869,79 @@ export function PlusUpgradeModal({
                 )}
 
                 {/* ── promo code ─────────────────────────────────── */}
-                <div className="mt-3">
-                    {appliedPromo && sub ? (
-                        <div className="flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                            <span>
-                                {t.has("promoApplied")
-                                    ? t("promoApplied", { code: appliedPromo })
-                                    : `Kod ${appliedPromo} primijenjen`}
-                            </span>
+                {payMethod === "card" && (
+                    <div className="mt-3">
+                        {appliedPromo && sub ? (
+                            <div className="flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                                <span>
+                                    {t.has("promoApplied")
+                                        ? t("promoApplied", { code: appliedPromo })
+                                        : `Kod ${appliedPromo} primijenjen`}
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={removePromo}
+                                    className="text-xs font-medium text-emerald-700 underline hover:text-emerald-900"
+                                >
+                                    {t.has("promoRemove")
+                                        ? t("promoRemove")
+                                        : "Ukloni"}
+                                </button>
+                            </div>
+                        ) : !promoOpen ? (
                             <button
                                 type="button"
-                                onClick={removePromo}
-                                className="text-xs font-medium text-emerald-700 underline hover:text-emerald-900"
+                                onClick={() => setPromoOpen(true)}
+                                className="text-xs font-medium text-blue-600 hover:underline"
                             >
-                                {t.has("promoRemove")
-                                    ? t("promoRemove")
-                                    : "Ukloni"}
+                                {t.has("promoHave")
+                                    ? t("promoHave")
+                                    : "Imam promo kod"}
                             </button>
-                        </div>
-                    ) : !promoOpen ? (
-                        <button
-                            type="button"
-                            onClick={() => setPromoOpen(true)}
-                            className="text-xs font-medium text-blue-600 hover:underline"
-                        >
-                            {t.has("promoHave")
-                                ? t("promoHave")
-                                : "Imam promo kod"}
-                        </button>
-                    ) : (
-                        <div>
-                            <div className="flex gap-2">
-                                <input
-                                    type="text"
-                                    value={promoInput}
-                                    onChange={(e) => {
-                                        setPromoInput(e.target.value);
-                                        setPromoError(null);
-                                    }}
-                                    onKeyDown={(e) => {
-                                        if (e.key === "Enter") {
-                                            e.preventDefault();
-                                            applyPromo();
+                        ) : (
+                            <div>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={promoInput}
+                                        onChange={(e) => {
+                                            setPromoInput(e.target.value);
+                                            setPromoError(null);
+                                        }}
+                                        onKeyDown={(e) => {
+                                            if (e.key === "Enter") {
+                                                e.preventDefault();
+                                                applyPromo();
+                                            }
+                                        }}
+                                        placeholder={
+                                            t.has("promoPlaceholder")
+                                                ? t("promoPlaceholder")
+                                                : "Promo kod"
                                         }
-                                    }}
-                                    placeholder={
-                                        t.has("promoPlaceholder")
-                                            ? t("promoPlaceholder")
-                                            : "Promo kod"
-                                    }
-                                    className="h-9 flex-1 rounded-md border border-gray-200 px-3 text-sm uppercase placeholder:normal-case focus:outline-none focus:ring-2 focus:ring-black/10"
-                                />
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    onClick={applyPromo}
-                                    disabled={!promoInput.trim() || loading}
-                                    className="h-9"
-                                >
-                                    {t.has("promoApply")
-                                        ? t("promoApply")
-                                        : "Primijeni"}
-                                </Button>
+                                        className="h-9 flex-1 rounded-md border border-gray-200 px-3 text-sm uppercase placeholder:normal-case focus:outline-none focus:ring-2 focus:ring-black/10"
+                                    />
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        onClick={applyPromo}
+                                        disabled={!promoInput.trim() || loading}
+                                        className="h-9"
+                                    >
+                                        {t.has("promoApply")
+                                            ? t("promoApply")
+                                            : "Primijeni"}
+                                    </Button>
+                                </div>
+                                {promoError && (
+                                    <p className="mt-1.5 text-xs text-red-600">
+                                        {promoError}
+                                    </p>
+                                )}
                             </div>
-                            {promoError && (
-                                <p className="mt-1.5 text-xs text-red-600">
-                                    {promoError}
-                                </p>
-                            )}
-                        </div>
-                    )}
-                </div>
+                        )}
+                    </div>
+                )}
 
                 {error && !loading && (
                     <div className="mt-4 flex items-start gap-3 rounded-xl border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
@@ -1020,11 +1097,13 @@ export function PlusUpgradeModal({
                     </div>
                 )}
 
+                {payMethod === "card" && (
                 <p className="mt-4 text-center text-[11px] text-muted-foreground">
                     {t.has("plusUpgradeSecure")
                         ? t("plusUpgradeSecure")
                         : "Sigurna naplata · Stripe"}
                 </p>
+                )}
             </DialogContent>
         </Dialog>
     );

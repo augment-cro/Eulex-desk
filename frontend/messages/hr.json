@@ -1,29 +1,40 @@
 {
   "rateLimit": {
     "softTitle": "{tier} · uskoro ćete potrošiti dnevnu kvotu",
-    "softBody": "Iskorišteno {used} od {limit} tokena ({percent}%) u zadnja 24 sata.",
-    "softHintTopup": "Nadoplatite dodatne tokene za nastavak nakon dnevnog limita.",
+    "softBody": "Iskoristili ste {percent} % dnevne potrošnje.",
+    "softHintTopup": "Dodajte dodatnu potrošnju i nastavite raditi i nakon dnevnog limita.",
     "softHintUpgrade": "Razmotrite nadogradnju na Plus za veću dnevnu kvotu.",
     "hardTitle": "{tier} · dnevni limit dosegnut",
     "hardBody": "Limit se obnavlja za otprilike {relief}. Ostali odgovori bit će omogućeni nakon toga.",
     "chatNoticeTitle": "Dnevni limit dosegnut",
     "chatNoticeBody": "Dosegnuli ste dnevni limit za {tier}. Za nastavak razgovora odaberite veći paket.",
     "chatNoticeRelief": "Limit se obnavlja za otprilike {relief}.",
-    "bonusBadge": "bonus tokena dostupno",
+    "bonusBadge": "dodatna potrošnja dostupna",
     "topupCta": "Nadoplati",
     "upgradeCta": "Pogledaj Plus",
     "usageRingTitle": "Dnevna potrošnja",
     "usageRingUsed": "Potrošeno: {percent} %",
     "usageRingRemaining": "Preostalo: {remaining} %",
-    "usageRingBonus": "Uključuje bonus tokene",
+    "usageRingBonus": "Uključuje dodatnu potrošnju",
     "usageRingReset": "Obnavlja se za {relief}",
     "usageRingResetSoon": "Obnavlja se uskoro",
     "usageRingAria": "Dnevna potrošnja: {percent} %",
-    "topupTitle": "Nadoplata tokena",
-    "topupSubtitle": "Odaberite paket — tokeni vrijede neograničeno i troše se nakon dnevnog limita.",
+    "topupTitle": "Dodatna potrošnja",
+    "topupSubtitle": "Nastavite raditi i nakon dnevnog limita. Dodatna potrošnja ne ističe i koristi se tek kad potrošite dnevni limit.",
     "topupDisabled": "Nadoplata trenutno nije dostupna — molimo kontaktirajte podršku za bankovnu uplatu.",
     "topupPlusOnly": "Nadoplata je dostupna samo korisnicima Plus pretplate.",
-    "topupBankTransferHint": "Bankovna uplata? Pišite na podrska@eulex.ai i tokeni će biti dodijeljeni manualno nakon zaprimanja uplate.",
+    "topupBankTransferHint": "Bankovna uplata? Pišite na podrska@eulex.ai i dodatnu potrošnju dodijelit ćemo ručno nakon zaprimanja uplate.",
+    "topupPlusVat": "+ PDV",
+    "packs": {
+      "tokens_1m": {
+        "name": "Radni paket",
+        "description": "Dodatna potrošnja za razdoblja s više posla."
+      },
+      "tokens_3m": {
+        "name": "Intenzivni paket",
+        "description": "Dvostruko više dodatne potrošnje — za velike predmete i intenzivne mjesece."
+      }
+    },
     "buyCta": "Kupi",
     "redirecting": "Preusmjeravam…",
     "loading": "Učitavam ponudu…",
@@ -42,8 +53,8 @@
     "plusUpgradeError": "Trenutno ne možemo otvoriti naplatu.",
     "plusUpgradeRetry": "Pokušaj ponovno",
     "plusUpgradePerks": {
-      "tokens": "{tokens} tokena dnevno",
-      "tokensFallback": "Uvećani dnevni limit tokena",
+      "tokens": "Veći dnevni limit potrošnje",
+      "tokensFallback": "Veći dnevni limit potrošnje",
       "models": "Pristup naprednim Claude modelima",
       "topup": "Mogućnost nadoplate paketima",
       "support": "Prioritetna podrška"
@@ -101,7 +112,8 @@
     "copy": "Kopiraj",
     "copied": "Kopirano",
     "createAction": "Stvori",
-    "dismissWarning": "Odbaci upozorenje"
+    "dismissWarning": "Odbaci upozorenje",
+    "pageShort": "str. {page}"
   },
   "columnFormats": {
     "freeText": "Slobodan tekst",
@@ -368,7 +380,7 @@
     "settings": "Postavke",
     "tabs": {
       "general": "Općenito",
-      "billing": "Naplata i tokeni",
+      "billing": "Naplata i potrošnja",
       "privacy": "Privatnost i PII",
       "models": "Modeli i API ključevi",
       "connectors": "Kontekst",
@@ -551,15 +563,15 @@
       "manageBillingHint": "Računi, način plaćanja i otkazivanje pretplate — sigurno preko Stripea."
     },
     "billing": {
-      "title": "Naplata i tokeni",
+      "title": "Naplata i potrošnja",
       "subtitle": "Pregled vaše dnevne potrošnje i nadoplata.",
-      "topupSuccess": "Plaćanje je uspješno. Tokeni će biti dodijeljeni unutar nekoliko sekundi.",
+      "topupSuccess": "Plaćanje je uspješno. Dodatna potrošnja bit će dostupna za nekoliko sekundi.",
       "topupCancelled": "Plaćanje je odustalo — niste naplaćeni.",
       "subscription": "Pretplata",
       "used24h": "Iskorišteno (24h)",
-      "usedOf": "od {limit} ({remaining} preostalo)",
-      "bonusTokens": "Bonus tokeni",
-      "bonusHint": "Vrijede neograničeno",
+      "usedOf": "od dnevnog limita",
+      "bonusTokens": "Dodatna potrošnja",
+      "bonusHint": "Ne ističe; koristi se nakon dnevnog limita",
       "requests24h": "Zahtjeva u 24h",
       "changePlan": {
         "title": "Promjena plana",
@@ -580,7 +592,11 @@
         "error": "Promjena plana nije uspjela. Pokušajte ponovno ili se obratite podršci.",
         "loadError": "Učitavanje planova nije uspjelo.",
         "loading": "Učitavanje planova…"
-      }
+      },
+      "usedOfWithExtra": "od dnevnog limita i dodatne potrošnje",
+      "usedPercent": "{percent} %",
+      "bonusValue": "{percent} % dnevnog limita",
+      "bonusNone": "Nema"
     },
     "team": {
       "title": "Tim",
@@ -797,6 +813,9 @@
       "cancelled": "Prekinuli ste odgovor"
     },
     "greetingAnonymous": "Pozdrav",
+    "docDownload": {
+      "failed": "Preuzimanje nije uspjelo. Pokušajte ponovno."
+    },
     "dismiss": "Odbaci",
     "piiBadge": {
       "restoredTooltip": "PII štit: izvorne vrijednosti vraćene su samo na vašem uređaju.",
@@ -808,6 +827,12 @@
     },
     "sidePanel": {
       "closePanel": "Zatvori panel"
+    },
+    "tableExport": {
+      "download": "Preuzmi kao Excel",
+      "failed": "Preuzimanje nije uspjelo. Pokušajte ponovno.",
+      "fileName": "Tablica",
+      "sheetName": "Tablica"
     }
   },
   "projects": {
@@ -1398,6 +1423,10 @@
     "flagDisplayRed": "Crvena",
     "emptyHint": "Dodajte stupce i dokumente za početak.",
     "citationTooltip": "Stranica {page}: \"{quote}\"",
+    "citationTooltipCell": "{location}: \"{quote}\"",
+    "valueNotFound": "Nije pronađeno",
+    "valueYes": "Da",
+    "valueNo": "Ne",
     "quoteUnverified": "Citat nije pronađen u dokumentu",
     "regenerate": "Ponovno generiraj",
     "runProgressErrorTitle": "Pokretanje nije uspjelo",
@@ -1458,7 +1487,20 @@
     "deleteAria": "Obriši kontekst",
     "composerAria": "Upravljanje aktivnim kontekstima",
     "composerTooltip": "Aktivirajte spremljene kontekste koji se dodaju ovom razgovoru.",
-    "toggleFailed": "Promjena aktivacije nije uspjela. Pokušajte ponovno."
+    "toggleFailed": "Promjena aktivacije nije uspjela. Pokušajte ponovno.",
+    "systemSection": "EULEX konteksti",
+    "mySection": "Moji konteksti",
+    "systemBadgeTitle": "Kontekst koji objavljuje EULEX",
+    "systemReadOnly": "Sistemski kontekst · samo za čitanje",
+    "publishedVersion": "{version} · objavljeno {date}",
+    "rulesTab": "Pravila",
+    "tasksTab": "Zadaci",
+    "rulesEmpty": "Ovaj kontekst nema pravila.",
+    "answerModeExtended": "Odgovori se temelje najprije na izvorima konteksta, a zatim na općoj EULEX bazi.",
+    "answerModeStrict": "Odgovori se temelje samo na izvorima konteksta.",
+    "emptyDescSystem": "EULEX konteksti pojavit će se ovdje čim budu objavljeni.",
+    "runModel": "Model: {model}",
+    "runEffort": "Razina razmišljanja: {level}"
   },
   "newContext": {
     "breadcrumbRoot": "Konteksti",
@@ -1482,7 +1524,7 @@
     "kindCaselaw": "Sudska praksa",
     "kindWeb": "Poveznica",
     "noSources": "Još nema izvora",
-    "pin": "Prikvači (uvijek vidljivo)",
+    "pin": "Ključni izvor (čita se prvi)",
     "retrievalNote": "Kako koristiti ovaj izvor",
     "trackAlerts": "Prati promjene",
     "alertsUnavailable": "Obavijesti još nisu dostupne za ovaj izvor",
@@ -1492,7 +1534,20 @@
     "share": "Podijeli",
     "noShares": "Nitko još nema pristup",
     "removeShare": "Ukloni pristup",
-    "outOfActiveLimit": "Istodobno možete aktivirati najviše 5 konteksta"
+    "outOfActiveLimit": "Istodobno možete aktivirati najviše 5 konteksta",
+    "tierLabel": "Razina {tier}",
+    "tierInternal": "Interni dokument",
+    "docStatus_final": "Konačno",
+    "docStatus_draft": "Nacrt",
+    "docStatus_consultation": "Javno savjetovanje",
+    "docStatus_living": "Živi dokument",
+    "sourceGroup_law": "Propisi",
+    "sourceGroup_official": "Smjernice i službeni izvori",
+    "sourceGroup_caselaw": "Sudska praksa",
+    "sourceGroup_documents": "Dokumenti",
+    "sourceGroup_other": "Stručni i ostali izvori",
+    "keySource": "Ključni izvor",
+    "keySourceHint": "Ključne izvore asistent čita prve i citira doslovno. Ostale dohvaća kad ih pitanje zatreba."
   },
   "attachContexts": {
     "title": "Konteksti",
@@ -1677,7 +1732,13 @@
     "bulkAcceptError": "Spremanje jednog ili više prihvaćanja nije uspjelo.",
     "bulkRejectError": "Spremanje jednog ili više odbijanja nije uspjelo.",
     "sourceFallback": "izvor",
-    "genericError": "Nažalost, nešto je pošlo po zlu."
+    "genericError": "Nažalost, nešto je pošlo po zlu.",
+    "builtinToolLabels": {
+      "generateDocx": "Izrađujem Word dokument",
+      "generateExcel": "Izrađujem Excel tablicu",
+      "recordAssessment": "Bilježim rezultat procjene",
+      "loadAssessment": "Učitavam raniju procjenu"
+    }
   },
   "docPanel": {
     "citation": "Citat",
@@ -1689,11 +1750,18 @@
     "draftBadge": "Draft",
     "acceptSaveFailed": "Prihvaćanje nije spremljeno — pokušajte ponovno.",
     "rejectSaveFailed": "Odbijanje nije spremljeno — pokušajte ponovno.",
-    "emptyText": "Dokument ne sadrži tekst."
+    "emptyText": "Dokument ne sadrži tekst.",
+    "spreadsheetError": "Tablicu nije moguće prikazati.",
+    "spreadsheetTooLarge": "Tablica je prevelika za prikaz. Preuzmite je i otvorite u Excelu.",
+    "emailError": "E-mail nije moguće prikazati."
   },
   "legalSource": {
+    "unverifiedRef": "Referenca nije potvrđena u pravnim izvorima",
+    "showConsultedSources": "{count, plural, one {Još # pregledani izvor} few {Još # pregledana izvora} other {Još # pregledanih izvora}}",
+    "hideConsultedSources": "Sakrij pregledane izvore",
     "sourcesHeading": "Izvori",
     "citedPassage": "Citirani odlomak",
+    "contextDocument": "Dokument iz konteksta",
     "noText": "Za ovaj izvor nema dostupnog teksta.",
     "inForce": "Na snazi",
     "notInForce": "Nije na snazi",
@@ -1949,32 +2017,6 @@
       "body": "PII proxy je trenutno nedostupan. Pokušajte ponovno za nekoliko sekundi."
     }
   },
-  "adminmaxBugfix": {
-    "navLink": "BugFix",
-    "title": "AdminMax · BugFix status",
-    "subtitle": "Stanje bugova uživo s GitHuba: issue → PR → LIVE.",
-    "backToList": "← Natrag na popis",
-    "refresh": "Osvježi",
-    "loading": "Učitavam…",
-    "statusOpen": "Otvoreno",
-    "statusPrOpen": "PR u reviewu",
-    "statusMerged": "Mergano — čeka LIVE",
-    "statusLive": "Na LIVE-u — zatvoriti issue",
-    "statusClosed": "Zatvoreno",
-    "deployTitle": "Deploy",
-    "deployAhead": "main je {count, plural, one {# commit} few {# commita} other {# commita}} ispred stable",
-    "deployUnknown": "Usporedba stable…main nije dostupna.",
-    "colNumber": "#",
-    "colTitle": "Naslov",
-    "colStatus": "Status",
-    "colPr": "Povezani PR",
-    "colCreated": "Otvoren",
-    "colClosed": "Zatvoren",
-    "empty": "Repozitorij nema nijedan issue.",
-    "fetchedAt": "Dohvaćeno: {time}",
-    "notConfiguredTitle": "GitHub token nije konfiguriran",
-    "notConfiguredBody": "Postavite varijablu okoline ADMINMAX_GITHUB_TOKEN (ili GITHUB_TOKEN) na backend servisu kako bi stranica mogla čitati privatni repozitorij {repo}. Repozitorij se mijenja varijablom ADMINMAX_GITHUB_REPO."
-  },
   "metadata": {
     "title": "AI platforma",
     "description": "Platforma za analizu pravnih dokumenata i pregled ugovora uz pomoć umjetne inteligencije."
@@ -2036,6 +2078,7 @@
     "typeReplacement": "Zamjena",
     "trackedChanges": "Praćene promjene",
     "closePanel": "Zatvori panel",
+    "aiEditBadge": "Eulex",
     "noUnresolvedChanges": "Nema nerazriješenih promjena.",
     "errorBoundary": {
       "title": "Preglednik dokumenta privremeno nije dostupan",
@@ -2058,5 +2101,232 @@
     "generateAria": "Generiraj izmjenu",
     "generating": "Generiranje izmjene…",
     "footerHint": "Enter za potvrdu · Esc za odustajanje"
+  },
+  "bankTransfer": {
+    "methodCard": "Kartica",
+    "methodCardHint": "Plaćanje odmah, pretplata se obnavlja automatski.",
+    "methodBank": "Virman – pošalji mi ponudu",
+    "methodBankHint": "Ponudu s barkodom za plaćanje šaljemo na vaš e-mail.",
+    "loading": "Učitavanje načina plaćanja…",
+    "companyTitle": "Podaci tvrtke za ponudu",
+    "companyHint": "Ponudu izdajemo na tvrtku. Sva su polja obvezna.",
+    "fields": {
+      "name": "Naziv tvrtke",
+      "oib": "OIB",
+      "street": "Ulica i kućni broj",
+      "postalCode": "Poštanski broj",
+      "city": "Grad"
+    },
+    "fieldErrors": {
+      "name": "Upišite naziv tvrtke.",
+      "oib": "Upišite ispravan OIB (11 znamenki).",
+      "street": "Upišite ulicu i kućni broj.",
+      "postalCode": "Upišite poštanski broj (5 znamenki).",
+      "city": "Upišite grad."
+    },
+    "howItWorks": "Ponudu šaljemo na {email}. Vrijedi {days, plural, one {# dan} other {# dana}}, a plaća se uplatom na račun s pozivom na broj s ponude – barkod možete skenirati u mobilnom bankarstvu.",
+    "provisionalPromise": "Paket {plan} uključujemo odmah, na {days, plural, one {# dan} other {# dana}}. Kad evidentiramo uplatu, vrijedi za cijelo plaćeno razdoblje.",
+    "activatesOnPayment": "Paket {plan} uključujemo kad evidentiramo uplatu.",
+    "submit": "Pošalji mi ponudu",
+    "submitting": "Izrađujemo ponudu…",
+    "back": "Natrag",
+    "sent": "Ponuda {number} poslana je na {email}.",
+    "issuedNotSent": "Ponuda {number} je izdana, ali je nismo uspjeli poslati e-mailom. Preuzmite PDF.",
+    "amountDue": "Za uplatu (s PDV-om)",
+    "validUntil": "Vrijedi do",
+    "reference": "Poziv na broj",
+    "provisionalActive": "Paket {plan} uključen je do {date}. Kad evidentiramo uplatu, vrijedi za cijelo plaćeno razdoblje.",
+    "payHint": "Platite uplatom na račun s ponude ili skenirajte barkod u mobilnom bankarstvu. Ponudu, a nakon uplate i račun, naći ćete pod Naplata i tokeni.",
+    "downloadPdf": "Preuzmi PDF",
+    "close": "Zatvori",
+    "pdfFailed": "PDF trenutačno nije dostupan. Pokušajte ponovno.",
+    "errors": {
+      "ORGANISATION_REQUIRED": "Upišite naziv tvrtke.",
+      "OIB_REQUIRED": "Upišite OIB tvrtke.",
+      "OIB_INVALID": "OIB nije ispravan.",
+      "ADDRESS_REQUIRED": "Upišite ulicu i kućni broj.",
+      "POSTAL_CODE_REQUIRED": "Upišite poštanski broj (5 znamenki).",
+      "CITY_REQUIRED": "Upišite grad.",
+      "STRIPE_SUBSCRIPTION_ACTIVE": "Imate aktivnu pretplatu karticom. Za prelazak na virman javite nam se.",
+      "COUNTRY_UNSUPPORTED": "Plaćanje virmanom dostupno je samo korisnicima iz Hrvatske. Državu možete promijeniti u Postavkama → Općenito.",
+      "QUOTE_IN_PROGRESS": "Ponuda se već izrađuje. Pričekajte trenutak.",
+      "QUOTE_LIMIT": "Danas ste zatražili previše ponuda. Pokušajte sutra ili nam se javite.",
+      "BANK_TRANSFER_DISABLED": "Plaćanje virmanom trenutačno nije dostupno.",
+      "BANK_TRANSFER_NOT_READY": "Plaćanje virmanom trenutačno nije dostupno.",
+      "EMAIL_INVALID": "Vaš korisnički račun nema ispravnu e-mail adresu.",
+      "PLAN_INVALID": "Ovaj paket trenutačno se ne može naručiti virmanom.",
+      "generic": "Ponudu nismo uspjeli izraditi. Pokušajte ponovno ili nam se javite."
+    },
+    "documents": {
+      "title": "Računi i ponude",
+      "subtitle": "Službeni računi i ponude iz našeg knjigovodstva, kao PDF.",
+      "loadFailed": "Račune i ponude trenutačno ne možemo učitati.",
+      "pdfFailed": "PDF trenutačno nije dostupan. Pokušajte ponovno.",
+      "quotes": "Ponude",
+      "quoteLabel": "Ponuda {number}",
+      "validUntil": "vrijedi do {date}",
+      "status": {
+        "creating": "U izradi",
+        "issued": "Čeka uplatu",
+        "issuedProvisional": "Čeka uplatu · paket uključen do {date}",
+        "paid": "Plaćena",
+        "paidUntil": "Plaćena · pretplata do {date}",
+        "expired": "Istekla",
+        "cancelled": "Otkazana",
+        "failed": "U provjeri"
+      },
+      "pdf": "PDF",
+      "invoices": "Računi",
+      "noInvoices": "Još nema računa.",
+      "invoiceLabel": "Račun {number}",
+      "invoicePaid": "Plaćen",
+      "invoiceOpen": "Otvoren"
+    }
+  },
+  "contextsApplied": {
+    "label": "Konteksti",
+    "systemDisclaimer": "Odgovor nije pravno mišljenje ni dokaz usklađenosti.",
+    "unavailable": "Nije učitano: {names}",
+    "unavailableContext": "aktivni kontekst",
+    "effort": "razina razmišljanja: {level}",
+    "effortLevels": {
+      "low": "niska",
+      "medium": "srednja",
+      "high": "visoka",
+      "xhigh": "vrlo visoka",
+      "max": "maksimalna"
+    }
+  },
+  "euAiIcon": {
+    "label": "EU oznaka za umjetnu inteligenciju",
+    "interaction": "Razgovarate sa sustavom umjetne inteligencije (EU oznaka)",
+    "generated": "Sadržaj je izradila umjetna inteligencija (EU oznaka)"
+  },
+  "planCard": {
+    "label": "Plan",
+    "progress": "Gotovo {done} od {total}",
+    "status": {
+      "pending": "Na čekanju",
+      "in_progress": "U tijeku",
+      "done": "Gotovo",
+      "blocked": "Blokirano"
+    }
+  },
+  "contextTasks": {
+    "start": "Pokreni",
+    "startFailed": "Kontekst nije moguće uključiti. Pokušajte ponovno.",
+    "statusReady": "Spremno",
+    "statusDraft": "U izradi",
+    "when": "Kada",
+    "requiredInputs": "Potrebno",
+    "optionalInputs": "Neobavezno",
+    "output": "Rezultat",
+    "outputKind": {
+      "docx": "Word dokument",
+      "xlsx": "Excel tablica",
+      "chat": "Odgovor u razgovoru"
+    }
+  },
+  "statusDot": {
+    "problem": "Materijalni problem",
+    "gap": "Nedostatak",
+    "assessment": "Potrebna pravna procjena",
+    "insufficient": "Nedovoljno informacija",
+    "clear": "Nema materijalnog nedostatka"
+  },
+  "assessmentCard": {
+    "classification": "Klasifikacija",
+    "checker": {
+      "show": "Put kroz Checker · {count, plural, one {# pitanje} other {# pitanja}}",
+      "hide": "Sakrij put kroz Checker",
+      "columns": {
+        "question": "Pitanje Checkera",
+        "answer": "Odgovor",
+        "evidence": "Dokaz"
+      },
+      "decisive": "odluka",
+      "decisiveTitle": "Na ovom je pitanju pala odluka o klasifikaciji"
+    },
+    "factStatus": {
+      "userAsserted": "izjava",
+      "documentSupported": "dokument",
+      "observed": "opaženo",
+      "inferred": "zaključeno",
+      "unknown": "nepoznato",
+      "conflicting": "proturječno"
+    },
+    "decisionsXlsx": {
+      "sheetName": "Odluke i Checker",
+      "id": "ID",
+      "useCase": "Namjena",
+      "topic": "Pitanje ili tema",
+      "classification": "Klasifikacija",
+      "limitation": "Ograničenje",
+      "reasoning": "Obrazloženje",
+      "sources": "Odredbe",
+      "evidence": "Dokaz"
+    },
+    "heading": "Rezultat · v{version}",
+    "warningTitle": "Interna razina upozorenja",
+    "total": "{count, plural, one {# nalaz} few {# nalaza} other {# nalaza}}",
+    "changes": "U odnosu na v{from}: zatvoreno {closed} · novo {added} · promijenjeno {changed} · zamijenjeno {superseded}",
+    "columns": {
+      "id": "ID",
+      "requirement": "Zahtjev",
+      "category": "Kategorija",
+      "status": "Status",
+      "verification": "Verifikacija",
+      "evidence": "Dokazi",
+      "action": "Sljedeća radnja"
+    },
+    "category": {
+      "law": "zakon",
+      "guidance": "smjernica",
+      "code": "kodeks",
+      "internal": "interno"
+    },
+    "verification": {
+      "verified": "provjereno",
+      "partial": "djelomično",
+      "missing": "nedostaje",
+      "notVerified": "nije provjereno",
+      "checkNeeded": "potrebna provjera"
+    },
+    "applicability": {
+      "now": "sada",
+      "later": "kasnije",
+      "notApplicable": "ne primjenjuje se",
+      "undetermined": "neutvrđeno"
+    },
+    "weight": {
+      "statement": "izjava",
+      "document": "dokument",
+      "thirdParty": "izvještaj treće strane",
+      "observed": "opaženo",
+      "none": "nema"
+    },
+    "showAll": "Prikaži sve ({count})",
+    "showLess": "Prikaži manje",
+    "unread": "Nepročitani dokumenti",
+    "conflicts": "Proturječni izvori",
+    "continue": "Nastavi procjenu",
+    "continuePrefix": "Nastavi procjenu {id}: ",
+    "xlsx": {
+      "fileName": "Procjena {id} v{version}",
+      "sheetName": "Nalazi",
+      "id": "ID",
+      "check": "Provjera",
+      "requirement": "Zahtjev",
+      "category": "Kategorija",
+      "applicability": "Primjenjivost",
+      "status": "Status",
+      "verification": "Verifikacija",
+      "weight": "Težina dokaza",
+      "evidence": "Dokazi",
+      "action": "Sljedeća radnja",
+      "owner": "Vlasnik",
+      "due": "Rok",
+      "closure": "Kriterij zatvaranja"
+    }
   }
 }

@@ -177,7 +177,7 @@ userRouter.get("/profile", requireAuth, attachRateLimitHeaders(), async (_req, r
       tier_key: tierKey,
       tier_level_id: tierLevelId,
       entitlements,
-      tabular_model: "claude-sonnet-5",
+      tabular_model: "claude-sonnet-5-5",
       // Mirrors migration 113's column default. Highest-effort thinking
       // is the safest default for a legal AI tool — better to overspend
       // on a quick question than to under-think a hard one.

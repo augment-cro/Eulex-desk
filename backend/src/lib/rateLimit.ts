@@ -23,6 +23,7 @@ import type { RequestHandler } from "express";
 import { recordAuditEvent } from "./audit";
 import { query, getClient } from "./db";
 import { can, getEntitlements } from "./entitlements";
+import { getTokenPacks, isStripeConfigured } from "./stripe";
 import { ensureTierRow, getTierLimitsRow } from "./tierLimitsStore";
 import { getFreshSupabaseTier } from "./tierResolution";
 
@@ -304,7 +305,12 @@ export async function getRateLimitSnapshot(
     // metering bug must not block the user. Default to false (Free-like).
     let topupAvailable = false;
     try {
-        topupAvailable = can(await getEntitlements(tierLevelId), "buyTokenPacks");
+        // Only offer "Nadoplati" when a pack can actually be bought — the
+        // entitlement alone showed the button while packs were switched off.
+        topupAvailable =
+            isStripeConfigured() &&
+            getTokenPacks().length > 0 &&
+            can(await getEntitlements(tierLevelId), "buyTokenPacks");
     } catch {
         /* default false on lookup failure */
     }

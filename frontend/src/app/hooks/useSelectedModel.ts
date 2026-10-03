@@ -5,8 +5,6 @@ import {
     ALLOWED_MODEL_IDS,
     DEFAULT_MODEL_ID,
     DEFAULT_REASONING_EFFORT,
-    REASONING_EFFORT_VALUES,
-    modelSupportsReasoningEffort,
     type ReasoningEffort,
 } from "../components/assistant/ModelToggle";
 import { useUserProfile } from "@/contexts/UserProfileContext";
@@ -32,10 +30,12 @@ function readStoredModel(): string {
  *  - **model** is per-browser (localStorage). Per-device makes sense for
  *    the picker since the relevant API keys / available providers can
  *    vary by environment.
- *  - **effort** is per-user (DB-persisted via user_profiles.reasoning_effort,
- *    migration 113). Falls through to localStorage during initial profile
- *    load, then to the canonical default ("high"). Optimistic write through
- *    `updateReasoningEffort` so the picker stays snappy.
+ *  - **effort** is fixed at DEFAULT_REASONING_EFFORT ("high") for the main
+ *    composer. The composer has had no effort picker since 2026-06-04, so the
+ *    stored user_profiles.reasoning_effort is invisible to the user and must
+ *    not silently steer answers (a stale 'medium'/'low' row would otherwise
+ *    downgrade every turn). `setEffort` still persists the profile value for
+ *    surfaces that expose a dial.
  *
  * The returned `effective` effort is automatically clamped to the default
  * for models that don't expose a reasoning dial — that way nothing is sent
@@ -47,7 +47,7 @@ export function useSelectedModel(): [
     ReasoningEffort,
     (effort: ReasoningEffort) => void,
 ] {
-    const { profile, updateReasoningEffort } = useUserProfile();
+    const { updateReasoningEffort } = useUserProfile();
     const [model, setModelState] = useState<string>(DEFAULT_MODEL_ID);
 
     useEffect(() => {
@@ -62,30 +62,18 @@ export function useSelectedModel(): [
         }
     }, []);
 
-    const profileEffort = profile?.reasoningEffort;
-    const validEffort: ReasoningEffort =
-        profileEffort &&
-        (REASONING_EFFORT_VALUES as readonly string[]).includes(profileEffort)
-            ? (profileEffort as ReasoningEffort)
-            : DEFAULT_REASONING_EFFORT;
-
     const setEffort = useCallback(
         (next: ReasoningEffort) => {
             // Fire-and-forget — the context applies the change optimistically
-            // and persists it. Errors are swallowed there; the in-flight
-            // chat request still picks up the new value via the message
-            // payload because the picker re-renders on `profile` change.
+            // and persists it. Errors are swallowed there. The main composer
+            // does not read it back (effort is fixed, see above).
             void updateReasoningEffort(next);
         },
         [updateReasoningEffort],
     );
 
-    // Don't ship an effort to the backend for models that ignore it —
-    // keeps the request body minimal and avoids any accidental
-    // provider-side validation surprises.
-    const effectiveEffort = modelSupportsReasoningEffort(model)
-        ? validEffort
-        : DEFAULT_REASONING_EFFORT;
+    // No picker in the composer → always the product default (see above).
+    const effectiveEffort = DEFAULT_REASONING_EFFORT;
 
     return [model, setModel, effectiveEffort, setEffort];
 }

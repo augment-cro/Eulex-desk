@@ -318,8 +318,8 @@ export function IntegrationFilePicker({
                         <ul className="divide-y divide-border">
                             {files.map((file) => {
                                 const isImporting = importingId === file.id;
-                                // Files the backend can't import (xlsx,
-                                // pptx, …) stay listed for orientation but
+                                // Files the backend can't import (pptx,
+                                // images, …) stay listed for orientation but
                                 // can't be picked.
                                 const supported =
                                     isSupportedIntegrationFile(file);

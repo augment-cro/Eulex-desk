@@ -42,6 +42,7 @@ import type { TRTableHandle } from "./TRTable";
 import { TRChatPanel } from "./TRChatPanel";
 import { TRRunProgressModal } from "./TRRunProgressModal";
 import { exportTabularReviewToExcel } from "./exportToExcel";
+import type { ParsedCitation } from "./citation-utils";
 import { useSidebar } from "@/app/contexts/SidebarContext";
 import { FloatingAiPrompt } from "@/app/components/shared/FloatingAiPrompt";
 import { track } from "@/app/lib/analytics";
@@ -73,7 +74,7 @@ export function TRView({ reviewId, projectId }: Props) {
     const { user } = useAuth();
     const [expandedCell, setExpandedCell] = useState<TabularCell | null>(null);
     const [expandedCellCitation, setExpandedCellCitation] = useState<
-        { quote: string; page: number } | undefined
+        ParsedCitation | undefined
     >(undefined);
     // Bumped on every citation click so the side panel remounts (via `key`)
     // and re-opens the document preview even when the SAME citation is clicked
@@ -106,7 +107,7 @@ export function TRView({ reviewId, projectId }: Props) {
         mistralApiKey: profile?.mistralApiKey ?? null,
         serverKeys: profile?.serverKeys,
     };
-    const tabularModel = profile?.tabularModel ?? "claude-sonnet-5";
+    const tabularModel = profile?.tabularModel ?? "claude-sonnet-5-5";
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
@@ -666,6 +667,11 @@ export function TRView({ reviewId, projectId }: Props) {
                                             sheetName: tTR("exportSheetName"),
                                             documentHeader: tTR("exportDocumentHeader"),
                                             errorCell: tTR("exportErrorCell"),
+                                            values: {
+                                                notFound: tTR("valueNotFound"),
+                                                yes: tTR("valueYes"),
+                                                no: tTR("valueNo"),
+                                            },
                                         },
                                     })
                                 }
@@ -816,9 +822,9 @@ export function TRView({ reviewId, projectId }: Props) {
                             setExpandedCell(cell);
                             setExpandedCellCitation(undefined);
                         }}
-                        onCitationClick={(cell, page, quote) => {
+                        onCitationClick={(cell, citation) => {
                             setExpandedCell(cell);
-                            setExpandedCellCitation({ quote, page });
+                            setExpandedCellCitation(citation);
                             setCitationNonce((n) => n + 1);
                         }}
                         activeColumnIndex={expandedCell?.column_index ?? null}
@@ -869,9 +875,7 @@ export function TRView({ reviewId, projectId }: Props) {
                                     expandedCell.column_index,
                                 )
                             }
-                            displayDocument={expandedCellCitation !== undefined}
-                            citationQuote={expandedCellCitation?.quote}
-                            citationPage={expandedCellCitation?.page}
+                            citation={expandedCellCitation}
                         />
                     );
                 })()}

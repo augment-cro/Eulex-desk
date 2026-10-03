@@ -31,6 +31,15 @@ describe("serviceIdentity", () => {
         assert.equal(payload.scope, "seam:contexts");
     });
 
+    it("carries system_contexts only when asked, and caches the two tokens apart", () => {
+        process.env.CONTEXTS_SERVICE_SECRET = "s3cret";
+        const plain = mintServiceToken("contexts", "sys-user");
+        const system = mintServiceToken("contexts", "sys-user", null, null, { systemContexts: true });
+        assert.notEqual(plain, system);
+        assert.equal((jwt.decode(plain!) as jwt.JwtPayload).system_contexts, undefined);
+        assert.equal((jwt.decode(system!) as jwt.JwtPayload).system_contexts, true);
+    });
+
     it("caches per (service, user) until near expiry", () => {
         process.env.CONTEXTS_SERVICE_SECRET = "s3cret";
         const a = mintServiceToken("contexts", "cache-user");

@@ -117,6 +117,56 @@ export function corpusOwnedUrlNotice(url: string): string | null {
 }
 
 /**
+ * Comparison key for a URL `read_url` is asked to open: host + path +
+ * query, without scheme, fragment, trailing slash or trailing punctuation
+ * (a link pasted at the end of a sentence carries its full stop). Null when
+ * it is not a URL.
+ */
+export function normalizeReadUrl(raw: string): string | null {
+    try {
+        const u = new URL(raw.trim().replace(/[.,;:!?]+$/, ""));
+        if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+        return `${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}`;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The links the user wrote in their own messages (normalized) — the only
+ * URLs `read_url` may open while web access is off. Reading a pasted link
+ * is a direct request; opening a URL the model found in a tool result (a
+ * Narodne novine `external_url` on every HR source) is the web browsing the
+ * user switched off.
+ */
+export function userProvidedUrls(apiMessages: unknown[]): Set<string> {
+    const out = new Set<string>();
+    for (const m of apiMessages) {
+        if (!m || typeof m !== "object" || (m as { role?: unknown }).role !== "user") continue;
+        const content = (m as { content?: unknown }).content;
+        const parts = typeof content === "string" ? [content] : Array.isArray(content) ? content : [];
+        for (const p of parts) {
+            const text =
+                typeof p === "string"
+                    ? p
+                    : p && typeof p === "object" && typeof (p as { text?: unknown }).text === "string"
+                      ? (p as { text: string }).text
+                      : "";
+            for (const hit of text.match(/https?:\/\/[^\s<>"'`)\]]+/gi) ?? []) {
+                const key = normalizeReadUrl(hit);
+                if (key) out.add(key);
+            }
+        }
+    }
+    return out;
+}
+
+/** Tool result for a `read_url` call refused because web access is off. */
+export const READ_URL_WEB_OFF_NOTICE =
+    "Not fetched: web access is turned off for this conversation, so read_url only opens links the user wrote in their own messages. " +
+    "Do not retry. Get the text from the legal source tools instead — they return the full wording of legislation and court decisions.";
+
+/**
  * Is this failure worth one more shot? Network blips, timeouts, 429s and
  * provider-side 5xx are transient; a 4xx (bad key, bad request) is not,
  * and retrying it only burns 20s of the user's turn.

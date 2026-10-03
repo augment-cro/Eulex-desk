@@ -1,19 +1,35 @@
 "use client";
 
-const PAGE_CITATION_RE =
-    /\[\[page:(\d+)\|\|(?:quote:)?((?:[^\[\]]|\[[^\]]*\])+)\]\]/gi;
+import type { CitationQuote } from "../shared/types";
 
-/** Tag/pill markers — must NOT swallow [[page:N||quote:…]] citations. */
-const PILL_RE = /\[\[(?!page:\d+\|\|)([^\]]+)\]\]/g;
+/**
+ * Tabular citation markers — both forms in ONE pattern, so the i-th match
+ * is the i-th badge and the i-th status in the backend's
+ * `unverified_citations`:
+ *   [[page:<N>||quote:<text>]]                        paged documents
+ *   [[sheet:<SheetName>||cell:<A1 or A1:B2>||quote:<text>]]  spreadsheets
+ * (`quote:` itself is optional, as it always was for the page form.)
+ * Groups: 1 page · 2 sheet · 3 cell · 4 quote.
+ *
+ * MUST stay semantically identical to backend `CITATION_MARKER_RE`
+ * (backend/src/lib/quoteVerification.ts).
+ */
+export const CITATION_MARKER_RE =
+    /\[\[(?:page:(\d+)|sheet:([^|\[\]]+)\|\|cell:([A-Z]{1,3}\d+(?::[A-Z]{1,3}\d+)?))\|\|(?:quote:)?((?:[^\[\]]|\[[^\]]*\])+)\]\]/gi;
 
-export interface ParsedCitation {
-    page: number;
-    quote: string;
-}
+/** Tag/pill markers — must NOT swallow page or sheet citation markers. */
+const PILL_RE = /\[\[(?!page:\d+\|\||sheet:)([^\]]+)\]\]/g;
+
+/**
+ * One parsed tabular citation: `page` for paged documents, `sheet` + `cell`
+ * for spreadsheets (the shape the shared viewers take).
+ */
+export type ParsedCitation = CitationQuote;
 
 /**
  * Strip frontend render tokens if they were accidentally persisted or
- * copied into stored summary text. Real citations live as [[page:…]].
+ * copied into stored summary text. Real citations live as [[page:…]] /
+ * [[sheet:…||cell:…]].
  */
 export function sanitizeCellSummary(text: string): string {
     return text
@@ -46,8 +62,9 @@ export function unwrapNestedSummaryJson(text: string): string {
 }
 
 /**
- * Replaces [[page:n||quote:...]] markers with `§idx§` placeholders.
- * Returns the processed string and an ordered array of extracted citation data.
+ * Replaces [[page:n||quote:...]] and [[sheet:S||cell:A1||quote:...]] markers
+ * with `§idx§` placeholders. Returns the processed string and an ordered
+ * array of extracted citation data (document order = badge order).
  */
 export function preprocessCitations(text: string): {
     processed: string;
@@ -55,12 +72,29 @@ export function preprocessCitations(text: string): {
 } {
     const clean = unwrapNestedSummaryJson(text);
     const citations: ParsedCitation[] = [];
-    PAGE_CITATION_RE.lastIndex = 0;
-    const processed = clean.replace(PAGE_CITATION_RE, (_, page, quote) => {
-        const idx = citations.length;
-        citations.push({ page: parseInt(page, 10), quote: quote.trim() });
-        return `§${idx}§`;
-    });
+    CITATION_MARKER_RE.lastIndex = 0;
+    const processed = clean.replace(
+        CITATION_MARKER_RE,
+        (
+            _,
+            page: string | undefined,
+            sheet: string | undefined,
+            cell: string | undefined,
+            quote: string,
+        ) => {
+            const idx = citations.length;
+            citations.push(
+                page !== undefined
+                    ? { page: parseInt(page, 10), quote: quote.trim() }
+                    : {
+                          sheet: (sheet ?? "").trim(),
+                          cell: (cell ?? "").toUpperCase(),
+                          quote: quote.trim(),
+                      },
+            );
+            return `§${idx}§`;
+        },
+    );
     return { processed, citations };
 }
 

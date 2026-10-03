@@ -397,10 +397,30 @@ svg[stroke-linejoin="round"][fill="none"] {
        citation underlines in answer prose. */
     --color-magenta: var(--highlight);
     --color-magenta-600: var(--highlight);
+    /* literal-ok: theme-invariant ink for text on the constant magenta
+       (--highlight is #FF96FF in paper + dark, so its on-color must not flip
+       with --foreground). ≈7.8:1 on #FF96FF. */
+    --color-magenta-foreground: #32270D;
+    /* Citation pill of a document from an active EULEX context (owner,
+       2026-10-02): cyan, aliased to --action so it tracks every theme, with
+       the theme's own on-cyan ink. */
+    --color-context-cite: var(--action);
+    --color-context-cite-foreground: var(--action-foreground);
     /* literal-ok: theme-invariant ink for text on the constant lime --brand
        (—brand is the same #BDFF32 in paper + dark, so its on-color must not
        flip with --foreground; fixes white-on-lime in dark mode). */
     --color-brand-foreground: #32270D;
+    /* Status dots — the model's status tokens 🔴 🟡 🔵 ⚪ 🟢 drawn as soft
+       pastel dots (StatusDot); per-theme mixes below. */
+    --color-status-problem: var(--status-problem);
+    --color-status-problem-edge: var(--status-problem-edge);
+    --color-status-gap: var(--status-gap);
+    --color-status-gap-edge: var(--status-gap-edge);
+    --color-status-assessment: var(--status-assessment);
+    --color-status-assessment-edge: var(--status-assessment-edge);
+    --color-status-clear: var(--status-clear);
+    --color-status-clear-edge: var(--status-clear-edge);
+    --color-status-insufficient-edge: var(--status-insufficient-edge);
 }
 
 /* Serif-role default (host-only, outside the fence): EULEX paper/dark = Sentient.
@@ -511,6 +531,37 @@ svg[stroke-linejoin="round"][fill="none"] {
     --surface-elevated-foreground: oklch(0.985 0 0);
     /* classic serif = EB Garamond (original pre-reskin look) */
     --app-font-serif: var(--font-eb-garamond);
+}
+
+/* Status dots (host-only, outside the fence): the status ladder mixed into
+   the page — soft fills with a hairline edge 25 points stronger. Mixed in
+   oklab, not oklch: the cream and brown pages carry a hue, and an oklch mix
+   swings cyan through green on them. Material problem ← --destructive, gap ←
+   --warning, legal assessment ← --action, no material gap ← --success;
+   insufficient information is an empty dot on an --input ring. Light pages
+   need little colour; dark pages more, or the dots sink into the brown. */
+:root {
+    --status-problem: color-mix(in oklab, var(--destructive) 62%, var(--background));
+    --status-problem-edge: color-mix(in oklab, var(--destructive) 87%, var(--background));
+    --status-gap: color-mix(in oklab, var(--warning) 36%, var(--background));
+    --status-gap-edge: color-mix(in oklab, var(--warning) 61%, var(--background));
+    --status-assessment: color-mix(in oklab, var(--action) 58%, var(--background));
+    --status-assessment-edge: color-mix(in oklab, var(--action) 83%, var(--background));
+    --status-clear: color-mix(in oklab, var(--success) 48%, var(--background));
+    --status-clear-edge: color-mix(in oklab, var(--success) 73%, var(--background));
+    --status-insufficient-edge: var(--input);
+}
+[data-theme="dark"],
+[data-theme="mike-dark"] {
+    --status-problem: color-mix(in oklab, var(--destructive) 66%, var(--background));
+    --status-problem-edge: color-mix(in oklab, var(--destructive) 91%, var(--background));
+    --status-gap: color-mix(in oklab, var(--warning) 66%, var(--background));
+    --status-gap-edge: color-mix(in oklab, var(--warning) 91%, var(--background));
+    --status-assessment: color-mix(in oklab, var(--action) 62%, var(--background));
+    --status-assessment-edge: color-mix(in oklab, var(--action) 87%, var(--background));
+    --status-clear: color-mix(in oklab, var(--success) 64%, var(--background));
+    --status-clear-edge: color-mix(in oklab, var(--success) 89%, var(--background));
+    --status-insufficient-edge: color-mix(in oklab, var(--input) 60%, var(--foreground));
 }
 
 /* Classic themes: nav, buttons and links render in Sentient (sans),
@@ -1026,6 +1077,46 @@ svg[stroke-linejoin="round"][fill="none"] {
     color: inherit;
 }
 
+/* ─── Spreadsheet viewer (SpreadsheetView → Fortune-sheet), ported from
+   open-legal-products/mike (`--spreadsheet-*` tokens). Fortune-sheet paints
+   its grid on a white canvas in every theme, so the header tint is an ink
+   overlay on that white (stronger in the dark themes); the citation
+   highlight is the EULEX magenta highlighter. The canvas-painted tokens are
+   resolved to concrete colours in JS (canvas cannot read var()/color-mix()). */
+:root {
+    --spreadsheet-canvas: #FFFFFF; /* Fortune-sheet's fixed grid fill */
+    --spreadsheet-ink: var(--foreground);
+    --spreadsheet-header-tint: color-mix(in oklch, var(--spreadsheet-ink) 7%, transparent);
+    --spreadsheet-header-corner: color-mix(in oklch, var(--spreadsheet-ink) 7%, var(--spreadsheet-canvas));
+    --spreadsheet-header-hover: color-mix(in oklch, var(--spreadsheet-ink) 14%, transparent);
+    --spreadsheet-header-selected: color-mix(in oklch, var(--spreadsheet-ink) 20%, transparent);
+    --spreadsheet-highlight-background: color-mix(in oklch, var(--highlight) 35%, transparent);
+    --spreadsheet-highlight-outline: var(--highlight);
+}
+[data-theme="dark"],
+[data-theme="mike-dark"] {
+    --spreadsheet-ink: var(--background);
+    --spreadsheet-header-tint: color-mix(in oklch, var(--spreadsheet-ink) 30%, transparent);
+    --spreadsheet-header-corner: color-mix(in oklch, var(--spreadsheet-ink) 30%, var(--spreadsheet-canvas));
+    --spreadsheet-header-hover: color-mix(in oklch, var(--spreadsheet-ink) 45%, transparent);
+    --spreadsheet-header-selected: color-mix(in oklch, var(--spreadsheet-ink) 55%, transparent);
+}
+/* The row/col header strips are transparent overlays over the label
+   canvas — leave them so the labels show. Only the corner (no label) gets
+   a matching background here; the strips are tinted on the canvas via
+   Fortune-sheet's render hooks. */
+.fortune-sheet-viewer .fortune-left-top {
+    background-color: var(--spreadsheet-header-corner);
+}
+.fortune-sheet-viewer .fortune-row-header-hover,
+.fortune-sheet-viewer .fortune-col-header-hover {
+    background-color: var(--spreadsheet-header-hover);
+}
+.fortune-sheet-viewer .fortune-row-header-selected,
+.fortune-sheet-viewer .fortune-col-header-selected {
+    background-color: var(--spreadsheet-header-selected);
+}
+
 /* docx-preview tracked-change styling */
 .docx-view-container ins {
     color: var(--success);
@@ -1150,6 +1241,10 @@ svg[stroke-linejoin="round"][fill="none"] {
 .legal-cite-link {
     color: inherit;
     font: inherit;
+    /* It is a <button>: `font` does not reset the global uppercase-mono button
+       treatment, so "članku 4." rendered as "ČLANKU 4." (tracker #45). */
+    text-transform: inherit;
+    letter-spacing: inherit;
     text-decoration: none;
     cursor: pointer;
     background-image: linear-gradient(
@@ -1172,4 +1267,13 @@ svg[stroke-linejoin="round"][fill="none"] {
 @keyframes legalCiteUnderline {
     from { background-size: 0% 2.5px; }
     to   { background-size: 100% 2.5px; }
+}
+
+/* Article reference the corpus could not confirm (legal_refs status
+   "unverified"): dotted, muted underline — never a link to another act. */
+.legal-cite-unverified {
+    text-decoration: underline dotted;
+    text-decoration-color: var(--color-muted-foreground);
+    text-underline-offset: 3px;
+    cursor: help;
 }

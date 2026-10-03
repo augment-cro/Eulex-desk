@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
+import { installAsyncErrorForwarding } from "./lib/asyncErrors";
 import cors from "cors";
 import { closePool } from "./lib/db";
 import { ensureSchema } from "./lib/ensureSchema";
@@ -28,7 +29,10 @@ import { authPairRouter } from "./routes/authPair";
 import { searchRouter } from "./routes/search";
 import { integrationsRouter } from "./routes/integrations";
 import { chatSharesRouter } from "./routes/chatShares";
-import { adminMaxRouter } from "./routes/adminMax";
+import { billingProviderRouter } from "./routes/billingProvider";
+import billingGrantsRouter from "./routes/billingGrants";
+import { makeOperatorRouter } from "./routes/operator";
+import { internalCronRouter } from "./routes/internalCron";
 import { statsRouter } from "./routes/stats";
 import { piiRouter } from "./routes/pii";
 import {
@@ -47,7 +51,10 @@ import {
 } from "./lib/seams/promptPack";
 import { manifestPublicKey } from "./lib/manifestSigning";
 import { safeErrorLog } from "./lib/safeError";
+import { createContextDocumentsRouter } from "./routes/contextDocuments";
 
+// Rejected async handlers → global error handler (patches the Layer prototype, so every router is covered).
+installAsyncErrorForwarding();
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
@@ -172,6 +179,9 @@ app.use((req, _res, next) => {
 });
 
 app.use("/billing", billingRouter);
+// Optional billing-provider seam (offline-payment quotes, fiscal documents);
+// inert without BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET.
+app.use("/billing", billingProviderRouter);
 // Must be mounted before chatRouter: its GET/PATCH/DELETE /chat/:chatId
 // param routes would otherwise shadow /chat/groups.
 app.use("/chat/groups", chatGroupsRouter);
@@ -193,7 +203,7 @@ app.use("/mcp/oauth", mcpOauthRouter);
 app.use("/auth/pair", authPairRouter);
 app.use("/search", searchRouter);
 app.use("/integrations", integrationsRouter);
-app.use("/adminmax", adminMaxRouter);
+app.use("/operator/v1", makeOperatorRouter());
 app.use("/pii", piiRouter);
 app.use("/teams", teamsRouter);
 app.use("/draft", draftRouter);
@@ -202,6 +212,9 @@ app.use("/draft", draftRouter);
 // secrets are set) + the user-facing identity-token endpoint (404s when
 // the named service is unconfigured). Both inert without seam envs.
 app.use("/internal/notifications", serviceNotificationsRouter);
+app.use("/internal/context-documents", createContextDocumentsRouter());
+app.use("/internal/billing", billingGrantsRouter);
+app.use("/internal/cron", internalCronRouter);
 app.use("/service-token", serviceTokenRouter);
 // chatSharesRouter handles both /chat/:id/share* (owner side) and
 // /share/:token* (recipient side), so it must mount at the root.

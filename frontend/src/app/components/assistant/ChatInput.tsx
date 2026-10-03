@@ -64,6 +64,11 @@ import { cn } from "@/lib/utils";
 
 export interface ChatInputHandle {
     addDoc: (doc: MikeDocument) => void;
+    /** Select a workflow and/or put text in the composer, then focus it ("Nastavi procjenu"). */
+    prefill: (args: {
+        workflow?: { id: string; title: string; type: MikeWorkflow["type"] } | null;
+        text?: string;
+    }) => void;
 }
 
 // A paste at or past either threshold becomes an attached .txt document
@@ -104,6 +109,15 @@ interface Props {
      * doesn't tie it to a chat row until the first user turn lands.
      */
     chatId?: string | null;
+    /**
+     * A workflow selected when the composer mounts (a new chat opened with
+     * a context task's "Pokreni"); read once, the user can remove it.
+     */
+    initialWorkflow?: {
+        id: string;
+        title: string;
+        type: MikeWorkflow["type"];
+    } | null;
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
@@ -119,6 +133,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         disabled = false,
         variant = "compact",
         chatId = null,
+        initialWorkflow = null,
     }: Props,
     ref,
 ) {
@@ -129,7 +144,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         id: string;
         title: string;
         type: MikeWorkflow["type"];
-    } | null>(null);
+    } | null>(initialWorkflow);
     // Model + reasoning-effort still flow to the backend (default/persisted
     // values from the profile); the inline Brain picker UI was removed.
     const [model, , effort] = useSelectedModel();
@@ -295,6 +310,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                 return [...prev, doc];
             });
         },
+        prefill: ({ workflow, text }) => {
+            if (workflow) setSelectedWorkflow(workflow);
+            if (text !== undefined) setValue(text);
+            requestAnimationFrame(() => {
+                const el = textareaRef.current;
+                if (!el) return;
+                el.focus();
+                el.setSelectionRange(el.value.length, el.value.length);
+            });
+        },
     }));
 
     const handleAddDocFromProject = useCallback((doc: MikeDocument) => {
@@ -342,7 +367,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                 const file = new File([text], `${label}.txt`, {
                     type: "text/plain",
                 });
-                const doc = await uploadStandaloneDocument(file);
+                const doc = await uploadStandaloneDocument(file, { chatId });
                 track("document_uploaded", {
                     surface: "pasted_text",
                     file_type: "txt",
@@ -680,6 +705,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                         <div className="flex items-center gap-1 min-w-0 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                             {!hideAddDocButton && (
                                 <AddDocButton
+                                    chatId={chatId}
                                     onSelectDoc={handleAddDocFromProject}
                                     onBrowseAll={() => setDocSelectorOpen(true)}
                                     onOpenIntegrationPicker={(

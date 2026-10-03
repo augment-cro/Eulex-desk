@@ -6,11 +6,12 @@ import { useTranslations } from "next-intl";
 import { supabase } from "@/lib/supabase";
 import { applyOptimisticResolution } from "../assistant/EditCard";
 import { DocView } from "./DocView";
+import { renderStatusTokens } from "./StatusDot";
 import { DocxViewer } from "./DocxViewer";
 import {
     displayCitationQuote,
     expandCitationToEntries,
-    formatCitationPage,
+    formatCitationLocation,
 } from "./types";
 import type {
     CitationQuote,
@@ -92,6 +93,12 @@ interface Props {
         versionId: string;
         versionNumber: number | null;
     }) => void;
+    /**
+     * False while this panel's tab is hidden. Forwarded to DocView so a
+     * spreadsheet only mounts its (document-wide) Fortune-sheet workbook
+     * while visible. Defaults to true.
+     */
+    active?: boolean;
 }
 
 /**
@@ -113,6 +120,7 @@ export function DocPanel({
     onScrollChange,
     onSaved,
     onDraftEditApplied,
+    active = true,
 }: Props) {
     const t = useTranslations("docPanel");
     // Draft Mode — lokalni toggle za SuperDoc inline selekcijsko uređivanje.
@@ -222,7 +230,9 @@ export function DocPanel({
                         document_id: documentId,
                         version_id: versionId,
                     }}
+                    filename={filename}
                     quotes={quotes}
+                    active={active}
                 />
             )}
         </div>
@@ -251,8 +261,11 @@ function CitationHeader({
     isReloading: boolean;
 }) {
     const t = useTranslations("docPanel");
+    const tCommon = useTranslations("common");
     const displayQuote = displayCitationQuote(citation);
-    const pagesLabel = formatCitationPage(citation);
+    const pagesLabel = formatCitationLocation(citation, (page) =>
+        tCommon("pageShort", { page }),
+    );
     return (
         <div className="pt-2 pb-3">
             <div className="flex items-center gap-2 mb-2">
@@ -268,7 +281,7 @@ function CitationHeader({
             </div>
             <div className="w-full rounded-md bg-muted border border-border px-2 py-2">
                 <p className="text-sm font-serif text-muted-foreground">
-                    &ldquo;{displayQuote}&rdquo;
+                    &ldquo;{renderStatusTokens(displayQuote)}&rdquo;
                     {pagesLabel && (
                         <span className="ml-1 text-muted-foreground/70">
                             ({pagesLabel})

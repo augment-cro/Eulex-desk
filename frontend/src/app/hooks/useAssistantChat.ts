@@ -3,13 +3,26 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { piiAttachChat, streamChat, streamProjectChat } from "@/app/lib/mikeApi";
+import {
+    piiAttachChat,
+    stopChatTurn,
+    streamChat,
+    streamProjectChat,
+} from "@/app/lib/mikeApi";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useGenerateChatTitle } from "./useGenerateChatTitle";
 import { track } from "@/app/lib/analytics";
 import { modelTierOf } from "@/app/components/assistant/ModelToggle";
+import {
+    isContextEffort,
+    parseContextsUnavailable,
+} from "@/app/components/contexts/contextLabels";
+import { parsePlanSteps } from "@/app/components/assistant/planSteps";
+import { parseAssessmentSnapshot } from "@/app/components/assistant/assessmentEvents";
 import type {
     AssistantEvent,
+    LegalRefExtra,
+    LegalRefItem,
     LegalSource,
     MikeAnnotation,
     MikeMessage,
@@ -127,6 +140,10 @@ export function useAssistantChat({
     const [chatId, setChatId] = useState<string | undefined>(initialChatId);
 
     const abortControllerRef = useRef<AbortController | null>(null);
+    // Chat id of the turn being streamed — what Stop asks the backend to
+    // abort (#96). Known up front for an existing chat, from the stream's
+    // first `chat_id` event for a new one.
+    const turnChatIdRef = useRef<string | null>(null);
 
     const dripIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const dripTargetRef = useRef<string>("");
@@ -164,6 +181,13 @@ export function useAssistantChat({
         stopDrip();
         const target = dripTargetRef.current;
         dripDisplayLenRef.current = target.length;
+        // No block in flight: finalizeStreamingContent already wrote its text
+        // and reset the target to "" — flushing now would blank the answer.
+        // Happens whenever an event arrives after the prose (post-answer
+        // `legal_refs` / `legal_sources`), so the stream-end flush hit it.
+        const events = eventsRef.current;
+        const last = events[events.length - 1];
+        if (last?.type !== "content" || !last.isStreaming) return;
         setMessages((prev) => updateLastContentEvent(prev, target));
     };
 
@@ -267,6 +291,9 @@ export function useAssistantChat({
 
     const cancel = () => {
         if (abortControllerRef.current) {
+            // Aborting the fetch does not reach the backend behind Cloud
+            // Run — ask it to stop the turn explicitly (#96).
+            if (turnChatIdRef.current) stopChatTurn(turnChatIdRef.current);
             abortControllerRef.current.abort();
             abortControllerRef.current = null;
             setIsResponseLoading(false);
@@ -295,6 +322,9 @@ export function useAssistantChat({
         }
         return () => {
             pendingUnmountAbortRef.current = setTimeout(() => {
+                // Leaving only drops this client's stream: behind Cloud Run
+                // the turn keeps running and its answer is saved for when
+                // the user returns. Only an explicit Stop ends it (#96).
                 abortControllerRef.current?.abort();
                 abortControllerRef.current = null;
                 stopDrip();
@@ -441,6 +471,7 @@ export function useAssistantChat({
         try {
             const controller = new AbortController();
             abortControllerRef.current = controller;
+            turnChatIdRef.current = chatId ?? null;
 
             const apiMessages = newMessages.map((currentMessage) => ({
                 role: currentMessage.role,
@@ -606,6 +637,7 @@ export function useAssistantChat({
 
                         if (data.type === "chat_id") {
                             streamedChatId = data.chatId;
+                            turnChatIdRef.current = data.chatId;
                             setChatId(data.chatId);
                             setCurrentChatId(data.chatId);
                             continue;
@@ -781,6 +813,52 @@ export function useAssistantChat({
                                     undefined,
                                 isStreaming: true,
                             });
+                            continue;
+                        }
+
+                        if (data.type === "contexts_applied") {
+                            const unavailable = parseContextsUnavailable(
+                                data.unavailable,
+                            );
+                            pushEvent({
+                                type: "contexts_applied",
+                                contexts: (Array.isArray(data.contexts)
+                                    ? data.contexts
+                                    : []) as Extract<
+                                    AssistantEvent,
+                                    { type: "contexts_applied" }
+                                >["contexts"],
+                                ...(typeof data.model === "string"
+                                    ? { model: data.model }
+                                    : {}),
+                                ...(isContextEffort(data.effort)
+                                    ? { effort: data.effort }
+                                    : {}),
+                                ...(unavailable.length > 0
+                                    ? { unavailable }
+                                    : {}),
+                            });
+                            continue;
+                        }
+
+                        if (data.type === "assessment_recorded") {
+                            const assessment = parseAssessmentSnapshot(
+                                data.assessment,
+                            );
+                            if (assessment) {
+                                pushEvent({
+                                    type: "assessment_recorded",
+                                    assessment,
+                                });
+                            }
+                            continue;
+                        }
+
+                        if (data.type === "plan_updated") {
+                            const steps = parsePlanSteps(data.steps);
+                            if (steps.length > 0) {
+                                pushEvent({ type: "plan_updated", steps });
+                            }
                             continue;
                         }
 
@@ -1180,6 +1258,23 @@ export function useAssistantChat({
                             continue;
                         }
 
+                        if (data.type === "legal_refs") {
+                            // Post-answer article-reference resolution
+                            // (backend lib/legalRefs, #45) — arrives after
+                            // `citations`. Dropping it left the live message
+                            // on the local linker until a reload read it from
+                            // the persisted events. No thinking placeholder:
+                            // the answer is complete, and pushEvent scrubs the
+                            // one a late `legal_sources` left behind.
+                            pushEvent({
+                                type: "legal_refs",
+                                refs: (data.refs as LegalRefItem[]) ?? [],
+                                extra: (data.extra as LegalRefExtra[]) ?? [],
+                                model: (data.model as string | null) ?? null,
+                            });
+                            continue;
+                        }
+
                         if (data.type === "citations") {
                             // End-of-stream signal — scrub any lingering
                             // placeholders so they don't persist into the
@@ -1283,8 +1378,15 @@ export function useAssistantChat({
             }
 
             return streamedChatId || null;
-        } catch (error: any) {
-            if (error.name === "AbortError") {
+        } catch (error: unknown) {
+            // Thrown shapes: fetch AbortError (DOMException), the 429
+            // `rlError` flagged `rateLimited`, ChatHttpError, network
+            // TypeError — read the two flags without assuming an object.
+            const thrown = (error ?? {}) as {
+                name?: string;
+                rateLimited?: boolean;
+            };
+            if (thrown.name === "AbortError") {
                 flushDrip();
                 const cancelText = tErrors("cancelled");
                 setMessages((prev) => {
@@ -1329,7 +1431,7 @@ export function useAssistantChat({
                         },
                     ];
                 });
-            } else if (error?.rateLimited) {
+            } else if (thrown.rateLimited) {
                 // Daily limit hit before the reply started. Keep the
                 // assistant bubble but flag it so it renders an in-chat
                 // notice (limit reached + CTA to pick a larger plan)
@@ -1393,6 +1495,7 @@ export function useAssistantChat({
             return null;
         } finally {
             abortControllerRef.current = null;
+            turnChatIdRef.current = null;
             // The RateLimit-* headers on the stream carry the numbers from
             // BEFORE this turn (they're written when the stream opens), so
             // the usage ring would lag one message behind. Pull a fresh

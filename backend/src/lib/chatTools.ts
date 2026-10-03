@@ -40,6 +40,15 @@ import {
     splitTextIntoParts,
 } from "./documentText";
 import { generatedDocumentFilename } from "./filenameUtf8";
+import { contentTypeForUpload, isSupportedUploadType } from "./fileTypes";
+import { isSpreadsheetText, parseCellLocator } from "./spreadsheet";
+import {
+    buildXlsxWorkbook,
+    normalizeWorkbookSpec,
+    WorkbookSpecError,
+    type ExcelWorkbookSpec,
+    type WorkbookReport,
+} from "./xlsx/workbook";
 import {
     EMPTY_PLACEHOLDER_MAP,
     restorePlaceholders,
@@ -77,19 +86,62 @@ import { computeSearchCallCostUsd } from "./searchPricing";
 import {
     READ_URL_COST_USD,
     READ_URL_TOOL,
+    READ_URL_WEB_OFF_NOTICE,
     corpusOwnedUrlNotice,
     formatExtractForLLM,
     isExtractConfigured,
+    normalizeReadUrl,
     readUrl,
+    userProvidedUrls,
 } from "./extract";
+import { bridgeNarodneNovineUrl } from "./extract/nnBridge";
+import type { LegalRefsEvent } from "./legalRefs";
 import {
     scrubInternalIdentifiers,
     wrapUntrustedUserInput,
 } from "./promptSecurity";
 import {
     buildContextsSystemBlock,
+    contextSourceUrls,
+    contextsAppliedEvent,
+    contextRunSettings,
+    scopeAllowlistsForTurn,
+    type ContextsAppliedEvent,
     type ResolvedContext,
+    type UnavailableContextItem,
 } from "./seams/contextsRuntime";
+import {
+    DOCX_CELL_MARGINS,
+    DOCX_FONT,
+    DOCX_LINE_SPACING,
+    DOCX_PALETTE,
+    DOCX_SIZES,
+    STATUS_DOT_FONT,
+    STATUS_DOT_SCALE,
+} from "./docxPalette";
+import { splitStatusTokens, statusDotGlyph } from "./statusTokens";
+import {
+    LOAD_ASSESSMENT_TOOL,
+    RECORD_ASSESSMENT_TOOL,
+    assessmentAck,
+    assessmentForModel,
+    assessmentSummaryLine,
+    createAssessmentLedger,
+    loadPriorAssessments,
+    type AssessmentLedger,
+    type AssessmentRecordedEvent,
+    type AssessmentSnapshot,
+} from "./assessment";
+import { contextTaskForId } from "./seams/contextTasks";
+import {
+    UPDATE_PLAN_TOOL,
+    offersPlanTool,
+    parsePlanSteps,
+    planAck,
+    planSummaryLine,
+    type PlanStep,
+    type PlanUpdatedEvent,
+} from "./plan";
 import {
     buildScopeSet,
     redactToolResult,
@@ -97,6 +149,19 @@ import {
     injectScopeParam,
     isLegalMcpServer,
 } from "./seams/scopeEnforcement";
+import { mapWithConcurrency } from "./concurrency";
+import { uiLanguageTurnNote, type UiLocale } from "./uiLocale";
+import {
+    createReasoningGate,
+    modelReasoningTranslator,
+} from "./reasoningLanguage";
+import { recordLlmUsage } from "./llmUsage";
+import { providerForModel } from "./llm/models";
+
+/** Parallel sidecar calls per turn while anonymizing the chat history
+ *  window — enough to overlap network + auth latency without piling up
+ *  on the shield's single analysis worker. */
+const PII_HISTORY_CONCURRENCY = 4;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -116,6 +181,8 @@ export type DocIndex = Record<
         filename: string;
         version_id?: string | null;
         version_number?: number | null;
+        /** Shared context document: readable and citable, never editable. */
+        read_only?: boolean;
     }
 >;
 
@@ -490,6 +557,87 @@ export const WORKFLOW_TOOLS = [
     },
 ];
 
+/**
+ * generate_excel (#46 phase 3, spec 2026-09-24): a typed, styled .xlsx
+ * workbook stored as a first-class document. Offered to every tier (owner
+ * decision 2026-10-01) — unlike generate_docx, no entitlement drops it.
+ * Cells are strings in the schema so every provider sends one canonical
+ * form; lib/xlsx/values types them per column (and also accepts numbers
+ * from providers that ignore `strict`).
+ */
+export const GENERATE_EXCEL_TOOL = {
+    type: "function",
+    function: {
+        name: "generate_excel",
+        strict: true,
+        description:
+            "Generate an Excel (.xlsx) workbook the user can download and open in Excel to sort, filter and sum. Use it when the deliverable is tabular data the user wants as a spreadsheet: a register, schedule, tracker, checklist, list of parties, deadlines or amounts, a comparison matrix, or any table they ask to get in Excel. For a prose document use generate_docx. Each column has a type, and every cell is written as a string in the column order; the tool turns it into a real Excel value: number and currency — digits with '.' as the decimal separator and no thousands separators (1234.56; currency is EUR); percent — percentage points (12.5 means 12.5 %); date — ISO 2026-03-31, optionally with a time (2026-03-31 14:30); text — as is. Use '' for an empty cell. Never write formulas: a value starting with '=' is stored as text. The header row is bold, frozen and filterable automatically, so do not repeat it in rows. Returns the new workbook's doc_id and lists any value that could not be read as its column's type (kept as text). Do not put download links in your reply; the UI shows a download card.",
+        parameters: {
+            type: "object",
+            properties: {
+                title: {
+                    type: "string",
+                    description:
+                        "Workbook title, used as the file name. Keep diacritics (e.g. 'Popis ugovora').",
+                },
+                sheets: {
+                    type: "array",
+                    description: "One or more sheets (tabs), at least one.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            name: {
+                                type: "string",
+                                description:
+                                    "Sheet tab name, at most 31 characters, without [ ] : * ? / \\ .",
+                            },
+                            columns: {
+                                type: "array",
+                                description: "Columns, left to right. At least one.",
+                                items: {
+                                    type: "object",
+                                    properties: {
+                                        header: {
+                                            type: "string",
+                                            description: "Column header text.",
+                                        },
+                                        type: {
+                                            type: "string",
+                                            enum: ["text", "number", "date", "currency", "percent"],
+                                            description:
+                                                "How the column's cells are stored: text, number, date, currency (EUR amount) or percent.",
+                                        },
+                                        width: {
+                                            type: "number",
+                                            description:
+                                                "Optional column width in characters (default: fitted to the content).",
+                                        },
+                                    },
+                                    required: ["header", "type"],
+                                    additionalProperties: false,
+                                },
+                            },
+                            rows: {
+                                type: "array",
+                                description:
+                                    "Data rows, without the header row. Each row is an array with exactly one string per column, in column order.",
+                                items: {
+                                    type: "array",
+                                    items: { type: "string" },
+                                },
+                            },
+                        },
+                        required: ["name", "columns", "rows"],
+                        additionalProperties: false,
+                    },
+                },
+            },
+            required: ["title", "sheets"],
+            additionalProperties: false,
+        },
+    },
+};
+
 export const TOOLS = [
     {
         type: "function",
@@ -609,6 +757,7 @@ export const TOOLS = [
             },
         },
     },
+    GENERATE_EXCEL_TOOL,
     {
         type: "function",
         function: {
@@ -675,6 +824,15 @@ type ParsedCitation =
           page: number | string;
           quote: string;
       }
+    | {
+          /** Spreadsheet citation: located by sheet + A1 cell/range, no page. */
+          kind: "cell";
+          ref: number;
+          doc_id: string;
+          sheet: string;
+          cell: string;
+          quote: string;
+      }
     | { kind: "source"; ref: number; source_id: string; quote: string };
 
 function normalizeCitation(raw: unknown): ParsedCitation | null {
@@ -689,15 +847,27 @@ function normalizeCitation(raw: unknown): ParsedCitation | null {
     }
     // Document citation variant (uploaded/generated docs).
     if (typeof c.doc_id !== "string") return null;
+    // Spreadsheet variant: `sheet` + `cell` (A1 address or range) instead
+    // of a page. Wins over a stray page when both are present.
+    const locator = parseCellLocator(c.sheet, c.cell);
+    if (locator) {
+        return { kind: "cell", ref: c.ref, doc_id: c.doc_id, ...locator, quote: c.quote };
+    }
+    // A spreadsheet locator that did not parse ("red 2") is dropped — page 1
+    // of a workbook points nowhere.
+    if (c.sheet != null || c.cell != null) return null;
     let page: number | string;
     if (typeof c.page === "number") {
         page = c.page;
     } else if (typeof c.page === "string" && /^\d+\s*-\s*\d+$/.test(c.page)) {
         page = c.page;
     } else {
+        // No usable page (a DOCX or plain-text quote often comes without
+        // one): keep the citation on page 1 — the viewer finds the quote by
+        // its text. Dropping it also stripped the [N] from the answer, so
+        // the claim lost its source altogether (upstream does the same).
         const n = parseInt(String(c.page ?? ""), 10);
-        if (!Number.isFinite(n)) return null;
-        page = n;
+        page = Number.isFinite(n) && n > 0 ? n : 1;
     }
     return { kind: "doc", ref: c.ref, doc_id: c.doc_id, page, quote: c.quote };
 }
@@ -791,11 +961,15 @@ export async function enrichWithPriorEvents(
     };
 
     const lines: string[] = [];
+    let latestPlan: PlanStep[] | null = null;
+    const latestAssessments = new Map<string, AssessmentSnapshot>();
     for (const ev of content as Record<string, unknown>[]) {
         if (ev?.type === "doc_created") {
-            lines.push(
-                `- generate_docx → ${refFor(ev.document_id, ev.filename)}`,
-            );
+            const tool =
+                typeof ev.filename === "string" && /\.xlsx$/i.test(ev.filename)
+                    ? "generate_excel"
+                    : "generate_docx";
+            lines.push(`- ${tool} → ${refFor(ev.document_id, ev.filename)}`);
         } else if (ev?.type === "doc_edited") {
             lines.push(
                 `- edit_document → ${refFor(ev.document_id, ev.filename)}`,
@@ -826,8 +1000,17 @@ export async function enrichWithPriorEvents(
             }
         } else if (ev?.type === "workflow_applied") {
             lines.push(`- applied workflow: "${ev.title}"`);
+        } else if (ev?.type === "plan_updated" && Array.isArray(ev.steps)) {
+            latestPlan = ev.steps as PlanStep[];
+        } else if (ev?.type === "assessment_recorded" && ev.assessment && typeof ev.assessment === "object") {
+            const a = ev.assessment as AssessmentSnapshot;
+            if (typeof a.assessment_id === "string") latestAssessments.set(a.assessment_id, a);
         }
     }
+    // Only the latest plan matters — each update_plan replaces the whole plan.
+    if (latestPlan?.length) lines.push(planSummaryLine(latestPlan));
+    // And the latest version of each assessment recorded in that turn.
+    for (const a of latestAssessments.values()) lines.push(assessmentSummaryLine(a));
     if (lines.length === 0) return messages;
     const summary = `\n\n[Tool activity in your previous turn]\n${lines.join("\n")}`;
 
@@ -863,9 +1046,20 @@ export async function enrichWithPriorEvents(
  */
 const SYSTEM_DYNAMIC_DOC_MARKER = "<<<__MAX_DYNAMIC_DOC_CONTEXT__>>>";
 
+/**
+ * Documents of an active EULEX context (AZOP guidance, forms, EULEX
+ * templates) are cited with [N] markers like the user's own documents — the
+ * answer then links the passage (a cyan pill in the UI). Without this note
+ * the model reads the citation rules' "uploaded or generated documents only"
+ * as excluding them and names them in prose ("Smjernice, str. 12") with no
+ * link.
+ */
+export const CONTEXT_DOCUMENT_CITATION_NOTE =
+    'Documents marked "EULEX context document" belong to an active EULEX context. Cite them exactly like the user\'s documents: whenever a statement relies on one, put an [N] marker in the prose and add an entry with its doc_id, page and a verbatim quote to the <CITATIONS> block — also when the prose already names the document and its page. The rule that keeps [N] citations to uploaded or generated documents does not exclude them; it only keeps statutes, regulations and case law from legal research tools in prose. They cannot be edited.';
+
 export function buildMessages(
     messages: ChatMessage[],
-    docAvailability: { doc_id: string; filename: string; folder_path?: string }[],
+    docAvailability: { doc_id: string; filename: string; folder_path?: string; context?: boolean }[],
     systemPromptExtra?: string,
     docIndex?: DocIndex,
     // Per-request volatile system context (e.g. the reference-time line,
@@ -876,6 +1070,9 @@ export function buildMessages(
     // possible — it renders before `messages`, so any change here also
     // invalidates the rolling conversation-history breakpoint.
     systemDynamicExtra?: string,
+    // UI language → a short trusted note after every user message (see
+    // uiLanguageTurnNote). Omitted → no note (legacy callers).
+    uiLocale?: UiLocale,
 ) {
     const formatted: unknown[] = [];
     let systemContent = buildCoreSystemPrompt();
@@ -899,7 +1096,10 @@ export function buildMessages(
         systemContent += `---\nAVAILABLE DOCUMENTS:\n`;
         for (const doc of docAvailability) {
             const label = doc.folder_path ? `${doc.folder_path} / ${doc.filename}` : doc.filename;
-            systemContent += `- ${doc.doc_id}: ${label}\n`;
+            systemContent += `- ${doc.doc_id}: ${label}${doc.context ? " (EULEX context document, read-only)" : ""}\n`;
+        }
+        if (docAvailability.some((d) => d.context)) {
+            systemContent += `\n${CONTEXT_DOCUMENT_CITATION_NOTE}\n`;
         }
         systemContent +=
             "\nYou do NOT retain document content between conversation turns. You MUST call read_document (or fetch_documents) at the start of every response that involves a document's content, even if you have read it in a previous turn. Failure to do so will result in hallucinated or stale content.\n---\n";
@@ -949,10 +1149,280 @@ export function buildMessages(
             content = annotations.length
                 ? `${annotations.join("\n\n")}\n\n${wrapped}`
                 : wrapped;
+            // Language reminder AFTER the user's text (per-message steering
+            // of thinking), outside the wrapper like the annotations above.
+            if (uiLocale) content += `\n\n${uiLanguageTurnNote(uiLocale)}`;
         }
         formatted.push({ role: msg.role, content });
     }
     return formatted;
+}
+
+/** Text width of the generated document's page (A4, docx's 1-inch margins), in twips. */
+const DOCX_TEXT_WIDTH = { portrait: 11906 - 2 * 1440, landscape: 16838 - 2 * 1440 };
+
+/**
+ * Column widths for a generated table, in twips adding up to `total`: each
+ * column weighted by its longest line (header and cells), clamped to 4–40
+ * characters plus 2 for the padding, so a status column stays narrow and a
+ * note column gets room.
+ * Real widths, not docx's 100-twip placeholders: Word autofits those, but
+ * previews (Quick Look, LibreOffice, docx viewers) collapse the table.
+ */
+export function docxColumnWidths(headers: string[], rows: string[][], total: number): number[] {
+    const weights = headers.map((h, i) => {
+        const longest = Math.max(
+            ...[h, ...rows.map((r) => r[i])]
+                .map((t) => (typeof t === "string" ? t : ""))
+                .flatMap((t) => t.split("\n").map((l) => [...l].length)),
+        );
+        // + 2 characters for the cell padding (and a bold header's width).
+        return Math.min(40, Math.max(4, longest)) + 2;
+    });
+    const sum = weights.reduce((a, b) => a + b, 0);
+    const widths = weights.map((w) => Math.floor((w / sum) * total));
+    widths[widths.length - 1] += total - widths.reduce((a, b) => a + b, 0);
+    return widths;
+}
+
+/**
+ * The Word document generate_docx stores: a title, numbered headings,
+ * paragraphs, bullets and tables, in the calm eulex.ai style (ink text,
+ * thin warm borders, a paper header fill — docxPalette), with the model's
+ * status emoji drawn as small pastel dots. Pure: no storage.
+ */
+export async function buildGeneratedDocx(
+    title: string,
+    sections: unknown[],
+    options: { landscape?: boolean } = {},
+): Promise<Buffer> {
+    const {
+        Document, Paragraph, HeadingLevel, Packer,
+        Table, TableRow, TableCell, WidthType, BorderStyle,
+        TextRun, AlignmentType, PageOrientation, PageBreak, ShadingType,
+    } = await import("docx");
+
+    // Georgia, not Max's Sentient (its licence — see docxPalette).
+    const FONT = DOCX_FONT;
+    const SIZE = DOCX_SIZES.body;
+
+    // Text → runs in ink; the model's status emoji (🔴 🟡 🔵 ⚪ 🟢) become
+    // a small pastel dot (● / ○) — the label after it carries the meaning.
+    const runs = (text: string, style: { bold?: boolean; size?: number } = {}) => {
+        const size = style.size ?? SIZE;
+        const parts = splitStatusTokens(text);
+        const out = parts.map((part) =>
+            typeof part === "string"
+                ? new TextRun({ text: part, font: FONT, size, color: DOCX_PALETTE.ink, bold: style.bold })
+                : new TextRun({
+                      text: statusDotGlyph(part.status),
+                      font: STATUS_DOT_FONT,
+                      size: Math.round(size * STATUS_DOT_SCALE),
+                      color: DOCX_PALETTE.status[part.status],
+                  }),
+        );
+        // A line of dots only (a status column) keeps the text's line height
+        // through a full-size space, so the dot sits level with its row.
+        if (parts.some((p) => typeof p !== "string") && parts.every((p) => typeof p !== "string" || !p.trim())) {
+            out.push(new TextRun({ text: " ", font: FONT, size, color: DOCX_PALETTE.ink }));
+        }
+        return out;
+    };
+
+    // Paragraph-mark formatting: list bullets take the ink, and a line that
+    // holds only a (smaller) status dot keeps the full text height.
+    const mark = (size: number = SIZE) => ({ font: FONT, size, color: DOCX_PALETTE.ink });
+
+    type DocChild = InstanceType<typeof Paragraph> | InstanceType<typeof Table>;
+    const children: DocChild[] = [];
+    children.push(
+        new Paragraph({
+            heading: HeadingLevel.TITLE,
+            spacing: { after: 360 },
+            alignment: AlignmentType.CENTER,
+            run: mark(DOCX_SIZES.title),
+            // The title as given, regular weight — no forced capitals.
+            children: runs(title, { size: DOCX_SIZES.title }),
+        }),
+    );
+
+    // Thin warm borders (½ pt), as in the EULEX templates.
+    const line = { style: BorderStyle.SINGLE, size: 4, color: DOCX_PALETTE.border };
+    const cellBorder = { top: line, bottom: line, left: line, right: line };
+    const tableBorders = { ...cellBorder, insideHorizontal: line, insideVertical: line };
+
+    const headingLevels = [
+        HeadingLevel.HEADING_1,
+        HeadingLevel.HEADING_2,
+        HeadingLevel.HEADING_3,
+        HeadingLevel.HEADING_4,
+    ];
+    const counters = [0, 0, 0, 0];
+
+    for (const section of sections as {
+        heading?: string;
+        content?: string;
+        level?: number;
+        pageBreak?: boolean;
+        table?: { headers: string[]; rows: string[][] };
+    }[]) {
+        if (section.pageBreak) {
+            children.push(
+                new Paragraph({ children: [new PageBreak()] }),
+            );
+        }
+        if (section.heading) {
+            const idx = Math.min((section.level ?? 1) - 1, 3);
+            counters[idx]++;
+            for (let i = idx + 1; i < 4; i++) counters[i] = 0;
+            // Backfill any skipped ancestor levels so a forbidden H1→H3
+            // jump renders "1.1.1" instead of "1.0.1". The prompt tells
+            // the model not to skip levels, but we must not depend on it.
+            for (let i = 0; i < idx; i++) if (counters[i] === 0) counters[i] = 1;
+            const prefix = counters.slice(0, idx + 1).join(".");
+            // Headings keep the case the model wrote (eulex.ai style: no
+            // forced capitals — they read loud in a 15 pt serif).
+            const headingText = `${prefix}. ${section.heading}`;
+            children.push(
+                new Paragraph({
+                    heading: headingLevels[idx],
+                    spacing: { before: idx === 0 ? 240 : 160, after: 120 },
+                    run: mark(DOCX_SIZES.heading[idx]),
+                    children: runs(headingText, { bold: true, size: DOCX_SIZES.heading[idx] }),
+                }),
+            );
+        }
+        if (section.table) {
+            const { headers, rows } = section.table;
+            const colCount = headers.length;
+            const textWidth = options.landscape
+                ? DOCX_TEXT_WIDTH.landscape
+                : DOCX_TEXT_WIDTH.portrait;
+            const widths = docxColumnWidths(
+                headers,
+                rows.map((r) => (Array.isArray(r) ? r : [])),
+                textWidth,
+            );
+            const tableRows: InstanceType<typeof TableRow>[] = [];
+            // Header row
+            tableRows.push(
+                new TableRow({
+                    tableHeader: true,
+                    children: headers.map(
+                        (h, i) =>
+                            new TableCell({
+                                borders: cellBorder,
+                                shading: { type: ShadingType.CLEAR, color: "auto", fill: DOCX_PALETTE.headerFill },
+                                margins: DOCX_CELL_MARGINS,
+                                width: { size: widths[i], type: WidthType.DXA },
+                                children: [
+                                    new Paragraph({
+                                        run: mark(DOCX_SIZES.table),
+                                        children: runs(h, { bold: true, size: DOCX_SIZES.table }),
+                                        alignment: AlignmentType.LEFT,
+                                    }),
+                                ],
+                            }),
+                    ),
+                }),
+            );
+            // Data rows — normalize each row to exactly colCount cells.
+            // LLMs occasionally emit malformed rows (extra fragments from
+            // stray delimiters, or short rows); padding/truncating here
+            // keeps the rendered table aligned to the headers.
+            for (const rawRow of rows) {
+                const row = Array.isArray(rawRow) ? rawRow : [];
+                const normalized: string[] = [];
+                for (let i = 0; i < colCount; i++) {
+                    normalized.push(
+                        typeof row[i] === "string" ? row[i] : "",
+                    );
+                }
+                if (row.length !== colCount) {
+                    console.warn(
+                        `[generate_docx] row length ${row.length} != headers ${colCount}; normalized`,
+                    );
+                }
+                tableRows.push(
+                    new TableRow({
+                        children: normalized.map(
+                            (cell, i) =>
+                                new TableCell({
+                                    borders: cellBorder,
+                                    margins: DOCX_CELL_MARGINS,
+                                    width: { size: widths[i], type: WidthType.DXA },
+                                    children: [
+                                        new Paragraph({
+                                            run: mark(DOCX_SIZES.table),
+                                            children: runs(cell, { size: DOCX_SIZES.table }),
+                                        }),
+                                    ],
+                                }),
+                        ),
+                    }),
+                );
+            }
+            children.push(
+                new Table({
+                    width: { size: textWidth, type: WidthType.DXA },
+                    columnWidths: widths,
+                    borders: tableBorders,
+                    rows: tableRows,
+                }),
+            );
+            children.push(new Paragraph({ text: "" }));
+        }
+        if (section.content) {
+            for (const line of section.content.split("\n")) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                const bulletMatch = trimmed.match(/^[-•*]\s+(.+)/);
+                if (bulletMatch) {
+                    children.push(
+                        new Paragraph({
+                            bullet: { level: 0 },
+                            spacing: { after: 120 },
+                            run: mark(),
+                            children: runs(bulletMatch[1]),
+                        }),
+                    );
+                } else {
+                    children.push(
+                        new Paragraph({
+                            spacing: { after: 120 },
+                            run: mark(),
+                            children: runs(trimmed),
+                        }),
+                    );
+                }
+            }
+        }
+    }
+
+    const pageSetup = options.landscape
+        ? { page: { size: { orientation: PageOrientation.LANDSCAPE } } }
+        : {};
+
+    const doc = new Document({
+        // Georgia in ink as the document default and in the title and
+        // heading styles, so lists, empty lines and anything edited later
+        // match; ≈1.15 line spacing.
+        styles: {
+            default: {
+                document: {
+                    run: { font: FONT, size: SIZE, color: DOCX_PALETTE.ink },
+                    paragraph: { spacing: { line: DOCX_LINE_SPACING } },
+                },
+                title: { run: { font: FONT, size: DOCX_SIZES.title, color: DOCX_PALETTE.ink, bold: false } },
+                heading1: { run: { font: FONT, size: DOCX_SIZES.heading[0], color: DOCX_PALETTE.ink, bold: true } },
+                heading2: { run: { font: FONT, size: DOCX_SIZES.heading[1], color: DOCX_PALETTE.ink, bold: true } },
+                heading3: { run: { font: FONT, size: DOCX_SIZES.heading[2], color: DOCX_PALETTE.ink, bold: true } },
+                heading4: { run: { font: FONT, size: DOCX_SIZES.heading[3], color: DOCX_PALETTE.ink, bold: true } },
+            },
+        },
+        sections: [{ properties: pageSetup, children }],
+    });
+    return Packer.toBuffer(doc);
 }
 
 export async function generateDocx(
@@ -983,234 +1453,146 @@ export async function generateDocx(
             "docx",
         );
         console.log(`[generateDocx] Processing ${sections.length} sections for filename="${filename}"`);
-        const {
-            Document, Paragraph, HeadingLevel, Packer,
-            Table, TableRow, TableCell, WidthType, BorderStyle,
-            TextRun, AlignmentType, PageOrientation, PageBreak,
-        } = await import("docx");
-
-        const FONT = "Times New Roman";
-        const SIZE = 22; // 11pt in half-points
-
-        type DocChild = InstanceType<typeof Paragraph> | InstanceType<typeof Table>;
-        const children: DocChild[] = [];
-        children.push(
-            new Paragraph({
-                heading: HeadingLevel.TITLE,
-                spacing: { after: 200 },
-                alignment: AlignmentType.CENTER,
-                children: [new TextRun({ text: title.toUpperCase(), color: "000000", font: FONT, size: SIZE, bold: true })],
-            }),
-        );
-
-        const cellBorder = {
-            top:    { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
-            bottom: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
-            left:   { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
-            right:  { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
-        };
-
-        const headingLevels = [
-            HeadingLevel.HEADING_1,
-            HeadingLevel.HEADING_2,
-            HeadingLevel.HEADING_3,
-            HeadingLevel.HEADING_4,
-        ];
-        const counters = [0, 0, 0, 0];
-
-        for (const section of sections as {
-            heading?: string;
-            content?: string;
-            level?: number;
-            pageBreak?: boolean;
-            table?: { headers: string[]; rows: string[][] };
-        }[]) {
-            if (section.pageBreak) {
-                children.push(
-                    new Paragraph({ children: [new PageBreak()] }),
-                );
-            }
-            if (section.heading) {
-                const idx = Math.min((section.level ?? 1) - 1, 3);
-                counters[idx]++;
-                for (let i = idx + 1; i < 4; i++) counters[i] = 0;
-                // Backfill any skipped ancestor levels so a forbidden H1→H3
-                // jump renders "1.1.1" instead of "1.0.1". The prompt tells
-                // the model not to skip levels, but we must not depend on it.
-                for (let i = 0; i < idx; i++) if (counters[i] === 0) counters[i] = 1;
-                const prefix = counters.slice(0, idx + 1).join(".");
-                const headingText = `${prefix}. ${idx === 0 ? section.heading.toUpperCase() : section.heading}`;
-                children.push(
-                    new Paragraph({
-                        heading: headingLevels[idx],
-                        spacing: { after: 160 },
-                        children: [new TextRun({ text: headingText, color: "000000", font: FONT, size: SIZE, bold: true })],
-                    }),
-                );
-            }
-            if (section.table) {
-                const { headers, rows } = section.table;
-                const colCount = headers.length;
-                const tableRows: InstanceType<typeof TableRow>[] = [];
-                // Header row
-                tableRows.push(
-                    new TableRow({
-                        tableHeader: true,
-                        children: headers.map(
-                            (h) =>
-                                new TableCell({
-                                    borders: cellBorder,
-                                    shading: { fill: "F2F2F2" },
-                                    children: [
-                                        new Paragraph({
-                                            children: [new TextRun({ text: h, bold: true, font: FONT, size: SIZE })],
-                                            alignment: AlignmentType.LEFT,
-                                        }),
-                                    ],
-                                }),
-                        ),
-                    }),
-                );
-                // Data rows — normalize each row to exactly colCount cells.
-                // LLMs occasionally emit malformed rows (extra fragments from
-                // stray delimiters, or short rows); padding/truncating here
-                // keeps the rendered table aligned to the headers.
-                for (const rawRow of rows) {
-                    const row = Array.isArray(rawRow) ? rawRow : [];
-                    const normalized: string[] = [];
-                    for (let i = 0; i < colCount; i++) {
-                        normalized.push(
-                            typeof row[i] === "string" ? row[i] : "",
-                        );
-                    }
-                    if (row.length !== colCount) {
-                        console.warn(
-                            `[generate_docx] row length ${row.length} != headers ${colCount}; normalized`,
-                        );
-                    }
-                    tableRows.push(
-                        new TableRow({
-                            children: normalized.map(
-                                (cell) =>
-                                    new TableCell({
-                                        borders: cellBorder,
-                                        children: [
-                                            new Paragraph({
-                                                children: [new TextRun({ text: cell, font: FONT, size: SIZE })],
-                                            }),
-                                        ],
-                                    }),
-                            ),
-                        }),
-                    );
-                }
-                children.push(
-                    new Table({
-                        width: { size: 100, type: WidthType.PERCENTAGE },
-                        rows: tableRows,
-                    }),
-                );
-                children.push(new Paragraph({ text: "" }));
-            }
-            if (section.content) {
-                for (const line of section.content.split("\n")) {
-                    const trimmed = line.trim();
-                    if (!trimmed) continue;
-                    const bulletMatch = trimmed.match(/^[-•*]\s+(.+)/);
-                    if (bulletMatch) {
-                        children.push(
-                            new Paragraph({
-                                bullet: { level: 0 },
-                                spacing: { after: 120 },
-                                children: [new TextRun({ text: bulletMatch[1], font: FONT, size: SIZE })],
-                            }),
-                        );
-                    } else {
-                        children.push(
-                            new Paragraph({
-                                spacing: { after: 120 },
-                                children: [new TextRun({ text: trimmed, font: FONT, size: SIZE })],
-                            }),
-                        );
-                    }
-                }
-            }
-        }
-
-        const pageSetup = options?.landscape
-            ? { page: { size: { orientation: PageOrientation.LANDSCAPE } } }
-            : {};
-
-        const doc = new Document({ sections: [{ properties: pageSetup, children }] });
-        const buf = await Packer.toBuffer(doc);
-        const docId = crypto.randomUUID().replace(/-/g, "");
-        const key = generatedDocKey(userId, docId, filename);
-
-        await uploadFile(
-            key,
-            buf.buffer as ArrayBuffer,
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        );
-        const downloadUrl = buildDownloadUrl(key, filename);
-
-        // Persist to DB so generated docs are first-class documents:
-        // openable in the DocPanel and editable via edit_document. In
-        // project chats we attach to the project so it appears in the
-        // sidebar; in the general chat we leave project_id null and it
-        // stays a standalone document.
-        const { data: docRow, error: docErr } = await db
-            .from("documents")
-            .insert({
-                project_id: options?.projectId ?? null,
-                user_id: userId,
-                filename,
-                file_type: "docx",
-                size_bytes: buf.byteLength,
-                status: "ready",
-            })
-            .select("id")
-            .single();
-        if (docErr || !docRow) {
-            return {
-                error: `Failed to record generated document: ${docErr?.message ?? "unknown"}`,
-            };
-        }
-        const documentId = docRow.id as string;
-
-        const { data: versionRow, error: verErr } = await db
-            .from("document_versions")
-            .insert({
-                document_id: documentId,
-                storage_path: key,
-                source: "generated",
-                version_number: 1,
-                display_name: filename,
-                size_bytes: buf.byteLength,
-                content_sha256: contentSha256(buf),
-            })
-            .select("id")
-            .single();
-        if (verErr || !versionRow) {
-            return {
-                error: `Failed to record generated document version: ${verErr?.message ?? "unknown"}`,
-            };
-        }
-        const versionId = versionRow.id as string;
-
-        await db
-            .from("documents")
-            .update({ current_version_id: versionId })
-            .eq("id", documentId);
-
-        return {
+        const buf = await buildGeneratedDocx(title, sections, {
+            landscape: options?.landscape,
+        });
+        return await persistGeneratedDocument({
+            bytes: buf,
             filename,
-            download_url: downloadUrl,
-            document_id: documentId,
-            version_id: versionId,
-            version_number: 1,
-            storage_path: key,
-            message: `Document '${filename}' has been generated successfully.`,
+            fileType: "docx",
+            userId,
+            db,
+            projectId: options?.projectId ?? null,
+        });
+    } catch (e) {
+        return { error: String(e) };
+    }
+}
+
+export type GeneratedDocument = {
+    filename: string;
+    download_url: string;
+    document_id: string;
+    version_id: string;
+    version_number: number;
+    storage_path: string;
+    message: string;
+};
+
+/**
+ * Store a generated file and record it as a first-class document (one
+ * `generated` version), so it opens in the DocPanel and the document tools
+ * (read_document, edit_document for .docx) can act on it. In project chats
+ * it is attached to the project so it appears in the sidebar; in the
+ * general chat project_id stays null and it is a standalone document.
+ */
+async function persistGeneratedDocument(params: {
+    bytes: Buffer;
+    filename: string;
+    fileType: "docx" | "xlsx";
+    userId: string;
+    db: ReturnType<typeof createServerSupabase>;
+    projectId: string | null;
+}): Promise<GeneratedDocument | { error: string }> {
+    const { bytes, filename, fileType, userId, db } = params;
+    const docId = crypto.randomUUID().replace(/-/g, "");
+    const key = generatedDocKey(userId, docId, filename);
+
+    await uploadFile(
+        key,
+        // The exact bytes: a small Buffer can be a view into a shared pool.
+        bytes.buffer.slice(
+            bytes.byteOffset,
+            bytes.byteOffset + bytes.byteLength,
+        ) as ArrayBuffer,
+        contentTypeForUpload(fileType),
+    );
+    const downloadUrl = buildDownloadUrl(key, filename);
+
+    const { data: docRow, error: docErr } = await db
+        .from("documents")
+        .insert({
+            project_id: params.projectId,
+            user_id: userId,
+            filename,
+            file_type: fileType,
+            size_bytes: bytes.byteLength,
+            status: "ready",
+        })
+        .select("id")
+        .single();
+    if (docErr || !docRow) {
+        return {
+            error: `Failed to record generated document: ${docErr?.message ?? "unknown"}`,
         };
+    }
+    const documentId = docRow.id as string;
+
+    const { data: versionRow, error: verErr } = await db
+        .from("document_versions")
+        .insert({
+            document_id: documentId,
+            storage_path: key,
+            source: "generated",
+            version_number: 1,
+            display_name: filename,
+            size_bytes: bytes.byteLength,
+            content_sha256: contentSha256(bytes),
+        })
+        .select("id")
+        .single();
+    if (verErr || !versionRow) {
+        return {
+            error: `Failed to record generated document version: ${verErr?.message ?? "unknown"}`,
+        };
+    }
+    const versionId = versionRow.id as string;
+
+    await db
+        .from("documents")
+        .update({ current_version_id: versionId })
+        .eq("id", documentId);
+
+    return {
+        filename,
+        download_url: downloadUrl,
+        document_id: documentId,
+        version_id: versionId,
+        version_number: 1,
+        storage_path: key,
+        message: `Document '${filename}' has been generated successfully.`,
+    };
+}
+
+/**
+ * Build a workbook (lib/xlsx/workbook) from generate_excel's arguments
+ * (already PII-restored) and store it like generateDocx. The filename
+ * comes from `filenameTitle` (no placeholders, diacritics kept).
+ */
+export async function generateExcel(
+    input: { title: unknown; sheets: unknown },
+    userId: string,
+    db: ReturnType<typeof createServerSupabase>,
+    options: { projectId?: string | null; filenameTitle: string },
+): Promise<
+    (GeneratedDocument & { report: WorkbookReport }) | { error: string }
+> {
+    try {
+        const spec: ExcelWorkbookSpec = normalizeWorkbookSpec(input);
+        const filename = generatedDocumentFilename(options.filenameTitle, "xlsx");
+        const { bytes, report } = await buildXlsxWorkbook(spec);
+        console.log(
+            `[generateExcel] filename="${filename}" sheets=${report.sheets.length} rows=${report.sheets.reduce((n, s) => n + s.rows, 0)} warnings=${report.warnings.length} bytes=${bytes.byteLength}`,
+        );
+        const stored = await persistGeneratedDocument({
+            bytes,
+            filename,
+            fileType: "xlsx",
+            userId,
+            db,
+            projectId: options.projectId ?? null,
+        });
+        return "error" in stored ? stored : { ...stored, report };
     } catch (e) {
         return { error: String(e) };
     }
@@ -1661,6 +2043,17 @@ export function documentPartForModel(
     });
 }
 
+/**
+ * Appended to what read_document / fetch_documents return for a
+ * spreadsheet, so the model cites it by cell even when the active prompt
+ * pack predates spreadsheets (port of upstream's per-document
+ * `citationReminder`, open-legal-products/mike a5fe6d6e).
+ */
+export function spreadsheetCitationNote(docLabel: string, text: string): string {
+    if (!isSpreadsheetText(text)) return "";
+    return `\n\n[Citation note for ${docLabel}: this document is a spreadsheet and has no pages. Cite it by cell: {"ref": 1, "doc_id": "${docLabel}", "sheet": "<sheet name as written after '## Sheet: ', without '(hidden)'>", "cell": "C2", "quote": "<plain cell value>"} — "cell" is the column letter plus the number in the "Row" column, or a range such as "A2:C2". For a cell tagged ⟨merged A214:B214⟩ cite the whole range "A214:B214" and leave the tag out of the quote. Omit "page".]`;
+}
+
 /** Tool result when placeholders could not be restored — nothing was written. */
 const PII_RESTORE_FAILED =
     "ERROR: the anonymized values in this request could not be restored (PII Shield unavailable), so the document was NOT written. Tell the user to try again shortly.";
@@ -1722,17 +2115,28 @@ async function maybeAnonymize(args: {
         piiClient,
         getChatSessionId,
         getDocumentAnalysisCache,
+        analysisKeyFor,
     } = await import("./pii");
 
     if (!piiActive(args.pii.mode)) return args.text;
+
+    // Cache key = version + exact text + language (see analysisKey.ts):
+    // a version overwritten in place is a miss, never stale text.
+    const analysisKey = args.documentVersionId
+        ? analysisKeyFor({
+              versionId: args.documentVersionId,
+              text: args.text,
+              language: args.pii.language,
+          })
+        : null;
 
     // Cache-hit: when the chat already has a session + the doc has an
     // analysis row, the sidecar's processed_text_cache is the source
     // of truth and we don't even need to re-encode.
     try {
         const sessionId = await getChatSessionId(args.pii.chatId);
-        if (sessionId && args.documentVersionId) {
-            const cache = await getDocumentAnalysisCache(sessionId, args.documentVersionId);
+        if (sessionId && analysisKey) {
+            const cache = await getDocumentAnalysisCache(sessionId, analysisKey);
             if (cache && cache.processedText) {
                 console.log(
                     `[read_document][pii] cache hit filename="${args.filename}" session=${sessionId}`,
@@ -1754,6 +2158,7 @@ async function maybeAnonymize(args: {
         language: args.pii.language,
         chatId: args.pii.chatId,
         documentVersionId: args.documentVersionId,
+        analysisKey,
         source: "document",
     });
     if (!result.ok) {
@@ -1837,6 +2242,14 @@ async function findInDocumentContent(params: {
     db?: ReturnType<typeof createServerSupabase>;
     geminiApiKey?: string | null;
     pii?: PiiToolContext | null;
+    /**
+     * Turn-scoped document-text cache shared with `read_document` (the
+     * `docTextSink` of `runToolCalls`). A batch of several
+     * find_in_document calls on one document — or a find after a read —
+     * then extracts and PII-anonymizes the text once instead of once per
+     * call (one 19 KB document was anonymized 12 times in 90 s in prod).
+     */
+    docTextCache?: Map<string, string>;
 }): Promise<string> {
     const {
         docLabel,
@@ -1849,6 +2262,7 @@ async function findInDocumentContent(params: {
         db,
         geminiApiKey,
         pii,
+        docTextCache,
     } = params;
 
     if (!query || !query.trim()) {
@@ -1874,14 +2288,20 @@ async function findInDocumentContent(params: {
         })}\n\n`,
     );
 
-    const text = await readDocumentContent(
-        docLabel,
-        docStore,
-        write,
-        docIndex,
-        db,
-        { emitEvents: false, geminiApiKey, pii: pii ?? null },
-    );
+    let text = docTextCache?.get(docLabel);
+    if (text === undefined) {
+        text = await readDocumentContent(
+            docLabel,
+            docStore,
+            write,
+            docIndex,
+            db,
+            { emitEvents: false, geminiApiKey, pii: pii ?? null },
+        );
+        // Same rule as read_document: only successful reads are cached
+        // (never an error string or a strict-mode PII withhold).
+        if (!isUnreadableDocText(text)) docTextCache?.set(docLabel, text);
+    }
     if (isUnreadableDocText(text)) {
         write(
             `data: ${JSON.stringify({
@@ -2044,6 +2464,11 @@ export interface LegalSource {
      *  pisrs.si / gesetze-im-internet.de. */
     externalUrl?: string | null;
     articleLabel?: string | null;
+    /** The act on its own, as the source server names it (`document.title`
+     *  on EULEX servers: "Zakon o trgovini"), separate from the composed
+     *  `title` ("Zakon o trgovini, čl. 8 — Heading"). The frontend keys
+     *  article references by act with this. */
+    documentTitle?: string | null;
     /** In-app fetch path for the full document (Phase 2 proxy). */
     fetchPath?: string | null;
     /** EU only — drives the /documents/{celex} proxy. */
@@ -2131,6 +2556,10 @@ function lsFromEulex(
         id,
         scope: scope as (typeof LS_EULEX_SCOPES)[number],
         title: lsStr(raw.title) ?? lsStr(doc.title) ?? id,
+        // The act itself, as the server names it ("Zakon o trgovini") — the
+        // composed `title` is "Zakon o trgovini, čl. 8 — Heading". The
+        // frontend linker keys article references by act with this.
+        documentTitle: lsStr(doc.title),
         citation: lsStr(doc.citation),
         snippet: segId ? (segText.get(segId) ?? null) : null,
         externalUrl:
@@ -2159,6 +2588,8 @@ function lsFromEu(raw: Record<string, unknown>): LegalSource | null {
         id: `@eu/celex/${celex}${article ? `#${article}` : ""}`,
         scope: "@eu",
         title: lsStr(raw.title) ?? celex,
+        // EU titles are already the act (the article rides in `articleLabel`).
+        documentTitle: lsStr(raw.title),
         citation: lsStr(raw.eulex_citation),
         snippet: lsStr(raw.text),
         externalUrl:
@@ -2315,6 +2746,71 @@ function truncateForPreview(s: string): string {
     return s.slice(0, MCP_PREVIEW_MAX) + "\n…(truncated)";
 }
 
+/**
+ * Announce a document generate_docx / generate_excel just stored: register
+ * it in the chat context under the next free `doc-N` label so read_document
+ * (and edit_document / find_in_document for .docx) can act on it within the
+ * same assistant turn, emit `doc_created` and record it for the turn's
+ * events. Later turns pick it up through the prior-events sweep in
+ * buildDocContext. A failed generation still emits `doc_created` (no URL)
+ * so the "Creating…" row stops spinning. Returns the new label, if any.
+ */
+function announceGeneratedDocument(
+    result: GeneratedDocument | { error: string } | Record<string, unknown>,
+    fileType: "docx" | "xlsx",
+    previewFilename: string,
+    ctx: {
+        docIndex?: DocIndex;
+        docStore: DocStore;
+        write: (s: string) => void;
+        docsCreated: DocCreatedResult[];
+    },
+): string | null {
+    if (!("filename" in result && "download_url" in result)) {
+        ctx.write(`data: ${JSON.stringify({ type: "doc_created", filename: previewFilename, download_url: "" })}\n\n`);
+        return null;
+    }
+    const doc = result as Partial<GeneratedDocument> & {
+        filename: string;
+        download_url: string;
+    };
+    const versionNumber = doc.version_number ?? null;
+    let newDocLabel: string | null = null;
+    if (doc.document_id && doc.storage_path && ctx.docIndex) {
+        const existingLabels = new Set(Object.keys(ctx.docIndex));
+        let i = 0;
+        while (existingLabels.has(`doc-${i}`)) i++;
+        newDocLabel = `doc-${i}`;
+        ctx.docIndex[newDocLabel] = {
+            document_id: doc.document_id,
+            filename: doc.filename,
+        };
+        ctx.docStore.set(newDocLabel, {
+            storage_path: doc.storage_path,
+            file_type: fileType,
+            filename: doc.filename,
+        });
+    }
+    ctx.write(
+        `data: ${JSON.stringify({
+            type: "doc_created",
+            filename: doc.filename,
+            download_url: doc.download_url,
+            document_id: doc.document_id,
+            version_id: doc.version_id,
+            version_number: versionNumber,
+        })}\n\n`,
+    );
+    ctx.docsCreated.push({
+        filename: doc.filename,
+        download_url: doc.download_url,
+        document_id: doc.document_id,
+        version_id: doc.version_id,
+        version_number: versionNumber,
+    });
+    return newDocLabel;
+}
+
 export async function runToolCalls(
     toolCalls: ToolCall[],
     docStore: DocStore,
@@ -2372,6 +2868,16 @@ export async function runToolCalls(
      * `chatReadCharBudget`); longer documents are served in parts.
      */
     model?: string,
+    /**
+     * Web access off → the normalized URLs the user wrote; `read_url` opens
+     * nothing else. Null/undefined → unrestricted (web on).
+     */
+    readUrlAllowlist?: Set<string> | null,
+    /**
+     * The turn's assessment records (record_assessment / load_assessment);
+     * absent when the tools are not offered.
+     */
+    assessments?: AssessmentLedger,
 ): Promise<{
     toolResults: unknown[];
     docsRead: { filename: string; document_id?: string }[];
@@ -2379,6 +2885,10 @@ export async function runToolCalls(
     docsCreated: DocCreatedResult[];
     docsReplicated: DocReplicatedResult[];
     workflowsApplied: { workflow_id: string; title: string }[];
+    /** update_plan calls of this batch, in order (the last one is current). */
+    plansUpdated: PlanUpdatedEvent[];
+    /** Assessment versions recorded in this batch. */
+    assessmentsRecorded: AssessmentRecordedEvent[];
     docsEdited: DocEditedResult[];
     mcpResults: McpToolResultEvent[];
     /** Typed legal sources (EU/HR/FR) harvested from MCP results this batch. */
@@ -2403,6 +2913,8 @@ export async function runToolCalls(
     const docsCreated: DocCreatedResult[] = [];
     const docsReplicated: DocReplicatedResult[] = [];
     const workflowsApplied: { workflow_id: string; title: string }[] = [];
+    const plansUpdated: PlanUpdatedEvent[] = [];
+    const assessmentsRecorded: AssessmentRecordedEvent[] = [];
     const docsEdited: DocEditedResult[] = [];
     const mcpResults: McpToolResultEvent[] = [];
     // Typed legal sources harvested across every MCP call this batch, deduped
@@ -2661,7 +3173,9 @@ export async function runToolCalls(
             toolResults.push({
                 role: "tool",
                 tool_call_id: tc.id,
-                content: documentPartForModel(content, docId, args.part, readBudget),
+                content:
+                    documentPartForModel(content, docId, args.part, readBudget) +
+                    spreadsheetCitationNote(docId, content),
             });
 
         } else if (tc.function.name === "find_in_document") {
@@ -2682,6 +3196,7 @@ export async function runToolCalls(
                 db,
                 geminiApiKey: apiKeys?.gemini ?? null,
                 pii: piiContext ?? null,
+                docTextCache,
             });
             const filename = docStore.get(docId)?.filename;
             if (filename) {
@@ -2767,7 +3282,9 @@ export async function runToolCalls(
                     );
                 } else {
                     returnedChars += content.length;
-                    parts.push(`--- ${filename} (${docId}) ---\n${content}`);
+                    parts.push(
+                        `--- ${filename} (${docId}) ---\n${content}${spreadsheetCitationNote(docId, content)}`,
+                    );
                 }
                 if (docStore.get(docId)) {
                     const documentId = docIndex?.[docId]?.document_id;
@@ -2804,6 +3321,54 @@ export async function runToolCalls(
                 role: "tool",
                 tool_call_id: tc.id,
                 content: wf ? wf.prompt_md : wfMissingMsg,
+            });
+
+        } else if (tc.function.name === "update_plan") {
+            const parsed = parsePlanSteps(args);
+            if (parsed.ok) {
+                const event: PlanUpdatedEvent = { type: "plan_updated", steps: parsed.steps };
+                write(`data: ${JSON.stringify(event)}\n\n`);
+                plansUpdated.push(event);
+            }
+            toolResults.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: parsed.ok
+                    ? planAck(parsed.steps)
+                    : `update_plan refused: ${parsed.error}. Send the whole plan again.`,
+            });
+
+        } else if (tc.function.name === "record_assessment" && assessments) {
+            const res = await assessments.record(args.assessment);
+            if (res.ok) {
+                const event: AssessmentRecordedEvent = { type: "assessment_recorded", assessment: res.snapshot };
+                write(`data: ${JSON.stringify(event)}\n\n`);
+                assessmentsRecorded.push(event);
+            }
+            toolResults.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: res.ok
+                    ? assessmentAck(res.snapshot)
+                    : `record_assessment refused — fix these and call it again:\n- ${res.errors.join("\n- ")}`,
+            });
+
+        } else if (tc.function.name === "load_assessment" && assessments) {
+            const found = await assessments.load({
+                assessment_id: typeof args.assessment_id === "string" ? args.assessment_id.trim() : undefined,
+                task_id: typeof args.task_id === "string" ? args.task_id.trim() : undefined,
+            });
+            const labelFor = (documentId: string) =>
+                Object.entries(docIndex ?? {}).find(([, d]) => d.document_id === documentId)?.[0] ?? null;
+            const findingIds = Array.isArray(args.finding_ids)
+                ? (args.finding_ids as unknown[]).filter((x): x is string => typeof x === "string")
+                : [];
+            toolResults.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: found
+                    ? assessmentForModel(found, labelFor, findingIds)
+                    : "No earlier assessment found in this chat (or, in a project, its chats). Start a new one with record_assessment.",
             });
 
         } else if (tc.function.name === "read_table_cells" && tabularStore) {
@@ -2881,7 +3446,19 @@ export async function runToolCalls(
                 );
             };
 
-            if (!docInfo || !indexed) {
+            if (indexed?.read_only) {
+                // A context document is shared by every user of the context.
+                emitEditError(
+                    indexed.filename,
+                    indexed.document_id,
+                    "This document belongs to a shared context and is read-only.",
+                );
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: "Not edited: this document belongs to a shared EULEX context and is read-only. To work on its text, generate a new document instead.",
+                });
+            } else if (!docInfo || !indexed) {
                 const err = `Document '${docId}' not found in this chat's attachments.`;
                 emitEditError(docId, indexed?.document_id ?? "", err);
                 toolResults.push({
@@ -3174,10 +3751,11 @@ export async function runToolCalls(
                                 id: string;
                                 filename: string;
                             }[];
-                            const contentType =
-                                sourceInfo.file_type === "pdf"
-                                    ? "application/pdf"
-                                    : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+                            const contentType = isSupportedUploadType(
+                                sourceInfo.file_type,
+                            )
+                                ? contentTypeForUpload(sourceInfo.file_type)
+                                : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
                             // Parallel uploads: the doc bytes (and PDF
                             // rendition if any) for every new copy.
@@ -3422,56 +4000,12 @@ export async function runToolCalls(
                 db,
                 { landscape, projectId: projectId ?? null, filenameTitle },
             );
-            let newDocLabel: string | null = null;
-            if ("filename" in result && "download_url" in result) {
-                const dlFilename = result.filename as string;
-                const dlUrl = result.download_url as string;
-                const documentId = (result as { document_id?: string }).document_id;
-                const versionId = (result as { version_id?: string }).version_id;
-                const versionNumber = (result as { version_number?: number }).version_number ?? null;
-                const storagePath = (result as { storage_path?: string }).storage_path;
-
-                // Register the generated doc in the chat context so
-                // edit_document (and read_document / find_in_document)
-                // can act on it within the same assistant turn. New label
-                // is the next free `doc-N` index. Subsequent turns pick
-                // it up via the normal attachment/project doc query.
-                if (documentId && storagePath && docIndex) {
-                    const existingLabels = new Set(Object.keys(docIndex));
-                    let i = 0;
-                    while (existingLabels.has(`doc-${i}`)) i++;
-                    newDocLabel = `doc-${i}`;
-                    docIndex[newDocLabel] = {
-                        document_id: documentId,
-                        filename: dlFilename,
-                    };
-                    docStore.set(newDocLabel, {
-                        storage_path: storagePath,
-                        file_type: "docx",
-                        filename: dlFilename,
-                    });
-                }
-
-                write(
-                    `data: ${JSON.stringify({
-                        type: "doc_created",
-                        filename: dlFilename,
-                        download_url: dlUrl,
-                        document_id: documentId,
-                        version_id: versionId,
-                        version_number: versionNumber,
-                    })}\n\n`,
-                );
-                docsCreated.push({
-                    filename: dlFilename,
-                    download_url: dlUrl,
-                    document_id: documentId,
-                    version_id: versionId,
-                    version_number: versionNumber,
-                });
-            } else {
-                write(`data: ${JSON.stringify({ type: "doc_created", filename: previewFilename, download_url: "" })}\n\n`);
-            }
+            const newDocLabel = announceGeneratedDocument(
+                result,
+                "docx",
+                previewFilename,
+                { docIndex, docStore, write, docsCreated },
+            );
             // Surface the chat-local doc label in the tool result so the
             // model can pass it as `doc_id` to edit_document / read_document
             // / find_in_document in the same turn. Without this the model
@@ -3483,6 +4017,76 @@ export async function runToolCalls(
                 role: "tool",
                 tool_call_id: tc.id,
                 content: JSON.stringify(toolResultPayload),
+            });
+        } else if (tc.function.name === "generate_excel") {
+            const title =
+                typeof args.title === "string" && args.title.trim()
+                    ? args.title
+                    : "workbook";
+            const workbookArgs = { title, sheets: args.sheets };
+            // Validate before anything is restored or written: a malformed
+            // or oversized request gets an error the model can act on.
+            try {
+                normalizeWorkbookSpec(workbookArgs);
+            } catch (e) {
+                if (!(e instanceof WorkbookSpecError)) throw e;
+                console.warn(`[generate_excel] refused: ${e.message}`);
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: `ERROR: ${e.message}`,
+                });
+                continue;
+            }
+            // PII mode: the model wrote placeholders; the workbook gets the
+            // real values (restored before typing, so a restored amount or
+            // date is still parsed). The filename is built WITHOUT
+            // placeholders — it reaches the model again in later turns.
+            const piiMap = await restoreDocToolPii(workbookArgs, piiContext);
+            if (!piiMap) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: PII_RESTORE_FAILED,
+                });
+                continue;
+            }
+            const filenameTitle = stripPlaceholders(title);
+            const previewFilename = generatedDocumentFilename(filenameTitle, "xlsx");
+            write(`data: ${JSON.stringify({ type: "doc_created_start", filename: previewFilename })}\n\n`);
+            const result = await generateExcel(
+                piiMap.restore(workbookArgs),
+                userId,
+                db,
+                { projectId: projectId ?? null, filenameTitle },
+            );
+            const newDocLabel = announceGeneratedDocument(
+                result,
+                "xlsx",
+                previewFilename,
+                { docIndex, docStore, write, docsCreated },
+            );
+            // No download link or storage path for the model (the UI shows
+            // the card); restored values are masked back to placeholders.
+            const payload =
+                "error" in result
+                    ? { error: result.error }
+                    : {
+                          filename: result.filename,
+                          document_id: result.document_id,
+                          version_id: result.version_id,
+                          version_number: result.version_number,
+                          ...(newDocLabel ? { doc_id: newDocLabel } : {}),
+                          sheets: result.report.sheets,
+                          ...(result.report.warnings.length
+                              ? { warnings: result.report.warnings }
+                              : {}),
+                          message: `Workbook '${result.filename}' has been generated successfully.`,
+                      };
+            toolResults.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: JSON.stringify(piiMap.mask(payload)),
             });
         } else if (tc.function.name === "read_url") {
             // Model-driven URL reader: fetch a public web page or PDF and
@@ -3518,6 +4122,17 @@ export async function runToolCalls(
                 });
                 continue;
             }
+            // Web access off: only a link the user wrote may be opened —
+            // never a URL picked up from a tool result. Refused before the
+            // started event, so nothing is shown, fetched or billed.
+            if (readUrlAllowlist && !readUrlAllowlist.has(normalizeReadUrl(url) ?? "")) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: READ_URL_WEB_OFF_NOTICE,
+                });
+                continue;
+            }
             write(
                 `data: ${JSON.stringify({
                     type: "web_extract_started",
@@ -3531,6 +4146,25 @@ export async function runToolCalls(
             // provider failure shouldn't be charged).
             if (!result.error) {
                 webSearchCostUsd += READ_URL_COST_USD;
+            }
+            // Narodne novine link → the same document in our HR corpus
+            // (lib/extract/nnBridge). The publication becomes a typed legal
+            // source for this turn (clickable, opens in the panel), and the
+            // model is told to fetch the provisions the page cites from the
+            // legal tools instead of citing them off the page text — which
+            // is what left "članak 8" pointing at another act's article 8.
+            // Runs even when extraction failed: the corpus copy is then the
+            // only text we can offer. Fail-soft — a miss changes nothing.
+            const bridged = mcpServers?.length
+                ? await bridgeNarodneNovineUrl(url, {
+                      servers: mcpServers,
+                      whitelist: scopeWhitelist ?? new Set<string>(),
+                  })
+                : { sources: [], note: null };
+            for (const ls of bridged.sources) {
+                if (legalSourceIds.has(ls.id)) continue;
+                legalSourceIds.add(ls.id);
+                legalSources.push(ls);
             }
             const event: WebExtractEvent = {
                 type: "web_extract_result",
@@ -3546,7 +4180,9 @@ export async function runToolCalls(
             toolResults.push({
                 role: "tool",
                 tool_call_id: tc.id,
-                content: formatExtractForLLM(result),
+                content:
+                    formatExtractForLLM(result) +
+                    (bridged.note ? `\n\n${bridged.note}` : ""),
             });
         } else if (isSearchToolName(tc.function.name)) {
             // Role-based search tools (search_official_sources / search_web
@@ -3672,6 +4308,8 @@ export async function runToolCalls(
         docsCreated,
         docsReplicated,
         workflowsApplied,
+        plansUpdated,
+        assessmentsRecorded,
         docsEdited,
         mcpResults,
         legalSources,
@@ -3726,6 +4364,8 @@ export type EditAnnotation = {
 
 type AssistantEvent =
     | { type: "reasoning"; text: string }
+    // Post-answer article-reference resolution (lib/legalRefs, tracker #45).
+    | LegalRefsEvent
     | { type: "doc_read"; filename: string; document_id?: string }
     | {
           type: "doc_find";
@@ -3754,6 +4394,9 @@ type AssistantEvent =
           }[];
       }
     | { type: "workflow_applied"; workflow_id: string; title: string }
+    | PlanUpdatedEvent
+    | AssessmentRecordedEvent
+    | ContextsAppliedEvent
     | {
           type: "doc_edited";
           filename: string;
@@ -3769,6 +4412,12 @@ type AssistantEvent =
     | LegalSourcesEvent
     | WebSearchEvent
     | WebExtractEvent;
+
+/** Runaway ceiling for a turn with an active context (env-tunable). */
+function contextMaxToolIterations(): number {
+    const n = Number(process.env.CONTEXT_MAX_TOOL_ITERATIONS);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 200;
+}
 
 export async function runLLMStream(params: {
     apiMessages: unknown[];
@@ -3853,6 +4502,20 @@ export async function runLLMStream(params: {
      */
     activeContexts?: ResolvedContext[];
     /**
+     * What of the active contexts this turn runs without (a context that
+     * failed to resolve, a context document that did not load) — carried on
+     * the contexts_applied event so the answer shows it. The model is told
+     * via the dynamic system suffix (contextsUnavailableNote, set by the
+     * route in buildMessages).
+     */
+    contextsUnavailable?: UnavailableContextItem[];
+    /**
+     * A workflow was selected in this conversation ([Workflow: …] marker on
+     * a user message). With it, or with an active context that has tasks,
+     * the turn offers update_plan (lib/plan); otherwise the tool is left out.
+     */
+    workflowSelected?: boolean;
+    /**
      * Aborts the turn when the client disconnects. Forwarded to the provider
      * adapter (SDK request signal + between-iteration checks) so a Stop /
      * tab-close stops token spend and further tool calls (issue #92).
@@ -3872,6 +4535,14 @@ export async function runLLMStream(params: {
      * (non-interactive callers like tabular manage their own bounds).
      */
     turnAbort?: AbortController;
+    /**
+     * UI language of the turn. When set, a reasoning block the model
+     * writes in the other language is translated before the user sees it
+     * (lib/reasoningLanguage). Undefined → reasoning streams as it comes.
+     */
+    uiLocale?: UiLocale;
+    /** Attributes the translation's llm_usage row to the chat. */
+    chatId?: string | null;
 }): Promise<{
     fullText: string;
     events: AssistantEvent[];
@@ -3901,23 +4572,47 @@ export async function runLLMStream(params: {
      */
     docTexts: Map<string, string>;
 }> {
-    const { apiMessages, docStore, docIndex, userId, db, extraTools, workflowStore, tabularStore, buildCitations, model, reasoningEffort, apiKeys, projectId, mcpServers, client, editMode, piiContext, canExportDocx, webSearchEnabled, activeContexts, abortSignal, turnAbort } = params;
+    const { apiMessages, docStore, docIndex, userId, db, extraTools, workflowStore, tabularStore, buildCitations, model, reasoningEffort, apiKeys, projectId, mcpServers, client, editMode, piiContext, canExportDocx, webSearchEnabled, activeContexts, contextsUnavailable, workflowSelected, abortSignal, turnAbort } = params;
     // Stall watchdog (#25) — created right before the stream call below;
     // declared here so the `write` wrapper can re-arm it. Every SSE event
     // this stream emits (tool progress from runToolCalls included) counts
     // as liveness, so a long sequential tool batch keeps the deadline
     // fresh per completed tool while a single hung upstream still trips it.
     let stallWatchdog: import("./llm").StallWatchdog | null = null;
+    // Every SSE write goes through the reasoning gate so a reasoning block
+    // held for translation keeps its place in the stream.
+    const reasoningGate = createReasoningGate({
+        locale: params.uiLocale,
+        emit: (s) => params.write(s),
+        translate: modelReasoningTranslator({
+            apiKeys,
+            onUsage: (usage, durationMs, model) => {
+                void recordLlmUsage({
+                    userId,
+                    client: "reasoning-translation",
+                    provider: providerForModel(model),
+                    model,
+                    chatId: params.chatId ?? null,
+                    projectId: projectId ?? null,
+                    usage,
+                    durationMs,
+                    status: "ok",
+                });
+            },
+        }),
+    });
+    // Persisted reasoning events get the text the user was shown.
+    const reasoningTextUpdates: Array<Promise<void>> = [];
     const write = (s: string) => {
         stallWatchdog?.touch();
-        params.write(s);
+        reasoningGate.write(s);
     };
     // Opaque scope allowlist — unioned once per stream from the resolve
     // responses; empty when no context is active, which turns every scope
     // hook below into a no-op.
-    const scopeWhitelist = buildScopeSet(
-        (activeContexts ?? []).map((c) => c.scope_allowlist),
-    );
+    // Enforced only while a STRICT context is active (extended contexts
+    // answer from their sources first, then the general database).
+    const scopeWhitelist = buildScopeSet(scopeAllowlistsForTurn(activeContexts));
     const editModeForClient = editMode ?? "track";
     const isWordClient = client === "word";
     // Search-provider USD running tally for this turn. The model may
@@ -3937,11 +4632,28 @@ export async function runLLMStream(params: {
         webSearchEnabled !== false && anySearchToolActive()
             ? getActiveSearchTools()
             : [];
-    // `read_url` is offered whenever an extract provider key is configured.
-    // It is NOT gated on the web-search toggle: reading a link the user
-    // pasted (or a PDF the model already found) is a direct request, not
-    // autonomous searching, so the globe toggle shouldn't suppress it.
-    const readUrlTools = isExtractConfigured() ? [READ_URL_TOOL] : [];
+    // `read_url` needs an extract provider key. With web access ON it reads
+    // any page/PDF. With web access OFF (the globe explicitly false) it
+    // survives only for links the user wrote — reading a pasted link is a
+    // direct request — and refuses every other URL; with no such link it is
+    // not offered at all. It used to ignore the toggle, and the model then
+    // opened the Narodne novine `external_url` of every HR source: web
+    // browsing the user had switched off, plus minutes per answer.
+    // An active context's own link sources count as asked-for: the user
+    // switched the context on, so its curated pages stay readable with web
+    // access off.
+    let readUrlAllowlist: Set<string> | null = null;
+    if (webSearchEnabled === false) {
+        readUrlAllowlist = userProvidedUrls(apiMessages);
+        for (const url of contextSourceUrls(activeContexts)) {
+            const key = normalizeReadUrl(url);
+            if (key) readUrlAllowlist.add(key);
+        }
+    }
+    const readUrlTools =
+        isExtractConfigured() && (readUrlAllowlist === null || readUrlAllowlist.size > 0)
+            ? [READ_URL_TOOL]
+            : [];
     // Word export (generate_docx) is a Plus+ entitlement. Drop it from the
     // tool list when the caller explicitly gates it off so the model never
     // advertises it; undefined leaves the full set (backward-compatible).
@@ -3949,9 +4661,30 @@ export async function runLLMStream(params: {
         canExportDocx === false
             ? TOOLS.filter((t) => t.function.name !== "generate_docx")
             : TOOLS;
+    // The visible plan only where a task or workflow is being applied.
+    const planOffered = offersPlanTool(workflowSelected, activeContexts);
+    const planTools = planOffered
+        ? [UPDATE_PLAN_TOOL, RECORD_ASSESSMENT_TOOL, LOAD_ASSESSMENT_TOOL]
+        : [];
+    // The turn's assessment records: earlier versions come from the stored
+    // events of this chat (in a project, of its chats), loaded on first use.
+    const assessmentLedger = planOffered
+        ? createAssessmentLedger({
+              loadPrior: () =>
+                  loadPriorAssessments(db, { chatId: params.chatId ?? null, projectId: projectId ?? null }),
+              resolveTask: (taskId) => contextTaskForId(activeContexts, taskId),
+              lookupDoc: (docId) => {
+                  const hit =
+                      docIndex?.[docId] ??
+                      Object.values(docIndex ?? {}).find((d) => d.document_id === docId);
+                  return hit ? { document_id: hit.document_id, filename: hit.filename } : null;
+              },
+          })
+        : undefined;
     const activeTools = [
         ...baseTools,
         ...WORKFLOW_TOOLS,
+        ...planTools,
         ...webSearchTools,
         ...readUrlTools,
         ...(extraTools ?? []),
@@ -4000,14 +4733,20 @@ export async function runLLMStream(params: {
         systemPrompt += webSearchPrompt;
     }
 
-    // read_url addendum — present whenever the URL reader is active (not
-    // gated on the web-search toggle). Teaches the two product flows
+    // read_url addendum — present whenever the URL reader is offered (with
+    // web access off only when the user wrote a link). Teaches the two product flows
     // (read a PDF/page a search surfaced; read a link the user pasted)
     // and the preview→full two-step so the model doesn't pull whole
     // documents into context before judging relevance.
     if (readUrlTools.length > 0) {
         const readUrlPrompt = `\n\n---\nREAD URL / PDF — the \`read_url\` tool is LIVE. It fetches the full text of ONE public web page or PDF by its URL.\n\nUSE IT WHEN:\n- A web search returns a relevant result whose snippet is not enough — ESPECIALLY a PDF (a \`.pdf\` link). The search gives you the URL; call \`read_url\` on it to read the actual document before you cite it. Do NOT cite a PDF from its search snippet alone.\n- The user pastes or names a URL in their message and the answer depends on what's on that page — read it before answering.\n\nDO NOT USE IT FOR: EU legislation and CJEU case law (eur-lex.europa.eu, curia.europa.eu). We hold that corpus ourselves — always retrieve those documents through the legal source tools (by CELEX id or search), never by reading the public web page. Such a call is refused and returns no text.\n\nHOW (two steps, to stay efficient):\n1. PREVIEW first: call \`read_url\` with the \`url\` and an \`objective\` (what you need from it). You get the most relevant passages — enough to judge whether the source is on point and to answer focused questions.\n2. FULL only if needed: if the preview shows the document is relevant and you need more than the excerpts (e.g. to read a whole PDF end-to-end), call \`read_url\` again with \`full: true\` for the entire text.\n\nGround your answer on the returned text and cite the URL inline (e.g. "Prema [naslovu](URL), …"). If \`read_url\` returns an error (login wall, not found, nothing extracted), tell the user plainly and do not invent the contents.\n---\n`;
         systemPrompt += readUrlPrompt;
+        if (readUrlAllowlist) {
+            systemPrompt +=
+                (contextSourceUrls(activeContexts).length > 0
+                    ? "\n\nWEB ACCESS IS OFF for this conversation: `read_url` opens ONLY the links the user wrote in their own messages and the link sources listed in the active contexts. Never call it on any other URL (e.g. a source's external_url from a tool result) — it will be refused."
+                    : "\n\nWEB ACCESS IS OFF for this conversation: `read_url` opens ONLY the links the user wrote in their own messages. Never call it on a URL from a tool result (e.g. a source's external_url) — it will be refused.");
+        }
     }
 
     // Word add-in addendum. The Word client renders one Apply card per
@@ -4088,52 +4827,87 @@ export async function runLLMStream(params: {
     // per-request cache collapses duplicate texts into one sidecar call
     // and the shield's HMAC coreference keeps repeated /anonymize calls
     // deterministic across requests (same value → same placeholder).
-    // Sequential on purpose: the first call may create the chat session
-    // and coreference counters are session-scoped.
+    // The oldest turn goes out alone (it may create the chat session);
+    // the rest of the window goes out in parallel WHEN the deployed shield
+    // reports `session_lock` — it then resolves every call's placeholders
+    // in one transaction under a session-level lock, so two concurrent
+    // calls can never split one value across two placeholders. An older
+    // shield (staging shares production's) gets the sequential path, as
+    // before. Before this a 20-turn chat paid 20 sequential round-trips
+    // on every send.
     if (piiContext && piiContext.mode !== "off") {
-        const { piiActive, failsClosed, piiClient } = await import("./pii");
+        const { piiActive, failsClosed, piiClient, shieldHasCapability } = await import("./pii");
         if (piiActive(piiContext.mode)) {
-            const anonCache = new Map<string, string>();
-            for (const msg of chatMessages) {
-                if (msg.role !== "user" || !msg.content) continue;
-                const cached = anonCache.get(msg.content);
-                if (cached !== undefined) {
-                    msg.content = cached;
-                    continue;
-                }
+            // Narrowed by the guard above; captured so the closure keeps it.
+            const piiMode = piiContext.mode;
+            const anonymizeTurn = async (text: string): Promise<string> => {
                 const result = await piiClient.anonymize({
-                    text: msg.content,
+                    text,
                     userId,
-                    mode: piiContext.mode,
+                    mode: piiMode,
                     language: piiContext.language,
                     chatId: piiContext.chatId,
                     source: "user_input",
                 });
-                if (!result.ok) {
-                    // Same failure semantics as maybeAnonymize (#48): fail
-                    // closed in strict/strict_legal — abort the turn; the
-                    // route handler turns this into a localized SSE error
-                    // event. Standard fails open with a tagged warn.
-                    console.warn(
-                        "[pii] /anonymize failed for user turn:",
-                        result.error,
-                    );
-                    if (failsClosed(piiContext.mode)) {
-                        throw new PiiShieldUnavailableError();
-                    }
-                    console.warn(
-                        "[pii] fail-open: standard mode — user turn forwarded to the LLM unanonymized (sidecar unavailable)",
-                    );
-                    anonCache.set(msg.content, msg.content);
-                    continue;
+                if (result.ok) return result.data.anonymized_text;
+                // Same failure semantics as maybeAnonymize (#48): fail
+                // closed in strict/strict_legal — abort the turn; the
+                // route handler turns this into a localized SSE error
+                // event. Standard fails open with a tagged warn.
+                console.warn("[pii] /anonymize failed for user turn:", result.error);
+                if (failsClosed(piiMode)) {
+                    throw new PiiShieldUnavailableError();
                 }
-                anonCache.set(msg.content, result.data.anonymized_text);
-                msg.content = result.data.anonymized_text;
+                console.warn(
+                    "[pii] fail-open: standard mode — user turn forwarded to the LLM unanonymized (sidecar unavailable)",
+                );
+                return text;
+            };
+            // Distinct texts only: duplicate turns share one sidecar call.
+            const texts = Array.from(
+                new Set(
+                    chatMessages
+                        .filter((m) => m.role === "user" && m.content)
+                        .map((m) => m.content),
+                ),
+            );
+            const anonymized = new Map<string, string>();
+            if (texts.length > 0) {
+                anonymized.set(texts[0], await anonymizeTurn(texts[0]));
+                const width = (await shieldHasCapability("session_lock"))
+                    ? PII_HISTORY_CONCURRENCY
+                    : 1;
+                await mapWithConcurrency(
+                    texts.slice(1),
+                    width,
+                    async (text) => {
+                        anonymized.set(text, await anonymizeTurn(text));
+                    },
+                );
+            }
+            for (const msg of chatMessages) {
+                if (msg.role !== "user" || !msg.content) continue;
+                msg.content = anonymized.get(msg.content) ?? msg.content;
             }
         }
     }
 
     const events: AssistantEvent[] = [];
+    const orchestrationEnabled = process.env.EULEX_ORCHESTRATION === "1" ||
+        process.env.EULEX_ORCHESTRATION === "true";
+    // An EULEX system context may name the model that answers and how hard
+    // it reasons. Not under orchestration: there the retriever and writer
+    // models are fixed by env.
+    const contextRun = orchestrationEnabled ? null : contextRunSettings(activeContexts);
+    // Which contexts took part in this answer — streamed first, persisted
+    // with the answer (the UI shows them, with a system context's
+    // disclaimer and the model it chose, under the answer) — and what of
+    // them could not be loaded.
+    const contextsApplied = contextsAppliedEvent(activeContexts, contextRun, contextsUnavailable);
+    if (contextsApplied) {
+        events.push(contextsApplied);
+        write(`data: ${JSON.stringify(contextsApplied)}\n\n`);
+    }
     // One assistant turn produces at most one document_versions row per
     // edited doc. `runToolCalls` fires once per tool-call batch; the model
     // may emit multiple batches in a single turn, so this map persists
@@ -4260,10 +5034,9 @@ export async function runLLMStream(params: {
     // localllm-main — that one always routes through the OpenAI client
     // and crashes the stream when no OPENAI_API_KEY / VLLM_BASE_URL is
     // wired up server-side.
-    const orchestrationEnabled = process.env.EULEX_ORCHESTRATION === "1" ||
-        process.env.EULEX_ORCHESTRATION === "true";
     const writerModel = process.env.EULEX_WRITER_MODEL || "gpt-5.6-sol";
     const selectedModel = orchestrationEnabled ? writerModel :
+        contextRun?.model ??
         resolveModel(model, resolveDefaultMainModel(apiKeys ?? {}));
     let turnUsage = emptyUsage();
 
@@ -4284,10 +5057,16 @@ export async function runLLMStream(params: {
         // legitimately need well over 10 tool round-trips; cutting the loop
         // mid-research used to truncate answers. The prompt's RESEARCH
         // EFFORT SCALING rules govern how much the model actually searches.
-        maxIterations: 50,
+        // With a Custom Context active the 50-step cap is lifted (multi-step
+        // compliance workflows over many sources); only a high runaway
+        // ceiling remains (CONTEXT_MAX_TOOL_ITERATIONS, default 200).
+        maxIterations:
+            activeContexts && activeContexts.length > 0
+                ? contextMaxToolIterations()
+                : 50,
         apiKeys,
         enableThinking: true,
-        reasoningEffort,
+        reasoningEffort: contextRun?.effort ?? reasoningEffort,
         abortSignal,
         // Forward the composer globe state. Without this the Claude
         // adapter falls back to the CLAUDE_NATIVE_WEB_SEARCH env default —
@@ -4302,13 +5081,21 @@ export async function runLLMStream(params: {
             },
             onReasoningDelta: (delta) => {
                 iterReasoning += delta;
-                write(
-                    `data: ${JSON.stringify({ type: "reasoning_delta", text: delta })}\n\n`,
-                );
+                stallWatchdog?.touch();
+                reasoningGate.reasoningDelta(delta);
             },
             onReasoningBlockEnd: () => {
                 if (!iterReasoning) return;
-                events.push({ type: "reasoning", text: iterReasoning });
+                const ev = { type: "reasoning" as const, text: iterReasoning };
+                events.push(ev);
+                reasoningTextUpdates.push(
+                    reasoningGate.endReasoning().then(
+                        (shown) => {
+                            if (shown) ev.text = shown;
+                        },
+                        () => {},
+                    ),
+                );
                 write(
                     `data: ${JSON.stringify({ type: "reasoning_block_end" })}\n\n`,
                 );
@@ -4328,6 +5115,8 @@ export async function runLLMStream(params: {
                 // Surfacing the raw tool name here would leak the
                 // internal identifier — keep that out of the UI.
                 if (call.name === "web_search") return;
+                // update_plan streams its own plan_updated (the PLAN card).
+                if (call.name === "update_plan") return;
                 // For MCP tools, emit a friendly display name (server + tool)
                 // alongside the raw prefixed name. The UI renders display_name
                 // when present so users don't see `mcp__<slug>__<tool>`.
@@ -4366,6 +5155,8 @@ export async function runLLMStream(params: {
                 docsCreated,
                 docsReplicated,
                 workflowsApplied,
+                plansUpdated,
+                assessmentsRecorded,
                 docsEdited,
                 mcpResults,
                 legalSources,
@@ -4391,6 +5182,8 @@ export async function runLLMStream(params: {
                     scopeWhitelist,
                     docTexts,
                     selectedModel,
+                    readUrlAllowlist,
+                    assessmentLedger,
                 );
             // Accumulate across every tool batch in this turn so the
             // chat handler can fold the total into `recordLlmUsage`.
@@ -4435,6 +5228,8 @@ export async function runLLMStream(params: {
                     title: wf.title,
                 });
             }
+            for (const p of plansUpdated) events.push(p);
+            for (const a of assessmentsRecorded) events.push(a);
             for (const e of docsEdited) {
                 events.push({
                     type: "doc_edited",
@@ -4553,6 +5348,8 @@ export async function runLLMStream(params: {
             throw new LlmStreamStallError(stallDeadlineMs);
         }
     } catch (error) {
+        // Nothing may stay held behind a translation once the turn fails.
+        reasoningGate.abandon();
         throw attachUsage(error, {
             usage: { ...turnUsage, incomplete: turnUsage.incomplete || !!stallWatchdog?.stalled || !turnUsage.iterations },
             model: turnUsage.calls?.at(-1)?.model ?? selectedModel,
@@ -4574,6 +5371,11 @@ export async function runLLMStream(params: {
         : mapCitationsToAnnotations(fullText, docIndex, events, docTexts);
     write(`data: ${JSON.stringify({ type: "citations", citations })}\n\n`);
     write("data: [DONE]\n\n");
+    // A translated reasoning block may still hold the tail of the stream.
+    // On Stop there is no one to show it to — write the rest as it is.
+    if (abortSignal?.aborted) reasoningGate.abandon();
+    await reasoningGate.drain();
+    await Promise.all(reasoningTextUpdates);
 
     // SECURITY: belt-and-braces — also scrub the persisted fullText and
     // any `content` events so the stored chat_messages row matches what
@@ -4673,7 +5475,10 @@ function mapCitationsToAnnotations(
         try {
             const matcher = matcherFor(c.doc_id);
             if (matcher) {
-                const loc = matcher.locate(c.quote);
+                const loc =
+                    c.kind === "cell"
+                        ? matcher.locateInCell(c.sheet, c.cell, c.quote)
+                        : matcher.locate(c.quote);
                 if (loc.status === "repaired") {
                     verification = {
                         status: "repaired",
@@ -4701,7 +5506,12 @@ function mapCitationsToAnnotations(
             version_id: docInfo?.version_id ?? null,
             version_number: docInfo?.version_number ?? null,
             filename: docInfo?.filename ?? c.doc_id,
-            page: c.page,
+            // A document of an active EULEX context (rendered as a cyan pill).
+            ...(docInfo?.read_only ? { context: true } : {}),
+            // Spreadsheet citations carry sheet + cell and no page.
+            ...(c.kind === "cell"
+                ? { page: null, sheet: c.sheet, cell: c.cell }
+                : { page: c.page }),
             quote,
             ...(verification ? { verification } : {}),
         });

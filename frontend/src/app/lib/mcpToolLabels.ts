@@ -53,3 +53,18 @@ export function mcpToolLabelKey(server: string, tool: string): string | null {
     if (server.includes("Eulex") && tool in EULEX) return EULEX[tool];
     return null;
 }
+
+// Built-in document-generating tools. Shown on the "running" row that
+// appears when the model's tool call ends, until the tool's own event
+// ("Creating <file>…") replaces it — so the raw tool name never shows.
+const BUILTIN: Record<string, string> = {
+    generate_docx: "builtinToolLabels.generateDocx",
+    generate_excel: "builtinToolLabels.generateExcel",
+    record_assessment: "builtinToolLabels.recordAssessment",
+    load_assessment: "builtinToolLabels.loadAssessment",
+};
+
+/** `streaming`-namespace i18n key for a built-in tool's running row, or null. */
+export function builtinToolLabelKey(tool: string): string | null {
+    return BUILTIN[tool] ?? null;
+}

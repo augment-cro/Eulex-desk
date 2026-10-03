@@ -1,6 +1,8 @@
 /** Per-request list-price calculation. Sol rates verified 2026-09-13:
  * https://developers.openai.com/api/docs/pricing (promo through at least 2026-11-21).
- * Other adapters still report legacy aggregates; these remain labelled estimates.
+ * Claude reports one receipt per request tagged with the serving endpoint
+ * (Vertex region or direct API, since 2026-09-24). Other adapters still
+ * report legacy aggregates; these remain labelled estimates.
  */
 import type { LlmCallUsage, LlmUsage } from "./llm/types";
 import { providerForModel } from "./llm/models";
@@ -44,6 +46,14 @@ const PRICING: Record<string, Rate> = {
         cacheWrite: 6.25 / M,
         cacheRead: 0.5 / M,
     },
+    // Anthropic list price 2026-09-22. Cache reads are 0.05x input (not the
+    // usual 0.1x); the 5-minute cache write is the standard 1.25x.
+    "claude-opus-5-5": {
+        input: 4 / M,
+        output: 20 / M,
+        cacheWrite: 5 / M,
+        cacheRead: 0.2 / M,
+    },
     // ── Anthropic ──────────────────────────────────────────────────────
     "claude-opus-4-8": {
         input: 5.0 / M,
@@ -59,6 +69,13 @@ const PRICING: Record<string, Rate> = {
         cacheRead: 0.5 / M,
     },
     "claude-sonnet-5": {
+        input: 2.0 / M,
+        output: 10.0 / M,
+        cacheWrite: 2.5 / M,
+        cacheRead: 0.2 / M,
+    },
+    // Anthropic list price 2026-09-28 — same as Sonnet 5.
+    "claude-sonnet-5-5": {
         input: 2.0 / M,
         output: 10.0 / M,
         cacheWrite: 2.5 / M,
@@ -191,6 +208,18 @@ function priceCall(call: LlmCallUsage) {
         sol && call.endpoint?.startsWith("https://eu.api.openai.com/")
             ? 1.1
             : 1;
+    // Claude on Vertex AI: regional and multi-regional endpoints (our "eu",
+    // also "us", "europe-west1", …) are 10 % over the global list price for
+    // every token type, cache included — Opus 5.5 EU is $4.40 / $22 / $5.50
+    // 5m write / $0.22 hit. The "global" endpoint and the direct Anthropic
+    // API are list price. Source: cloud.google.com/vertex-ai/generative-ai/
+    // pricing, "EU Multi-Region" tab, verified 2026-09-24.
+    const vertexRegion =
+        call.provider === "claude" && call.endpoint?.startsWith("vertex:")
+            ? call.endpoint.slice("vertex:".length)
+            : null;
+    const vertexMultiplier =
+        vertexRegion && vertexRegion !== "global" ? 1.1 : 1;
     const reported = call.status === "reported" || call.status === "legacy";
     const costUsd =
         call.status === "rejected"
@@ -203,7 +232,8 @@ function priceCall(call: LlmCallUsage) {
                         call.cacheCreationInputTokens * r.cacheWrite +
                         call.cacheReadInputTokens * r.cacheRead) *
                         tierMultiplier *
-                        euMultiplier,
+                        euMultiplier *
+                        vertexMultiplier,
                 );
     return {
         ...call,
@@ -211,6 +241,7 @@ function priceCall(call: LlmCallUsage) {
         longContext,
         tierMultiplier,
         euMultiplier,
+        vertexMultiplier,
         ratesUsdPerMillion: r
             ? {
                   input: r.input * M,
@@ -264,7 +295,7 @@ export function priceUsage(model: string, usage: LlmUsage, extraCostUsd = 0) {
     );
     return {
         version: 1,
-        pricingVersion: "2026-09-13",
+        pricingVersion: "2026-09-24",
         currency: "USD",
         basis: perRequest ? "provider_usage_list_price" : "legacy_estimate",
         complete: !unknown && perRequest,

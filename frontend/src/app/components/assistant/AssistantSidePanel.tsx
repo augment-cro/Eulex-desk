@@ -346,6 +346,7 @@ export function AssistantSidePanel({
                                 onDraftEditApplied={(args) =>
                                     onDraftEditApplied?.(args)
                                 }
+                                active={isActive}
                             />
                         </div>
                     );

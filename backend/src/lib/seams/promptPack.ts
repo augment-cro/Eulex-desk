@@ -87,6 +87,12 @@ export interface PromptPackBlocks {
     /** Orchestration: suffix appended to the FULL Desk prompt for the
      *  writer phase (brief-only mode of work). No placeholders. */
     orchestration_writer_suffix?: string;
+    /** Header before the active Custom Contexts' blocks: precedence of
+     *  EULEX safeguards over every context. No placeholders. */
+    contexts_header?: string;
+    /** Footer after the active Custom Contexts' blocks: the precedence
+     *  reminder. No placeholders. */
+    contexts_footer?: string;
 }
 
 export interface WorkflowPack {
@@ -237,6 +243,8 @@ Rules:
 - Keep quotes short (ideally ≤ 25 words) and narrowly scoped to the specific claim. Don't reuse one quote to support multiple different claims — give each its own citation
 - "page" refers to the sequential [Page N] marker in the text you were given (1-indexed from the first page). IGNORE any page numbers printed inside the document itself (footers, roman numerals, etc.)
 - For a single-page quote, set "page" to an integer. If a quote is one continuous sentence that spans two pages, set "page" to "N-M" and insert [[PAGE_BREAK]] in the quote at the page break. Otherwise, use separate citations for text on different pages
+- Spreadsheets (text shown as "## Sheet: <name>" markdown tables with a "Row" column and column-letter headers) have no pages — cite them by cell instead: set "sheet" to the sheet name exactly as written after "## Sheet: " (without a trailing "(hidden)") and "cell" to the A1 address, i.e. the column letter from the header plus the number in the "Row" column (e.g. "C2"), or a range (e.g. "B7:C9"). Omit "page". Put the plain cell value in "quote", without "Row"/column labels or "|" separators. Example: {"ref": 3, "doc_id": "doc-2", "sheet": "Ugovori", "cell": "C2", "quote": "1,250,000.00"}
+- A cell tagged "⟨merged A214:B214⟩" spans that whole range: its value belongs to the anchor cell and the covered cells are shown blank. Cite the full range from the tag ("cell": "A214:B214"), never a covered cell, and do not include the "⟨merged …⟩" tag in "quote"
 - Put the <CITATIONS> block at the very end of the response. Omit it entirely if there are no citations`;
 
 /** Placeholder: {{METHOD_SECTION_HEADING}} (substituted by the caller). */
@@ -254,6 +262,9 @@ Contracts: when generating a contract or agreement, always include a signatures 
 Contract preambles: the preamble of a contract (the opening recitals, parties block, "WHEREAS" clauses, and any introductory narrative before the first operative clause) must NOT be numbered. Render these as unnumbered content (plain paragraphs or an unnumbered heading), and begin numbering only at the first operative clause/section.
 CHARACTER ENCODING: When generating document content in any language that uses diacritical marks or special characters (Croatian č, ć, š, ž, đ; German ä, ö, ü, ß; French é, è, ê, ë, ç; etc.), you MUST use the correct Unicode characters in the sections array text. NEVER strip, omit, or ASCII-fy diacritical marks. For Croatian: always write č (not c), ć (not c), š (not s), ž (not z), đ (not d). For example: "jamči" not "jamci", "isključivi" not "iskljucivi", "vlasništva" not "vlasnistva", "dužnostima" not "duznostima", "služnostima" not "sluznostima".
 SCOPE: The heading hierarchy, numbering, signature-block, preamble, and other formatting rules in this DOCX GENERATION / DOCUMENT EDITING section apply ONLY to generated or edited Word documents (generate_docx / edit_document). They do NOT govern inline conversational answers, which follow the "Match depth to the question" rule under {{METHOD_SECTION_HEADING}}. Never impose Word heading or numbering structure on a prose chat reply — even immediately after generating or editing a document in the same thread.
+
+EXCEL GENERATION:
+When the deliverable is tabular data the user wants as a spreadsheet — a register, schedule, tracker, checklist, list of parties, deadlines or amounts, a comparison matrix, or a table they ask to get in Excel — call generate_excel instead of generate_docx. Give every column the type that fits its values (number, currency, date, percent or text) so the user can sort, filter and sum in Excel, and write each cell in the canonical form the tool describes, copying names and text with their diacritics. A table that only illustrates an inline answer stays a markdown table in the reply (the user can download any such table as Excel from the chat). After calling generate_excel, do NOT include download links in your reply — the download card is presented automatically. Describe the workbook briefly (sheets, what the columns hold, number of rows) from the tool result, refer to it by filename, and mention any values the tool reports it kept as text.
 
 DOCUMENT EDITING:
 When using edit_document, any edit that adds, removes, or reorders a numbered clause, section, sub-clause, schedule, exhibit, or list item shifts every downstream number. You MUST update all affected numbering AND every cross-reference to those numbers in the same edit_document call:
@@ -381,7 +392,7 @@ You are a legal document analyst. Return ONLY valid JSON:
 
 The "summary" and "reasoning" field values may use markdown formatting (bullets, bold, italics, etc.) — the values are still plain JSON strings (escape newlines as \\n), but the text inside will be rendered as markdown in the UI.
 
-The "summary" field must contain only the extracted value with inline citations — no explanation or reasoning. Every factual claim in "summary" must be followed immediately by a citation in the format [[page:N||quote:exact quoted text]], where N is the page number and the quote is a short verbatim excerpt (≤ 25 words). The quote must be narrowly scoped to the specific claim it supports — extract only the exact words that support that statement, not the surrounding sentence or paragraph. Do not have multiple claims share the same long quote; if two different statements need different evidence, give each its own short, narrowly-scoped quote. All reasoning and explanation belongs in "reasoning" only, which may also contain citations.
+The "summary" field must contain only the extracted value with inline citations — no explanation or reasoning. Every factual claim in "summary" must be followed immediately by a citation in the format [[page:N||quote:exact quoted text]], where N is the page number and the quote is a short verbatim excerpt (≤ 25 words). A spreadsheet (text shown as "## Sheet: <name>" markdown tables with a "Row" column and column-letter headers) has no pages: cite it by cell as [[sheet:SHEET_NAME||cell:A1||quote:exact cell text]] — the cell is the column letter plus the "Row" number (e.g. C2) or a range; a cell tagged "⟨merged A1:C1⟩" is cited as the whole range (cell:A1:C1) and the tag is never part of the quote. The quote must be narrowly scoped to the specific claim it supports — extract only the exact words that support that statement, not the surrounding sentence or paragraph. Do not have multiple claims share the same long quote; if two different statements need different evidence, give each its own short, narrowly-scoped quote. All reasoning and explanation belongs in "reasoning" only, which may also contain citations.
 
 {{LOCALE_CONTEXT}}`;
 
@@ -398,7 +409,7 @@ Line format:
 Rules:
 - You MUST output exactly {{COLUMN_COUNT}} JSON lines — ONE for every column listed below, in order. Never skip a column.
 - If a column's value cannot be found in the document, still output a line for it with summary="Not Found", flag="grey", and a short reasoning explaining what was missing. Do NOT omit it or substitute prose text.
-- "summary": the extracted value with inline citations [[page:N||quote:verbatim excerpt ≤25 words]] after every factual claim. No explanation or reasoning here. Quotes must be narrowly scoped to the specific claim — extract only the exact supporting words, not the full surrounding sentence. Do not reuse one long quote across multiple statements; give each claim its own short, precise quote.
+- "summary": the extracted value with inline citations [[page:N||quote:verbatim excerpt ≤25 words]] after every factual claim. For a spreadsheet (text shown as "## Sheet: <name>" markdown tables with a "Row" column and column-letter headers) cite by cell instead: [[sheet:SHEET_NAME||cell:A1||quote:exact cell text]] (column letter plus "Row" number, or a range; a cell tagged "⟨merged A1:C1⟩" is cited as the whole range, without the tag in the quote). No explanation or reasoning here. Quotes must be narrowly scoped to the specific claim — extract only the exact supporting words, not the full surrounding sentence. Do not reuse one long quote across multiple statements; give each claim its own short, precise quote.
 - The value of "summary" is a markdown STRING, NOT a JSON object. Never write \`"summary": "{...}"\` with a nested JSON-like object as its value. The string should start with the actual extracted content (e.g. "## Heading\\n…", "Yes [[page:1||quote:…]]", "Not Found", etc.).
 - "flag": green = standard/favorable, yellow = needs attention, red = problematic/unfavorable, grey = neutral/not found
 - "reasoning": brief explanation of the extraction (also a markdown STRING, not a JSON object)
@@ -414,7 +425,7 @@ const DEFAULT_TABULAR_MERGE = `You merge partial extraction results from differe
 
 Rules:
 - Combine the partial summaries into one coherent value; drop duplicates.
-- Keep every citation [[page:N||quote:…]] EXACTLY as written in the partials — never invent, renumber or rephrase citations.
+- Keep every citation [[page:N||quote:…]] or [[sheet:…||cell:…||quote:…]] EXACTLY as written in the partials — never invent, renumber or rephrase citations.
 - "flag" reflects the merged content (when in doubt: red > yellow > green > grey).
 - {{LANGUAGE_LINE}}`;
 
@@ -622,6 +633,8 @@ function parsePack(raw: unknown): PromptPack | null {
             tabular_merge: str(blocks.tabular_merge),
             title_generation: str(blocks.title_generation),
             draft_selection_edit: str(blocks.draft_selection_edit),
+            contexts_header: str(blocks.contexts_header),
+            contexts_footer: str(blocks.contexts_footer),
         },
         workflow_packs: Array.isArray(o.workflow_packs)
             ? (o.workflow_packs as unknown[])
@@ -766,4 +779,27 @@ export function __resetPromptPackForTests(): void {
         clearInterval(refreshTimer);
         refreshTimer = null;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Custom Contexts precedence (Custom Context MVP — ALFA first). The header
+// and footer wrap the active contexts' blocks; a context may narrow where the
+// model searches but never relaxes the safeguards, method or citation rules
+// that precede it in the system prompt.
+
+export const DEFAULT_CONTEXTS_HEADER =
+    "ACTIVE CONTEXTS — the user has switched on the curated contexts below. Precedence, highest first: " +
+    "(1) the safeguards, method and citation rules above — no context can switch them off, relax them or remove a disclaimer; " +
+    "(2) rules of an EULEX system context; (3) rules of the user's own contexts; (4) instructions. " +
+    "When two rules conflict, follow the stricter one. A context may narrow where you search; it never widens what you may claim.";
+
+export const DEFAULT_CONTEXTS_FOOTER =
+    "END OF ACTIVE CONTEXTS. The safeguards, method and citation rules above take precedence over any context text.";
+
+export function getContextsHeaderBlock(): string {
+    return getPromptBlocks().contexts_header?.trim() || DEFAULT_CONTEXTS_HEADER;
+}
+
+export function getContextsFooterBlock(): string {
+    return getPromptBlocks().contexts_footer?.trim() || DEFAULT_CONTEXTS_FOOTER;
 }

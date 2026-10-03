@@ -37,6 +37,7 @@ import {
     isStripeConfigured,
     planDefByKeyOrSlug,
     planForProductId,
+    getPackPriceInfo,
     resolvePackPriceId,
     resolvePriceIdForPlan,
     stripeWebhookSecret,
@@ -85,6 +86,7 @@ type StripeCheckoutSession = {
     payment_status?: string;
     payment_intent?: string | null;
     amount_total?: number | null;
+    customer?: string | { id: string } | null;
     customer_email?: string | null;
     client_reference_id?: string | null;
     metadata?: Record<string, string> | null;
@@ -433,11 +435,31 @@ billingRouter.get("/plans", async (_req, res) => {
  */
 billingRouter.get("/topup/packs", requireAuth, async (_req, res) => {
     const eligible = await callerCanBuyPacks(res);
-    res.json({
-        enabled: isStripeConfigured() && getTokenPacks().length > 0,
-        eligible,
-        packs: eligible ? getTokenPacks().map(({ priceId, ...rest }) => rest) : [],
-    });
+    const packs = getTokenPacks();
+    const enabled = isStripeConfigured() && packs.length > 0;
+    // Price shown = the live Stripe price (net + "+ PDV" when VAT is added
+    // at checkout); the env amount is only a fallback if Stripe is down.
+    const shown =
+        enabled && eligible
+            ? await Promise.all(
+                  packs.map(async (pack) => {
+                      const { priceId: _priceId, ...rest } = pack;
+                      const info = await getPackPriceInfo(pack).catch((err) => {
+                          console.warn(
+                              `[billing/topup/packs] price lookup for ${pack.id} failed:`,
+                              err instanceof Error ? err.message : err,
+                          );
+                          return null;
+                      });
+                      return {
+                          ...rest,
+                          amountEurDisplay: info?.amountEur ?? rest.amountEurDisplay,
+                          taxExclusive: info?.taxExclusive ?? false,
+                      };
+                  }),
+              )
+            : [];
+    res.json({ enabled, eligible, packs: shown });
 });
 
 // ── checkout session ──────────────────────────────────────────────────────
@@ -481,6 +503,15 @@ billingRouter.post(
             // it to the product's default price; Checkout only accepts
             // price_… in line_items[].price.
             const packPriceId = await resolvePackPriceId(pack);
+            // Reuse the user's Stripe customer so the pack invoice sits with
+            // their subscription invoices (and matches them to their fiscal
+            // invoices); a first-time buyer gets a customer created here and
+            // remembered by the webhook.
+            const existing = await query<{ stripe_customer_id: string | null }>(
+                `SELECT stripe_customer_id FROM public.user_tier_state WHERE user_id = $1`,
+                [userId],
+            );
+            const customerId = existing.rows[0]?.stripe_customer_id ?? null;
             const session = await getStripe().checkout.sessions.create({
                 mode: "payment",
                 // Stripe-hosted page follows the app UI language instead
@@ -488,7 +519,29 @@ billingRouter.post(
                 locale: parseUiLocale(req),
                 payment_method_types: ["card"],
                 line_items: [{ price: packPriceId, quantity: 1 }],
-                customer_email: userEmail,
+                ...(customerId
+                    ? {
+                          customer: customerId,
+                          // Address + name typed on the Checkout page are
+                          // saved back — needed for the VAT location and for
+                          // a company name on the invoice.
+                          customer_update: { address: "auto" as const, name: "auto" as const },
+                      }
+                    : { customer_email: userEmail, customer_creation: "always" as const }),
+                // VAT by the buyer's location (Stripe Tax, HR OSS). A billing
+                // address is required so the location is always known.
+                automatic_tax: { enabled: true },
+                billing_address_collection: "required",
+                tax_id_collection: { enabled: true },
+                // A Stripe invoice for the purchase: the e-računi connection
+                // turns Stripe invoices into fiscal invoices, so without one a
+                // pack sale would have no fiscal invoice.
+                invoice_creation: {
+                    enabled: true,
+                    invoice_data: {
+                        metadata: { user_id: userId, pack_id: pack.id },
+                    },
+                },
                 client_reference_id: userId,
                 // Critical: these flow into the webhook so we can
                 // credit the right user with the right token amount
@@ -1920,6 +1973,24 @@ async function creditFromSession(
         return;
     }
     const amountCents = session.amount_total ?? null;
+    // A first pack purchase creates the Stripe customer at Checkout; keep
+    // it so later purchases, invoices and the documents list line up.
+    const sessionCustomer =
+        typeof session.customer === "string" ? session.customer : session.customer?.id ?? null;
+    if (sessionCustomer) {
+        try {
+            const cur = await query<{ stripe_customer_id: string | null }>(
+                `SELECT stripe_customer_id FROM public.user_tier_state WHERE user_id = $1`,
+                [userId],
+            );
+            if (!cur.rows[0]?.stripe_customer_id) await rememberStripeCustomer(userId, sessionCustomer);
+        } catch (err) {
+            console.warn(
+                `[stripe/webhook] remembering customer for user=${userId} failed (non-fatal):`,
+                err instanceof Error ? err.message : err,
+            );
+        }
+    }
     try {
         const result = await query<{ id: string }>(
             `INSERT INTO public.user_token_credits

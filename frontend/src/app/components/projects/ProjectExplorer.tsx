@@ -5,15 +5,21 @@ import { useTranslations } from "next-intl";
 import {
     FileText,
     File,
+    FileSpreadsheet,
     Folder,
     FolderOpen,
     ChevronRight,
     ChevronDown,
     FolderPlus,
+    Mail,
     Trash2,
 } from "lucide-react";
 import type { MikeDocument, MikeFolder } from "@/app/components/shared/types";
 import { VersionChip } from "@/app/components/shared/VersionChip";
+import {
+    isEmailFileType,
+    isSpreadsheetFileType,
+} from "@/app/lib/supportedFileTypes";
 
 interface Props {
     projectName?: string | null;
@@ -34,6 +40,12 @@ function DocIcon({ fileType }: { fileType: string | null }) {
         return <FileText className="h-3.5 w-3.5 text-destructive shrink-0" />;
     if (fileType === "docx" || fileType === "doc")
         return <File className="h-3.5 w-3.5 text-foreground shrink-0" />;
+    if (isSpreadsheetFileType(fileType))
+        return (
+            <FileSpreadsheet className="h-3.5 w-3.5 text-success shrink-0" />
+        );
+    if (isEmailFileType(fileType))
+        return <Mail className="h-3.5 w-3.5 text-foreground shrink-0" />;
     return <File className="h-3.5 w-3.5 text-muted-foreground/70 shrink-0" />;
 }
 

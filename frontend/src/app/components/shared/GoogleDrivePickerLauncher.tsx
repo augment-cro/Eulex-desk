@@ -284,9 +284,10 @@ export function GoogleDrivePickerLauncher({
                 onCanceled={handleCanceled}
                 onOauthError={handleOauthError}
             >
-                {/* Only offer what the backend imports: PDF / Word / text
-                    and native Google Docs (exported to .docx). Sheets and
-                    Slides export to xlsx / pptx, which would be rejected. */}
+                {/* Only offer what the backend imports: PDF / Word / text /
+                    Excel / CSV, native Google Docs (exported to .docx) and
+                    Google Sheets (exported to .xlsx). Slides export to
+                    pptx, which would be rejected. */}
                 <DrivePickerDocsView
                     {...({
                         "include-folders": "false",

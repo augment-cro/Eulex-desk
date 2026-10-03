@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { ZoomIn, ZoomOut } from "lucide-react";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { useFetchSingleDoc } from "@/app/hooks/useFetchSingleDoc";
 import { DocxViewer } from "./DocxViewer";
 import { TextDocView } from "./TextDocView";
+import { isMarkdownFilename } from "./rehypeMarkRanges";
 import type { CitationQuote } from "./types";
 import {
     clearHighlights,
@@ -14,8 +16,21 @@ import {
     STANDARD_FONT_DATA_URL,
 } from "./highlightQuote";
 
+// Fortune-sheet + Luckyexcel (and their CSS) are client-only and heavy, so
+// they are fetched only when a spreadsheet actually opens.
+const SpreadsheetView = dynamic(() => import("./SpreadsheetView"), {
+    ssr: false,
+    loading: () => (
+        <div className="flex flex-1 items-center justify-center bg-muted">
+            <MikeIcon spin mike size={28} />
+        </div>
+    ),
+});
+
 interface Props {
     doc: { document_id: string; version_id?: string | null } | null;
+    /** The document's file name: a .md text document is rendered as Markdown. */
+    filename?: string | null;
     /** Preferred: one or more (page, quote) pairs to highlight. */
     quotes?: CitationQuote[];
     /** Back-compat single-quote API. Ignored if `quotes` is provided. */
@@ -23,6 +38,12 @@ interface Props {
     fallbackPage?: number;
     rounded?: boolean;
     bordered?: boolean;
+    /**
+     * False while the owning tab is hidden (tab bodies stay mounted). Only
+     * the spreadsheet viewer uses it: Fortune-sheet registers document-wide
+     * input handlers, so only the visible workbook may be mounted.
+     */
+    active?: boolean;
 }
 
 type QuoteEntry = { page?: number; quote: string };
@@ -42,11 +63,13 @@ type RenderedPage = {
 
 export function DocView({
     doc,
+    filename,
     quotes,
     quote,
     fallbackPage,
     rounded = true,
     bordered = true,
+    active = true,
 }: Props) {
     const containerRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -64,6 +87,14 @@ export function DocView({
         if (quote) return [{ page: fallbackPage, quote }];
         return [];
     }, [quotes, quote, fallbackPage]);
+
+    // Spreadsheets are cited by sheet + cell; the back-compat single-quote
+    // API still gets a quote-text lookup.
+    const spreadsheetQuotes: CitationQuote[] | undefined = useMemo(() => {
+        if (quotes?.length) return quotes;
+        if (quote) return [{ quote }];
+        return undefined;
+    }, [quotes, quote]);
 
     // Stable string key so effects can depend on quote-list identity
     const quoteKey = quoteList
@@ -539,6 +570,20 @@ export function DocView({
         }
     }
 
+    // /display answered .xlsx bytes — a spreadsheet (xlsx/xlsm/xls/csv).
+    // The bytes are handed down, so the viewer never fetches a second time.
+    if (result?.type === "spreadsheet") {
+        return (
+            <SpreadsheetView
+                buffer={result.buffer}
+                quotes={spreadsheetQuotes}
+                rounded={rounded}
+                bordered={bordered}
+                active={active}
+            />
+        );
+    }
+
     // /display answered text/plain — a .txt document. Without this branch it
     // used to fall through to the DOCX viewer, which cannot render text.
     if (result?.type === "text") {
@@ -546,6 +591,7 @@ export function DocView({
             <TextDocView
                 text={result.text}
                 quotes={textQuotes}
+                markdown={isMarkdownFilename(filename)}
                 rounded={rounded}
                 bordered={bordered}
             />

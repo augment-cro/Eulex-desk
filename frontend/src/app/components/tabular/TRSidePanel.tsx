@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import ReactMarkdown from "react-markdown";
+import { escapeLineStartDates } from "../shared/markdownDates";
 import remarkGfm from "remark-gfm";
 import {
     ChevronDown,
@@ -15,9 +16,11 @@ import {
 import type { ColumnConfig, MikeDocument, TabularCell } from "../shared/types";
 import { useTranslations } from "next-intl";
 import { prepareTabularMarkdown, parseInlineCodeToken, type ParsedCitation } from "./citation-utils";
-import { getPillClass } from "./pillUtils";
+import { getPillClass, localizeNotFound, pillDisplayLabel } from "./pillUtils";
 import { DocView } from "../shared/DocView";
 import { DocxView } from "../shared/DocxView";
+import { isSpreadsheetCitation } from "../shared/types";
+import { formatSheetCell } from "@/app/lib/spreadsheetAddress";
 
 function isDocxDocument(d: {
     file_type?: string | null;
@@ -37,12 +40,12 @@ interface Props {
     onClose: () => void;
     onNavigate: (columnIndex: number) => void;
     onRegenerate?: () => Promise<void>;
-    /** If true, open the document panel immediately */
-    displayDocument?: boolean;
-    /** Quote to highlight when opening document panel */
-    citationQuote?: string;
-    /** Page to scroll to when opening document panel */
-    citationPage?: number;
+    /**
+     * Citation whose badge was clicked: opens the document panel right away,
+     * scrolled to the page (paged documents) or the sheet + cell
+     * (spreadsheets), with the quote highlighted.
+     */
+    citation?: ParsedCitation;
 }
 
 const FLAG_BADGE: Record<string, string> = {
@@ -64,9 +67,7 @@ export function TRSidePanel({
     onClose,
     onNavigate,
     onRegenerate,
-    displayDocument = false,
-    citationQuote,
-    citationPage,
+    citation,
 }: Props) {
     const t = useTranslations("tabularReview");
     const sortedColumns = [...columns].sort((a, b) => a.index - b.index);
@@ -82,23 +83,21 @@ export function TRSidePanel({
     const quoteParagraphRef = useRef<HTMLParagraphElement>(null);
 
     // Internal state — initialised from props, also toggled by badge clicks inside the panel
-    const [docCitation, setDocCitation] = useState<
-        { quote: string; page: number } | undefined
-    >(
-        displayDocument && citationQuote
-            ? { quote: citationQuote, page: citationPage ?? 1 }
-            : undefined,
+    const [docCitation, setDocCitation] = useState<ParsedCitation | undefined>(
+        citation?.quote ? citation : undefined,
     );
 
     // Re-sync when the panel opens for a different cell or citation
     useEffect(() => {
-        setDocCitation(
-            displayDocument && citationQuote
-                ? { quote: citationQuote, page: citationPage ?? 1 }
-                : undefined,
-        );
+        setDocCitation(citation?.quote ? citation : undefined);
         setQuoteExpanded(false);
-    }, [cell.id, displayDocument, citationQuote, citationPage]);
+    }, [cell.id, citation]);
+
+    // Stable identity so the viewers don't re-highlight on every render.
+    const docCitationQuotes = useMemo(
+        () => (docCitation ? [docCitation] : undefined),
+        [docCitation],
+    );
 
     useEffect(() => {
         const el = quoteParagraphRef.current;
@@ -107,7 +106,13 @@ export function TRSidePanel({
     }, [docCitation?.quote, quoteExpanded]);
 
     const { processed: summaryText, citations: summaryCitations, pills: summaryPills } =
-        prepareTabularMarkdown(cell.content?.summary ?? "");
+        prepareTabularMarkdown(
+            localizeNotFound(cell.content?.summary ?? "", {
+                notFound: t("valueNotFound"),
+                yes: t("valueYes"),
+                no: t("valueNo"),
+            }),
+        );
     const {
         processed: reasoningText,
         citations: reasoningCitations,
@@ -178,6 +183,11 @@ export function TRSidePanel({
                                         className={`flex-1 text-sm text-muted-foreground ${quoteExpanded ? "" : "truncate"}`}
                                     >
                                         "{docCitation.quote}"
+                                        {isSpreadsheetCitation(docCitation) && (
+                                            <span className="ml-1 text-muted-foreground/70">
+                                                {`(${formatSheetCell(docCitation.sheet, docCitation.cell)})`}
+                                            </span>
+                                        )}
                                     </p>
                                     {(isTruncated || quoteExpanded) && (
                                         <ChevronDown
@@ -191,18 +201,15 @@ export function TRSidePanel({
                     {isDocxDocument(doc) && !doc.pdf_storage_path ? (
                         <DocxView
                             documentId={doc.id}
-                            quotes={[
-                                {
-                                    page: docCitation.page,
-                                    quote: docCitation.quote,
-                                },
-                            ]}
+                            quotes={docCitationQuotes}
                         />
                     ) : (
+                        // PDFs, text and spreadsheets: DocView picks the
+                        // viewer from what /display serves (a spreadsheet
+                        // opens on the cited sheet + cell).
                         <DocView
                             doc={{ document_id: doc.id }}
-                            quote={docCitation.quote}
-                            fallbackPage={docCitation.page}
+                            quotes={docCitationQuotes}
                         />
                     )}
                 </div>
@@ -349,18 +356,32 @@ function CitationBadge({
 }: {
     index: number;
     citation: ParsedCitation;
-    onClick: (c: { quote: string; page: number }) => void;
+    onClick: (c: ParsedCitation) => void;
 }) {
     const t = useTranslations("tabularReview");
+    const isCell = isSpreadsheetCitation(citation);
     return (
         <button
             type="button"
             data-page={citation.page}
+            data-sheet={citation.sheet}
+            data-cell={citation.cell}
             data-quote={citation.quote}
-            title={t("citationTooltip", { page: citation.page, quote: citation.quote })}
-            onClick={() =>
-                onClick({ quote: citation.quote, page: citation.page })
+            title={
+                isCell
+                    ? t("citationTooltipCell", {
+                          location: formatSheetCell(
+                              citation.sheet,
+                              citation.cell,
+                          ),
+                          quote: citation.quote,
+                      })
+                    : t("citationTooltip", {
+                          page: citation.page ?? "",
+                          quote: citation.quote,
+                      })
             }
+            onClick={() => onClick(citation)}
             className="inline-flex items-center justify-center rounded-full bg-secondary w-3.5 h-3.5 text-[9px] font-medium text-foreground align-super cursor-pointer hover:bg-accent transition-colors"
         >
             {index + 1}
@@ -382,11 +403,13 @@ function MarkdownContent({
     processed: string;
     citations: ParsedCitation[];
     pills: string[];
-    onCitationClick: (c: { quote: string; page: number }) => void;
+    onCitationClick: (c: ParsedCitation) => void;
     inline?: boolean;
     citationOffset?: number;
     column?: ColumnConfig;
 }) {
+    // Named tValue — the inner `code` renderer binds `t` to the token text.
+    const tValue = useTranslations("tabularReview");
     if (!children) return null;
 
     return (
@@ -456,7 +479,11 @@ function MarkdownContent({
                                 <span
                                     className={`inline-block rounded-full px-1.5 py-0.5 text-[11px] font-medium leading-none ${getPillClass(content, column)}`}
                                 >
-                                    {content}
+                                    {pillDisplayLabel(content, {
+                                        notFound: tValue("valueNotFound"),
+                                        yes: tValue("valueYes"),
+                                        no: tValue("valueNo"),
+                                    })}
                                 </span>
                             );
                         }
@@ -472,7 +499,7 @@ function MarkdownContent({
                 },
             }}
         >
-            {processed}
+            {escapeLineStartDates(processed)}
         </ReactMarkdown>
     );
 }

@@ -19,6 +19,8 @@ type Pack = {
     label: string;
     description: string;
     amountEurDisplay: number;
+    /** VAT is added on top at checkout — show "+ PDV". */
+    taxExclusive?: boolean;
 };
 
 type CatalogResponse = {
@@ -161,10 +163,14 @@ export function TopupModal({
                             >
                                 <div className="min-w-0 flex-1">
                                     <div className="font-medium text-foreground">
-                                        {p.label}
+                                        {t.has(`packs.${p.id}.name`)
+                                            ? t(`packs.${p.id}.name`)
+                                            : p.label}
                                     </div>
                                     <div className="text-xs text-muted-foreground">
-                                        {p.description}
+                                        {t.has(`packs.${p.id}.description`)
+                                            ? t(`packs.${p.id}.description`)
+                                            : p.description}
                                     </div>
                                 </div>
                                 <div className="text-right">
@@ -177,6 +183,11 @@ export function TopupModal({
                                             },
                                         )}
                                     </div>
+                                    {p.taxExclusive && (
+                                        <div className="text-[11px] text-muted-foreground">
+                                            {t("topupPlusVat")}
+                                        </div>
+                                    )}
                                     <button
                                         type="button"
                                         disabled={redirecting === p.id}

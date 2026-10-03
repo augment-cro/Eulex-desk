@@ -55,7 +55,9 @@ export {
 } from "./session";
 export type { PiiDocumentAnalysisCache } from "./session";
 
-export { schedulePrewarm } from "./prewarm";
+export { schedulePrewarm, prewarmUploadedDocument } from "./prewarm";
+export { analysisKeyFor } from "./analysisKey";
+export { shieldCapabilities, shieldHasCapability } from "./capabilities";
 
 export {
     TOOL_PII_POLICIES,

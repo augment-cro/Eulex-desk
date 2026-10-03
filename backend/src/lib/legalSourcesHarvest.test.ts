@@ -183,3 +183,52 @@ describe("deriveActiveJurisdictions — SI/DE connector labelling", () => {
         assert.match(out[0], /^Croatian law/);
     });
 });
+
+// Real @hr `get_article` source (EULEX unified, Zakon o iznimnim mjerama
+// kontrole cijena čl. 8, 2026-09-19). The act name rides separately in
+// `document.title`; the composed `title` carries the article.
+const HR_ARTICLE_SOURCE = {
+    id: "@hr/regulation/544a812c-19bf-4dc7-8875-ee953b1fd36b/article/Članak 8./version/f926d9fb-2e86-4446-b570-98405d7e6d2d",
+    scope: "@hr",
+    title: "Zakon o iznimnim mjerama kontrole cijena, čl. 8",
+    document: {
+        id: "544a812c-19bf-4dc7-8875-ee953b1fd36b",
+        title: "Zakon o iznimnim mjerama kontrole cijena",
+        citation: "Zakon o iznimnim mjerama kontrole cijena, čl. 8, NN 40/2025-540",
+        type: "Zakon",
+        subtype: "Zakon",
+        version_id: "f926d9fb-2e86-4446-b570-98405d7e6d2d",
+    },
+    article: { label: "Članak 8.", ordinal: "8", heading: null, segment_id: "a7d23bc3" },
+    match: null,
+    links: {
+        backend_fetch: "/api/v1/regulations/544a812c-19bf-4dc7-8875-ee953b1fd36b/article/%C4%8Clanak%208.?version_id=f926d9fb-2e86-4446-b570-98405d7e6d2d",
+        frontend_path: "/document/hr/544a812c-19bf-4dc7-8875-ee953b1fd36b?article=%C4%8Clanak%208.",
+    },
+    in_force: true,
+    external_url: "https://narodne-novine.nn.hr/eli/sluzbeni/2025/40/540",
+};
+
+describe("harvestLegalSources — act title (tracker #45)", () => {
+    it("carries document.title as documentTitle next to the composed title", () => {
+        const out = harvestLegalSources({
+            text: "",
+            structured: { sources: [HR_ARTICLE_SOURCE] },
+        });
+        assert.equal(out.length, 1);
+        assert.equal(out[0].title, "Zakon o iznimnim mjerama kontrole cijena, čl. 8");
+        assert.equal(out[0].documentTitle, "Zakon o iznimnim mjerama kontrole cijena");
+        assert.equal(out[0].articleLabel, "Članak 8.");
+    });
+
+    it("SI/DE sources carry their act title too", () => {
+        const out = harvestLegalSources({
+            text: "",
+            structured: { sources: [SI_SOURCE, DE_SOURCE] },
+        });
+        assert.deepEqual(
+            out.map((s) => s.documentTitle),
+            ["Kazenski zakonik (KZ-1)", "Bürgerliches Gesetzbuch"],
+        );
+    });
+});

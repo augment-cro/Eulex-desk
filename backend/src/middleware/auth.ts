@@ -18,6 +18,11 @@ import {
 } from '../lib/membership';
 import { linkInvitesForUser } from '../lib/teams';
 import { syncSignupContact } from '../lib/brevoContacts';
+import {
+    sendWelcomeEmailBounded,
+    welcomeLocaleFromRequest,
+    WELCOME_EMAIL_MAX_WAIT_MS,
+} from '../lib/welcomeEmail';
 import { isSupabaseToken, verifySupabaseToken } from '../lib/supabaseAuth';
 import { resolveSupabaseUserTier } from '../lib/tierResolution';
 import { getFreeTierLevelId } from '../lib/stripe';
@@ -131,7 +136,7 @@ export async function requireAuth(
   // SUPABASE_URL is unset isSupabaseToken() is always false, so behaviour
   // is byte-identical to the pre-Supabase middleware.
   if (isSupabaseToken(token)) {
-    await handleSupabaseAuth(token, res, next);
+    await handleSupabaseAuth(req, token, res, next);
     return;
   }
 
@@ -166,7 +171,9 @@ export async function requireAuth(
     if (rows.length === 0) {
       // First login: try email match (migration from Supabase)
       const emailMatch = await pool.query(
-        'SELECT id FROM users WHERE email = $1 AND wp_user_id IS NULL',
+        // Never link by an EMPTY e-mail: the reserved owner of EULEX context
+        // documents (seams/contextOwner.ts) is a users row without one.
+        "SELECT id FROM users WHERE email = $1 AND email <> '' AND wp_user_id IS NULL",
         [decoded.email],
       );
 
@@ -308,6 +315,23 @@ export async function requireAuth(
 }
 
 /**
+ * Name to greet a brand-new user with in the welcome e-mail: what they typed
+ * at signup (`display_name`) or what a social provider supplied
+ * (`full_name` / `name`). Deliberately NOT the users.display_name fallback
+ * (the e-mail local part) — "Pozdrav ivana.horvat," reads worse than
+ * "Pozdrav,". Greeting only; the users row is provisioned exactly as before.
+ */
+function greetingNameFromMetadata(
+  meta: Record<string, unknown> | undefined,
+): string | null {
+  for (const key of ['display_name', 'full_name', 'name']) {
+    const v = meta?.[key];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+/**
  * Supabase access-token auth path (dual-token — see requireAuth).
  *
  * Verifies the token via JWKS, resolves the caller to a public.users row
@@ -322,6 +346,7 @@ export async function requireAuth(
  * is a WordPress-only concern.
  */
 async function handleSupabaseAuth(
+  req: Request,
   token: string,
   res: Response,
   next: NextFunction,
@@ -351,6 +376,7 @@ async function handleSupabaseAuth(
     let userId: string | null = null;
     let userEmail = email;
     let wasNewUser = false;
+    let newUserDisplayName: string | null = null;
 
     // 1. Returning user — resolve via the identity mapping.
     const ident = await pool.query<{ user_id: string }>(
@@ -400,6 +426,7 @@ async function handleSupabaseAuth(
       userEmail = upsert.rows[0].email ?? email;
       wasNewUser = upsert.rows[0].inserted;
       if (wasNewUser) {
+        newUserDisplayName = greetingNameFromMetadata(meta);
         // Lifecycle signal (migration 210): exactly-once, race-safe via xmax.
         void recordAuditEvent({ userId, eventType: "user.signed_up", metadata: { source: "supabase" } });
         // Newsletter list sync (BREVO_SIGNUP_LIST_ID) — fire-and-forget,
@@ -445,7 +472,7 @@ async function handleSupabaseAuth(
     // can't run in prod (tabular review failed for them). Idempotent on
     // every auth so existing profile-less users self-heal on next request
     // and new users get the row (and its claude-sonnet-5 default, see
-    // migration 131) immediately. ON CONFLICT keeps it a cheap no-op once
+    // migration 131 — resolved to Sonnet 5.5 by MODEL_ALIASES) immediately. ON CONFLICT keeps it a cheap no-op once
     // the row exists.
     if (userId) {
       await pool.query(
@@ -478,6 +505,29 @@ async function handleSupabaseAuth(
         supabaseUserId: claims.sub,
         appMetadata: claims.raw.app_metadata,
       });
+    }
+
+    // Welcome e-mail — exactly once per new users row: the xmax guard above
+    // picks the one request that inserted it, and lib/welcomeEmail's ledger
+    // claim (`welcome:<userId>`) makes the send idempotent on top of that.
+    // Placed after tier resolution so the "you start on the free plan" line
+    // is only included when it is true (a linked team invite may already
+    // grant a paid tier). Awaited with a bound rather than fire-and-forget:
+    // Cloud Run throttles CPU outside a request (see tracker #41), so a
+    // detached send could stall until the next request — the bound keeps
+    // this first authenticated request snappy while the send carries on in
+    // the background if Brevo is slow. Never throws, never fails auth.
+    if (wasNewUser && userId) {
+      await sendWelcomeEmailBounded(
+        {
+          userId,
+          email: userEmail,
+          displayName: newUserDisplayName,
+          lang: welcomeLocaleFromRequest(req),
+          freeTier: effectiveTier === freeLevel,
+        },
+        WELCOME_EMAIL_MAX_WAIT_MS,
+      );
     }
 
     res.locals.userId = userId;

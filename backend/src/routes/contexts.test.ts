@@ -68,10 +68,11 @@ function buildApp(
   store: ContextsRuntimeStore,
   client: ProviderClient,
   targets = allowAllTargets,
+  systemContexts = true,
 ) {
   const app = express();
   app.use(express.json());
-  app.use("/contexts", makeContextsRouter(store, stubAuth, client, targets));
+  app.use("/contexts", makeContextsRouter(store, stubAuth, client, targets, async () => systemContexts));
   return app;
 }
 
@@ -134,6 +135,36 @@ describe("contexts runtime routes", () => {
     // Disabling always works.
     await request(app).put("/contexts/toggles/c0").send({ enabled: false }).expect(200);
     assert.equal(store.prefs.get("c0"), false);
+  });
+
+  it("PUT /toggles/:id never counts EULEX system contexts toward the cap", async () => {
+    const store = memoryStore();
+    const personal = Array.from({ length: MAX_ACTIVE_CONTEXTS + 1 }, (_, i) => ({ id: `c${i}`, name: `C${i}` }));
+    const system = [{ id: "sys1", name: "EU AI Governance", level: "system" as const }];
+    for (let i = 0; i < MAX_ACTIVE_CONTEXTS; i++) store.prefs.set(`c${i}`, true);
+    const app = buildApp(store, providerWith([...personal, ...system]));
+    // A system context switches on with the personal cap already full …
+    await request(app).put("/contexts/toggles/sys1").send({ enabled: true }).expect(200);
+    // … and does not take a personal slot: c0 off → c5 on still fits.
+    await request(app).put("/contexts/toggles/c0").send({ enabled: false }).expect(200);
+    await request(app).put(`/contexts/toggles/c${MAX_ACTIVE_CONTEXTS}`).send({ enabled: true }).expect(200);
+  });
+
+  it("asks the provider for EULEX system contexts only when the tier grants them", async () => {
+    const asked: Array<boolean | undefined> = [];
+    const client: ProviderClient = {
+      isConfigured: () => true,
+      list: async (_u, _t, _e, opts) => {
+        asked.push(opts?.systemContexts);
+        return { ok: true, data: opts?.systemContexts ? [{ id: "sys1", name: "S", level: "system" }] : [] };
+      },
+    };
+    const store = memoryStore();
+    await request(buildApp(store, client, allowAllTargets, false))
+      .put("/contexts/toggles/sys1").send({ enabled: true }).expect(404);
+    await request(buildApp(store, client, allowAllTargets, true))
+      .put("/contexts/toggles/sys1").send({ enabled: true }).expect(200);
+    assert.deepEqual(asked, [false, true]);
   });
 
   it("GET /alert-counts returns service_notifications counts for visible contexts; [] when dormant", async () => {

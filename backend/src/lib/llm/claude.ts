@@ -3,12 +3,15 @@ import type { Tool } from "@anthropic-ai/sdk/resources/messages/messages";
 import type {
     StreamChatParams,
     StreamChatResult,
+    LlmCallUsage,
     LlmUsage,
     NormalizedToolCall,
     NormalizedToolResult,
+    ReasoningEffort,
 } from "./types";
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
 import { toClaudeTools } from "./tools";
+import { sumUsage } from "./usage";
 
 const DEBUG_LLM_STREAM = process.env.DEBUG_LLM_STREAM === "true";
 
@@ -27,13 +30,66 @@ type NativeMessage = {
 // Claude exhausted the budget mid-answer and self-stopped with
 // stop_reason="max_tokens" — the user saw it as a truncated reply.
 //
-// Sonnet 5 supports up to 128_000 output tokens per call (June 2026 API
-// docs); we keep the call ceiling at 64_000. Pricing is on consumed, not
-// allowed, tokens, so the ceiling has no effective cost when the model
-// would have stopped earlier anyway. Worst-case full-budget turn is
-// ~64_000 × $15/1M ≈ $0.96 — acceptable for the rare long legal-research
-// dump that previously broke. Raise toward 128_000 if longer dumps truncate.
+// Sonnet 5 and Opus 5.5 support up to 128_000 output tokens per call (June
+// 2026 API docs); we keep the call ceiling at 64_000. Thinking counts toward
+// it. Pricing is on consumed, not allowed, tokens, so the ceiling has no
+// effective cost when the model would have stopped earlier anyway.
+// Worst-case full-budget call on Opus 5.5 is ~64_000 × $20/1M ≈ $1.28 —
+// acceptable for the rare long legal-research dump that previously broke.
+// Raise toward 128_000 if longer dumps truncate.
 const MAX_TOKENS = 64_000;
+
+// Efforts "xhigh" and "max" (set by an EULEX system context) think far
+// longer, and thinking counts toward the ceiling, so those calls get the
+// models' full 128_000. Only models probed on Vertex `eu` to accept both the
+// level and the ceiling are listed (2026-10-02); on any other model — e.g.
+// the refusal fallback — the request goes out at "high" with the usual
+// ceiling instead of failing with a 400.
+const DEEP_EFFORT_MAX_TOKENS = 128_000;
+const DEEP_EFFORT_MODELS = new Set(["claude-opus-5-5", "claude-sonnet-5-5"]);
+
+/** The effort and output ceiling a request to `model` is sent with. */
+export function effortParams(
+    model: string,
+    effort: ReasoningEffort,
+): { effort: ReasoningEffort; maxTokens: number } {
+    const deep = effort === "xhigh" || effort === "max";
+    if (!deep) return { effort, maxTokens: MAX_TOKENS };
+    return DEEP_EFFORT_MODELS.has(model)
+        ? { effort, maxTokens: DEEP_EFFORT_MAX_TOKENS }
+        : { effort: "high", maxTokens: MAX_TOKENS };
+}
+
+// Models that 400 on `thinking: {type: "disabled"}` at every effort level:
+// thinking is always on and `output_config.effort` is the only knob.
+const THINKING_ALWAYS_ON = new Set(["claude-opus-5-5"]);
+// Sonnet 5.5 also 400s on `disabled`; its lowest setting is `between_tools`
+// (no up-front thinking; notes between tool calls still come back as
+// thinking blocks). Accepted at effort low/medium/high only, and takes no
+// other thinking field.
+const THINKING_OFF_IS_BETWEEN_TOOLS = new Set(["claude-sonnet-5-5"]);
+
+/**
+ * The lowest thinking setting each model accepts — what "thinking off"
+ * means for it. Omitting `thinking` is NOT off on Sonnet 5 / 5.5 (it runs
+ * adaptive thinking), so it is always sent explicitly.
+ */
+export function minimalThinkingParams(model: string): Record<string, unknown> {
+    if (THINKING_ALWAYS_ON.has(model)) return { output_config: { effort: "low" } };
+    if (THINKING_OFF_IS_BETWEEN_TOOLS.has(model)) return { thinking: { type: "between_tools" } };
+    return { thinking: { type: "disabled" } };
+}
+
+// Opus 5.5 runs cyber / bio / reasoning-extraction safety classifiers that
+// can decline (`stop_reason: "refusal"`) a benign legal question. Vertex has
+// no server-side `fallbacks`, so streamClaude retries a decline on the model
+// mapped here for the rest of the turn.
+// Deliberately Sonnet 5, NOT 5.5: Sonnet 5.5 declines in more categories
+// (cyber, bio, frontier_llm, reasoning_extraction, general_harms), and
+// Anthropic's own server-side fallback retries 5.5 declines on Sonnet 5.
+const REFUSAL_FALLBACK_MODEL: Record<string, string> = {
+    "claude-opus-5-5": "claude-sonnet-5",
+};
 
 // Anthropic native server-side web search tool. Server-tool means Claude
 // runs the search inside its inference and returns a `web_search_tool_result`
@@ -117,6 +173,47 @@ function client(override?: string | null): Anthropic {
 function directClient(override?: string | null): Anthropic {
     const apiKey = override?.trim() || serverEnvKey();
     return new Anthropic({ apiKey, ...CLIENT_OPTS });
+}
+
+/**
+ * Receipt endpoint for the client that actually served a call. Pricing
+ * depends on it: Claude on Vertex AI costs 10 % more on regional and
+ * multi-regional endpoints (e.g. "eu") than on "global", while the direct
+ * Anthropic API is list price (see llmPricing.ts).
+ */
+export function claudeReceiptEndpoint(servedByVertex: boolean): string {
+    return servedByVertex
+        ? `vertex:${process.env.VERTEX_CLAUDE_REGION?.trim() || "eu"}`
+        : "https://api.anthropic.com/";
+}
+
+type AnthropicUsageBlock = {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+};
+
+/** One per-request receipt, priced from the provider's own usage block. */
+function claudeReceipt(
+    model: string,
+    phase: LlmCallUsage["phase"],
+    servedByVertex: boolean,
+    u: AnthropicUsageBlock,
+    responseId?: string,
+): LlmCallUsage {
+    return {
+        provider: "claude",
+        model,
+        phase,
+        endpoint: claudeReceiptEndpoint(servedByVertex),
+        ...(responseId ? { responseId } : {}),
+        status: "reported",
+        inputTokens: u.input_tokens ?? 0,
+        outputTokens: u.output_tokens ?? 0,
+        cacheCreationInputTokens: u.cache_creation_input_tokens ?? 0,
+        cacheReadInputTokens: u.cache_read_input_tokens ?? 0,
+    };
 }
 
 /**
@@ -288,8 +385,10 @@ export async function streamClaude(
         reasoningEffort,
         abortSignal,
     } = params;
-    const effort: "low" | "medium" | "high" = reasoningEffort ?? "high";
+    const requestedEffort: ReasoningEffort = reasoningEffort ?? "high";
     const maxIter = params.maxIterations ?? 10;
+    // Switches to REFUSAL_FALLBACK_MODEL[model] after a classifier decline.
+    let activeModel = model;
     let anthropic = client(apiKeys?.claude);
     let usingVertex = anthropic instanceof AnthropicVertex;
     const claudeTools = toClaudeTools(tools);
@@ -340,6 +439,12 @@ export async function streamClaude(
         cacheReadInputTokens: 0,
         iterations: 0,
     };
+    // The same, split by model — differs from `usage` only when a refusal
+    // fallback ran part of the turn on another model.
+    const usageByModel = new Map<string, LlmUsage>();
+    // One receipt per API request, tagged with the endpoint that served it
+    // (Vertex region vs direct API are priced differently).
+    const receipts: LlmCallUsage[] = [];
 
     // Wrap the system prompt as an array with cache_control so Anthropic
     // caches the static block for 5 min (≈90% cheaper on cache reads).
@@ -355,16 +460,18 @@ export async function streamClaude(
         // cache breakpoints into the growing message history so
         // Anthropic can cache the completed exchange prefix.
         const cachedMessages = withCacheBreakpoints(messages);
+        // Per request: activeModel changes after a refusal fallback.
+        const { effort, maxTokens } = effortParams(activeModel, requestedEffort);
 
         const stream = anthropic.messages.stream(
           {
-            model,
+            model: activeModel,
             system: cachedSystem as unknown as Anthropic.TextBlockParam[],
             messages: cachedMessages as Anthropic.MessageParam[],
             tools: allTools.length
                 ? (allTools as unknown as Tool[])
                 : undefined,
-            max_tokens: MAX_TOKENS,
+            max_tokens: maxTokens,
             // Claude 4.x models require `thinking.type: "adaptive"` and
             // drive effort via `output_config.effort` rather than a fixed
             // token budget. We only opt in when the caller requested it.
@@ -379,20 +486,19 @@ export async function streamClaude(
                       // panel goes dark while the model's between-tool
                       // narration leaks into the visible answer body. Setting
                       // it explicitly restores summarized thinking deltas and
-                      // is valid on both Sonnet 4.6 and Sonnet 5.
+                      // is valid on both Sonnet 4.6 and Sonnet 5. On Opus 5.5
+                      // it also returns the between-tool progress notes,
+                      // which arrive as thinking blocks there.
                       thinking: { type: "adaptive", display: "summarized" },
                       output_config: { effort },
                   } as unknown as Record<string, unknown>)
-                : // Explicit off. On Sonnet 5 OMITTING `thinking` silently runs
-                  // ADAPTIVE thinking (4.6 ran without) — so an explicit
-                  // disabled is required for the flag to mean what it says.
-                  // Unreachable in the main chat today (enableThinking is
-                  // hardcoded true — thinking on for better answers), but
+                : // Explicit off. On Sonnet 5 / 5.5 OMITTING `thinking`
+                  // silently runs ADAPTIVE thinking (4.6 ran without) — so
+                  // the lowest setting is sent for the flag to mean what it
+                  // says. Unreachable in the main chat today (enableThinking
+                  // is hardcoded true — thinking on for better answers), but
                   // future callers must get what they ask for.
-                  ({ thinking: { type: "disabled" } } as unknown as Record<
-                      string,
-                      unknown
-                  >)),
+                  minimalThinkingParams(activeModel)),
             // Extended thinking requires temperature to be default (omitted).
           },
           abortSignal ? { signal: abortSignal } : undefined,
@@ -403,6 +509,8 @@ export async function streamClaude(
         // the Vertex→direct fallback below must never replay a stream the
         // user has partially seen (it would duplicate text).
         let emittedThisIter = false;
+        // Answer text only (not reasoning) — gates the refusal fallback.
+        let emittedTextThisIter = false;
 
         stream.on("streamEvent", (event) => {
             if (DEBUG_LLM_STREAM) {
@@ -412,6 +520,7 @@ export async function streamClaude(
 
         stream.on("text", (delta) => {
             emittedThisIter = true;
+            emittedTextThisIter = true;
             callbacks.onContentDelta?.(delta);
         });
         if (enableThinking) {
@@ -461,28 +570,63 @@ export async function streamClaude(
         // this line we cannot tell why a turn ended short.
         if (stopReason === "max_tokens") {
             console.warn(
-                `[claude] hit max_tokens ceiling (iter=${iter}, MAX_TOKENS=${MAX_TOKENS}). ` +
-                    `Output may be truncated. Consider raising MAX_TOKENS or asking the user for a continuation.`,
+                `[claude] hit max_tokens ceiling (iter=${iter}, max_tokens=${maxTokens}, effort=${effort}). ` +
+                    `Output may be truncated. Consider raising the ceiling or asking the user for a continuation.`,
             );
         }
 
         // Accumulate per-call usage. Anthropic guarantees this on every
         // non-error response; missing fields default to 0 (e.g. prompt
         // caching off).
-        const u = final.usage as
-            | {
-                  input_tokens?: number;
-                  output_tokens?: number;
-                  cache_creation_input_tokens?: number;
-                  cache_read_input_tokens?: number;
-              }
-            | undefined;
+        const u = final.usage as AnthropicUsageBlock | undefined;
         if (u) {
-            usage.iterations += 1;
-            usage.inputTokens += u.input_tokens ?? 0;
-            usage.outputTokens += u.output_tokens ?? 0;
-            usage.cacheCreationInputTokens += u.cache_creation_input_tokens ?? 0;
-            usage.cacheReadInputTokens += u.cache_read_input_tokens ?? 0;
+            const receipt = claudeReceipt(
+                activeModel,
+                params.usagePhase ?? "single",
+                usingVertex,
+                u,
+                (final as { id?: string }).id,
+            );
+            receipts.push(receipt);
+            const call: LlmUsage = {
+                iterations: 1,
+                inputTokens: receipt.inputTokens,
+                outputTokens: receipt.outputTokens,
+                cacheCreationInputTokens: receipt.cacheCreationInputTokens,
+                cacheReadInputTokens: receipt.cacheReadInputTokens,
+            };
+            usage.iterations += call.iterations;
+            usage.inputTokens += call.inputTokens;
+            usage.outputTokens += call.outputTokens;
+            usage.cacheCreationInputTokens += call.cacheCreationInputTokens;
+            usage.cacheReadInputTokens += call.cacheReadInputTokens;
+            usageByModel.set(
+                activeModel,
+                sumUsage(usageByModel.get(activeModel), call),
+            );
+        }
+
+        // Classifier decline. Before any answer text in this iteration,
+        // retry it on the fallback model and stay there for the rest of the
+        // turn. reasoning_extraction is not retried (Anthropic's own
+        // server-side fallback skips it too); any other decline ends the
+        // turn as before.
+        if (stopReason === "refusal") {
+            const category = final.stop_details?.category ?? null;
+            const fallback = REFUSAL_FALLBACK_MODEL[activeModel];
+            const retry =
+                !!fallback &&
+                !emittedTextThisIter &&
+                category !== "reasoning_extraction";
+            console.warn(
+                `[claude] refusal on ${activeModel} (category=${category ?? "none"}, iter=${iter})` +
+                    (retry ? ` — retrying on ${fallback} for the rest of this turn` : ""),
+            );
+            if (retry) {
+                activeModel = fallback;
+                iter--;
+                continue;
+            }
         }
 
         // Extract text content and tool_use calls from the final assistant
@@ -548,7 +692,40 @@ export async function streamClaude(
         });
     }
 
-    return { fullText, usage: usage.iterations > 0 ? usage : undefined };
+    // Report the per-request receipts, grouped by model (a refusal fallback
+    // can mix models within one turn), so every request is priced at its
+    // own model rate and endpoint. The dispatcher then adds no aggregate
+    // legacy estimate.
+    for (const [m, mu] of usageByModel) {
+        params.onUsage?.({
+            ...mu,
+            calls: receipts.filter((r) => r.model === m),
+        });
+    }
+
+    return {
+        fullText,
+        model: activeModel,
+        usage:
+            usage.iterations > 0 ? { ...usage, calls: receipts } : undefined,
+    };
+}
+
+// Sonnet 5 / 5.5 and Opus 5.x think by default (adaptive), and thinking
+// counts against max_tokens. Most completeText callers size maxTokens for
+// the ANSWER alone (titles 64, the column-prompt generator 512 — that one
+// came back cut off mid-JSON on Sonnet 5.5, 30. 9., and the route 502'd),
+// so room for thinking is added on top. Unused tokens are not billed.
+const THINKING_HEADROOM = { low: 2048, medium: 4096, high: 8192 } as const;
+
+export function completionMaxTokens(
+    model: string,
+    answerTokens: number,
+    effort?: "low" | "medium" | "high",
+): number {
+    return /^claude-(sonnet|opus)-5/.test(model)
+        ? answerTokens + THINKING_HEADROOM[effort ?? "high"]
+        : answerTokens;
 }
 
 export async function completeClaudeText(params: {
@@ -557,16 +734,29 @@ export async function completeClaudeText(params: {
     user: string;
     maxTokens?: number;
     apiKeys?: { claude?: string | null };
+    /**
+     * Omitted (default): `thinking` omitted — on Sonnet 5 / 5.5 that means
+     * ADAPTIVE thinking at the API default effort (high); product policy is
+     * thinking-on-everywhere for answer quality.
+     * Set: adaptive thinking at this effort — for latency-bound helpers that
+     * ran on Haiku (legal-refs, reasoning translation: "low"; selection
+     * edits: "medium"). Never below "low": thinking stays on.
+     * `maxTokens` is the answer budget; completionMaxTokens adds room for
+     * the thinking.
+     */
+    effort?: "low" | "medium" | "high";
 }): Promise<{ text: string; usage?: LlmUsage }> {
     const anthropic = client(params.apiKeys?.claude);
-    // `thinking` deliberately omitted: on Sonnet 5 that means ADAPTIVE
-    // thinking — the model decides per request. For these short structured
-    // tasks (titles, selection edits, enrichment) it thinks little or not at
-    // all, and product policy is thinking-on-everywhere for answer quality.
     const createOnce = (c: Anthropic) =>
         c.messages.create({
         model: params.model,
-        max_tokens: params.maxTokens ?? 512,
+        max_tokens: completionMaxTokens(params.model, params.maxTokens ?? 512, params.effort),
+        ...(params.effort
+            ? ({
+                  thinking: { type: "adaptive" },
+                  output_config: { effort: params.effort },
+              } as object)
+            : {}),
         // cache=false: these are short, usually one-off completions (title
         // generation, drafts, tabular cells) — caching the system prompt
         // would just burn the 25% cache-write premium with no reuse.
@@ -574,6 +764,7 @@ export async function completeClaudeText(params: {
         messages: [{ role: "user", content: params.user }],
     });
     let resp: Awaited<ReturnType<typeof createOnce>>;
+    let servedByVertex = anthropic instanceof AnthropicVertex;
     try {
         resp = await createOnce(anthropic);
     } catch (err) {
@@ -590,30 +781,39 @@ export async function completeClaudeText(params: {
             `[claude] Vertex request failed (${(err as Error)?.name ?? "error"}) — falling back to the direct Anthropic API`,
         );
         resp = await createOnce(directClient(params.apiKeys?.claude));
+        servedByVertex = false;
     }
-    const text = resp.content
+    let text = resp.content
         .filter((b): b is Anthropic.TextBlock => b.type === "text")
         .map((b) => b.text)
         .join("");
+    // A safety decline returns 200, sometimes with a few words already
+    // written (prod 30. 9.: out=33). That fragment is not an answer:
+    // callers get "" and fall back (reasoning translation retries on
+    // Sonnet 5). The category is only visible here.
+    if ((resp.stop_reason as string) === "refusal") {
+        const details = (resp as unknown as { stop_details?: { category?: string | null } }).stop_details;
+        console.warn(
+            `[claude] refusal on ${params.model} (completeText) category=${details?.category ?? "-"} partial_chars=${text.length}`,
+        );
+        text = "";
+    }
 
     // Anthropic returns authoritative token counts on every response.
     // Mirrors the loop accumulator in streamClaude — same field names,
     // single-iteration here because there's no tool-use loop.
-    const u = resp.usage as
-        | {
-              input_tokens?: number;
-              output_tokens?: number;
-              cache_creation_input_tokens?: number;
-              cache_read_input_tokens?: number;
-          }
-        | undefined;
-    const usage: LlmUsage | undefined = u
+    const u = resp.usage as AnthropicUsageBlock | undefined;
+    const receipt = u
+        ? claudeReceipt(params.model, "single", servedByVertex, u, resp.id)
+        : undefined;
+    const usage: LlmUsage | undefined = receipt
         ? {
               iterations: 1,
-              inputTokens: u.input_tokens ?? 0,
-              outputTokens: u.output_tokens ?? 0,
-              cacheCreationInputTokens: u.cache_creation_input_tokens ?? 0,
-              cacheReadInputTokens: u.cache_read_input_tokens ?? 0,
+              inputTokens: receipt.inputTokens,
+              outputTokens: receipt.outputTokens,
+              cacheCreationInputTokens: receipt.cacheCreationInputTokens,
+              cacheReadInputTokens: receipt.cacheReadInputTokens,
+              calls: [receipt],
           }
         : undefined;
     return { text, usage };

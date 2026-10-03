@@ -1,29 +1,40 @@
 {
   "rateLimit": {
     "softTitle": "{tier} · approaching your daily quota",
-    "softBody": "Used {used} of {limit} tokens ({percent}%) in the last 24 hours.",
-    "softHintTopup": "Top up more tokens to keep going past your daily limit.",
+    "softBody": "You've used {percent}% of your daily usage.",
+    "softHintTopup": "Add extra usage to keep working past your daily limit.",
     "softHintUpgrade": "Consider upgrading to Plus for a larger daily quota.",
     "hardTitle": "{tier} · daily limit reached",
     "hardBody": "Limit resets in approximately {relief}. New replies will be available after that.",
     "chatNoticeTitle": "Daily limit reached",
     "chatNoticeBody": "You've reached the daily limit for {tier}. To continue, choose a larger plan.",
     "chatNoticeRelief": "Limit resets in approximately {relief}.",
-    "bonusBadge": "bonus tokens available",
+    "bonusBadge": "extra usage available",
     "topupCta": "Top up",
     "upgradeCta": "See Plus",
     "usageRingTitle": "Daily usage",
     "usageRingUsed": "Used: {percent}%",
     "usageRingRemaining": "Remaining: {remaining}%",
-    "usageRingBonus": "Includes bonus tokens",
+    "usageRingBonus": "Includes extra usage",
     "usageRingReset": "Replenishes in {relief}",
     "usageRingResetSoon": "Replenishes soon",
     "usageRingAria": "Daily usage: {percent}%",
-    "topupTitle": "Buy more tokens",
-    "topupSubtitle": "Choose a pack — tokens never expire and apply after the daily limit.",
+    "topupTitle": "Extra usage",
+    "topupSubtitle": "Keep working after you reach your daily limit. Extra usage never expires and is used only once your daily limit is spent.",
     "topupDisabled": "Top-up is currently unavailable — please contact support for a bank transfer.",
     "topupPlusOnly": "Top-up is available to Plus subscribers only.",
-    "topupBankTransferHint": "Bank transfer? Email podrska@eulex.ai and tokens will be granted manually once payment clears.",
+    "topupBankTransferHint": "Bank transfer? Email podrska@eulex.ai and we'll add the extra usage manually once payment clears.",
+    "topupPlusVat": "+ VAT",
+    "packs": {
+      "tokens_1m": {
+        "name": "Working pack",
+        "description": "Extra usage for busier periods."
+      },
+      "tokens_3m": {
+        "name": "Intensive pack",
+        "description": "Twice the extra usage — for large matters and intensive months."
+      }
+    },
     "buyCta": "Buy",
     "redirecting": "Redirecting…",
     "loading": "Loading catalog…",
@@ -42,8 +53,8 @@
     "plusUpgradeError": "We can't open checkout right now.",
     "plusUpgradeRetry": "Try again",
     "plusUpgradePerks": {
-      "tokens": "{tokens} tokens per day",
-      "tokensFallback": "Increased daily token limit",
+      "tokens": "Higher daily usage limit",
+      "tokensFallback": "Higher daily usage limit",
       "models": "Access to advanced Claude models",
       "topup": "Top-up packs available",
       "support": "Priority support"
@@ -101,7 +112,8 @@
     "copy": "Copy",
     "copied": "Copied",
     "createAction": "Create",
-    "dismissWarning": "Dismiss warning"
+    "dismissWarning": "Dismiss warning",
+    "pageShort": "p. {page}"
   },
   "columnFormats": {
     "freeText": "Free text",
@@ -368,7 +380,7 @@
     "settings": "Settings",
     "tabs": {
       "general": "General",
-      "billing": "Billing & tokens",
+      "billing": "Billing & usage",
       "models": "Models & API Keys",
       "connectors": "Context",
       "fileSources": "File sources",
@@ -551,15 +563,15 @@
       "manageBillingHint": "Invoices, payment method and subscription cancellation — securely via Stripe."
     },
     "billing": {
-      "title": "Billing & tokens",
+      "title": "Billing & usage",
       "subtitle": "An overview of your daily usage and top-ups.",
-      "topupSuccess": "Payment successful. Your tokens will be credited within a few seconds.",
+      "topupSuccess": "Payment successful. Your extra usage will be available in a few seconds.",
       "topupCancelled": "Payment was cancelled — you have not been charged.",
       "subscription": "Subscription",
       "used24h": "Used (24h)",
-      "usedOf": "of {limit} ({remaining} remaining)",
-      "bonusTokens": "Bonus tokens",
-      "bonusHint": "Never expire",
+      "usedOf": "of your daily limit",
+      "bonusTokens": "Extra usage",
+      "bonusHint": "Never expires; used after your daily limit",
       "requests24h": "Requests in 24h",
       "changePlan": {
         "title": "Change plan",
@@ -580,7 +592,11 @@
         "error": "Plan change failed. Please try again or contact support.",
         "loadError": "Could not load plans.",
         "loading": "Loading plans…"
-      }
+      },
+      "usedOfWithExtra": "of your daily limit and extra usage",
+      "usedPercent": "{percent}%",
+      "bonusValue": "{percent}% of a daily limit",
+      "bonusNone": "None"
     },
     "team": {
       "title": "Team",
@@ -797,6 +813,9 @@
       "cancelled": "You cancelled the response"
     },
     "greetingAnonymous": "Hi there",
+    "docDownload": {
+      "failed": "Download failed. Please try again."
+    },
     "dismiss": "Dismiss",
     "piiBadge": {
       "restoredTooltip": "PII shield: original values restored on your device only.",
@@ -808,6 +827,12 @@
     },
     "sidePanel": {
       "closePanel": "Close panel"
+    },
+    "tableExport": {
+      "download": "Download as Excel",
+      "failed": "Download failed. Please try again.",
+      "fileName": "Table",
+      "sheetName": "Table"
     }
   },
   "projects": {
@@ -1398,6 +1423,10 @@
     "flagDisplayRed": "Red",
     "emptyHint": "Add columns and documents to get started.",
     "citationTooltip": "Page {page}: \"{quote}\"",
+    "citationTooltipCell": "{location}: \"{quote}\"",
+    "valueNotFound": "Not found",
+    "valueYes": "Yes",
+    "valueNo": "No",
     "quoteUnverified": "Quote not found in the document",
     "regenerate": "Regenerate",
     "runProgressErrorTitle": "Run failed",
@@ -1458,7 +1487,20 @@
     "deleteAria": "Delete context",
     "composerAria": "Manage active contexts",
     "composerTooltip": "Activate saved contexts that are added to this chat.",
-    "toggleFailed": "Could not change the context. Please try again."
+    "toggleFailed": "Could not change the context. Please try again.",
+    "systemSection": "EULEX contexts",
+    "mySection": "My contexts",
+    "systemBadgeTitle": "Context published by EULEX",
+    "systemReadOnly": "System context · read-only",
+    "publishedVersion": "{version} · published {date}",
+    "rulesTab": "Rules",
+    "tasksTab": "Tasks",
+    "rulesEmpty": "This context has no rules.",
+    "answerModeExtended": "Answers draw on the context’s sources first, then on the general EULEX database.",
+    "answerModeStrict": "Answers draw only on the context’s sources.",
+    "emptyDescSystem": "EULEX contexts appear here once they are published.",
+    "runModel": "Model: {model}",
+    "runEffort": "Reasoning effort: {level}"
   },
   "newContext": {
     "breadcrumbRoot": "Contexts",
@@ -1482,7 +1524,7 @@
     "kindCaselaw": "Case law",
     "kindWeb": "Web link",
     "noSources": "No sources yet",
-    "pin": "Pin (always in view)",
+    "pin": "Key source (read first)",
     "retrievalNote": "How to use this source",
     "trackAlerts": "Alert on changes",
     "alertsUnavailable": "Alerts not yet available for this source",
@@ -1492,7 +1534,20 @@
     "share": "Share",
     "noShares": "No one has access yet",
     "removeShare": "Remove access",
-    "outOfActiveLimit": "You can activate at most 5 contexts at once"
+    "outOfActiveLimit": "You can activate at most 5 contexts at once",
+    "tierLabel": "Tier {tier}",
+    "tierInternal": "Internal document",
+    "docStatus_final": "Final",
+    "docStatus_draft": "Draft",
+    "docStatus_consultation": "Public consultation",
+    "docStatus_living": "Living document",
+    "sourceGroup_law": "Legislation",
+    "sourceGroup_official": "Guidance and official sources",
+    "sourceGroup_caselaw": "Case law",
+    "sourceGroup_documents": "Documents",
+    "sourceGroup_other": "Expert and other sources",
+    "keySource": "Key source",
+    "keySourceHint": "The assistant reads key sources first and quotes them verbatim. It fetches the others when a question needs them."
   },
   "attachContexts": {
     "title": "Contexts",
@@ -1677,7 +1732,13 @@
     "bulkAcceptError": "Couldn't save one or more accepts.",
     "bulkRejectError": "Couldn't save one or more rejects.",
     "sourceFallback": "source",
-    "genericError": "Sorry, something went wrong."
+    "genericError": "Sorry, something went wrong.",
+    "builtinToolLabels": {
+      "generateDocx": "Creating a Word document",
+      "generateExcel": "Creating an Excel workbook",
+      "recordAssessment": "Recording the assessment",
+      "loadAssessment": "Loading the earlier assessment"
+    }
   },
   "docPanel": {
     "citation": "Citation",
@@ -1689,11 +1750,18 @@
     "draftBadge": "Draft",
     "acceptSaveFailed": "Couldn't save accept — please retry.",
     "rejectSaveFailed": "Couldn't save reject — please retry.",
-    "emptyText": "This document contains no text."
+    "emptyText": "This document contains no text.",
+    "spreadsheetError": "This spreadsheet could not be displayed.",
+    "spreadsheetTooLarge": "This spreadsheet is too large to display. Download it and open it in Excel.",
+    "emailError": "This e-mail could not be displayed."
   },
   "legalSource": {
+    "unverifiedRef": "Reference could not be confirmed in the legal sources",
+    "showConsultedSources": "{count, plural, one {# more consulted source} other {# more consulted sources}}",
+    "hideConsultedSources": "Hide consulted sources",
     "sourcesHeading": "Sources",
     "citedPassage": "Cited passage",
+    "contextDocument": "Context document",
     "noText": "No text available for this source.",
     "inForce": "In force",
     "notInForce": "Not in force",
@@ -1949,32 +2017,6 @@
       "body": "The PII proxy is temporarily unavailable. Try again in a few seconds."
     }
   },
-  "adminmaxBugfix": {
-    "navLink": "BugFix",
-    "title": "AdminMax · BugFix status",
-    "subtitle": "Live bug status from GitHub: issue → PR → LIVE.",
-    "backToList": "← Back to the list",
-    "refresh": "Refresh",
-    "loading": "Loading…",
-    "statusOpen": "Open",
-    "statusPrOpen": "PR in review",
-    "statusMerged": "Merged — waiting for LIVE",
-    "statusLive": "Live — close the issue",
-    "statusClosed": "Closed",
-    "deployTitle": "Deploy",
-    "deployAhead": "main is {count, plural, one {# commit} other {# commits}} ahead of stable",
-    "deployUnknown": "The stable…main comparison is unavailable.",
-    "colNumber": "#",
-    "colTitle": "Title",
-    "colStatus": "Status",
-    "colPr": "Linked PR",
-    "colCreated": "Created",
-    "colClosed": "Closed",
-    "empty": "The repository has no issues.",
-    "fetchedAt": "Fetched: {time}",
-    "notConfiguredTitle": "GitHub token is not configured",
-    "notConfiguredBody": "Set the ADMINMAX_GITHUB_TOKEN (or GITHUB_TOKEN) environment variable on the backend service so this page can read the private repository {repo}. The repository can be changed via ADMINMAX_GITHUB_REPO."
-  },
   "metadata": {
     "title": "AI Platform",
     "description": "AI-powered legal document analysis and contract review platform."
@@ -2036,6 +2078,7 @@
     "typeReplacement": "Replacement",
     "trackedChanges": "Tracked changes",
     "closePanel": "Close panel",
+    "aiEditBadge": "Eulex",
     "noUnresolvedChanges": "No unresolved changes.",
     "errorBoundary": {
       "title": "The document viewer is temporarily unavailable",
@@ -2058,5 +2101,232 @@
     "generateAria": "Generate edit",
     "generating": "Generating edit…",
     "footerHint": "Enter to confirm · Esc to cancel"
+  },
+  "bankTransfer": {
+    "methodCard": "Card",
+    "methodCardHint": "Pay now; the subscription renews automatically.",
+    "methodBank": "Bank transfer – send me a quote",
+    "methodBankHint": "We e-mail you a quote with a payment barcode.",
+    "loading": "Loading payment options…",
+    "companyTitle": "Company details for the quote",
+    "companyHint": "Quotes are issued to a company. All fields are required.",
+    "fields": {
+      "name": "Company name",
+      "oib": "OIB (tax number)",
+      "street": "Street and number",
+      "postalCode": "Postal code",
+      "city": "City"
+    },
+    "fieldErrors": {
+      "name": "Enter the company name.",
+      "oib": "Enter a valid OIB (11 digits).",
+      "street": "Enter the street and number.",
+      "postalCode": "Enter the postal code (5 digits).",
+      "city": "Enter the city."
+    },
+    "howItWorks": "We send the quote to {email}. It is valid for {days, plural, one {# day} other {# days}} and is paid by bank transfer using the reference on the quote – you can scan the barcode in your mobile banking app.",
+    "provisionalPromise": "We switch {plan} on right away for {days, plural, one {# day} other {# days}}. Once we record your payment, it runs for the whole paid period.",
+    "activatesOnPayment": "We switch {plan} on once we record your payment.",
+    "submit": "Send me a quote",
+    "submitting": "Creating your quote…",
+    "back": "Back",
+    "sent": "Quote {number} has been sent to {email}.",
+    "issuedNotSent": "Quote {number} has been issued, but we couldn't e-mail it. Please download the PDF.",
+    "amountDue": "Amount due (incl. VAT)",
+    "validUntil": "Valid until",
+    "reference": "Payment reference",
+    "provisionalActive": "{plan} is on until {date}. Once we record your payment, it runs for the whole paid period.",
+    "payHint": "Pay by bank transfer to the account on the quote, or scan the barcode in your mobile banking app. You'll find the quote, and after payment the invoice, under Billing & tokens.",
+    "downloadPdf": "Download PDF",
+    "close": "Close",
+    "pdfFailed": "The PDF isn't available right now. Please try again.",
+    "errors": {
+      "ORGANISATION_REQUIRED": "Enter the company name.",
+      "OIB_REQUIRED": "Enter the company's OIB.",
+      "OIB_INVALID": "The OIB isn't valid.",
+      "ADDRESS_REQUIRED": "Enter the street and number.",
+      "POSTAL_CODE_REQUIRED": "Enter the postal code (5 digits).",
+      "CITY_REQUIRED": "Enter the city.",
+      "STRIPE_SUBSCRIPTION_ACTIVE": "You have an active card subscription. Contact us to switch to bank transfer.",
+      "COUNTRY_UNSUPPORTED": "Bank transfer is available only to users in Croatia. You can change your country under Settings → General.",
+      "QUOTE_IN_PROGRESS": "A quote is already being created. Please wait a moment.",
+      "QUOTE_LIMIT": "You've requested too many quotes today. Try again tomorrow or contact us.",
+      "BANK_TRANSFER_DISABLED": "Bank transfer isn't available right now.",
+      "BANK_TRANSFER_NOT_READY": "Bank transfer isn't available right now.",
+      "EMAIL_INVALID": "Your account has no valid e-mail address.",
+      "PLAN_INVALID": "This plan can't be ordered by bank transfer right now.",
+      "generic": "We couldn't create the quote. Please try again or contact us."
+    },
+    "documents": {
+      "title": "Invoices and quotes",
+      "subtitle": "Official invoices and quotes from our accounting system, as PDFs.",
+      "loadFailed": "We can't load your invoices and quotes right now.",
+      "pdfFailed": "The PDF isn't available right now. Please try again.",
+      "quotes": "Quotes",
+      "quoteLabel": "Quote {number}",
+      "validUntil": "valid until {date}",
+      "status": {
+        "creating": "Being created",
+        "issued": "Awaiting payment",
+        "issuedProvisional": "Awaiting payment · plan on until {date}",
+        "paid": "Paid",
+        "paidUntil": "Paid · subscription until {date}",
+        "expired": "Expired",
+        "cancelled": "Cancelled",
+        "failed": "Under review"
+      },
+      "pdf": "PDF",
+      "invoices": "Invoices",
+      "noInvoices": "No invoices yet.",
+      "invoiceLabel": "Invoice {number}",
+      "invoicePaid": "Paid",
+      "invoiceOpen": "Open"
+    }
+  },
+  "contextsApplied": {
+    "label": "Contexts",
+    "systemDisclaimer": "This answer is not legal advice or proof of compliance.",
+    "unavailable": "Not loaded: {names}",
+    "unavailableContext": "an active context",
+    "effort": "reasoning effort: {level}",
+    "effortLevels": {
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "extra high",
+      "max": "max"
+    }
+  },
+  "euAiIcon": {
+    "label": "EU label for artificial intelligence",
+    "interaction": "You are interacting with an AI system (EU label)",
+    "generated": "AI-generated content (EU label)"
+  },
+  "planCard": {
+    "label": "Plan",
+    "progress": "{done} of {total} done",
+    "status": {
+      "pending": "Pending",
+      "in_progress": "In progress",
+      "done": "Done",
+      "blocked": "Blocked"
+    }
+  },
+  "contextTasks": {
+    "start": "Start",
+    "startFailed": "The context could not be switched on. Please try again.",
+    "statusReady": "Ready",
+    "statusDraft": "Draft",
+    "when": "When",
+    "requiredInputs": "Required",
+    "optionalInputs": "Optional",
+    "output": "Output",
+    "outputKind": {
+      "docx": "Word document",
+      "xlsx": "Excel workbook",
+      "chat": "Answer in the chat"
+    }
+  },
+  "statusDot": {
+    "problem": "Material problem",
+    "gap": "Gap",
+    "assessment": "Legal assessment needed",
+    "insufficient": "Insufficient information",
+    "clear": "No material gap"
+  },
+  "assessmentCard": {
+    "classification": "Classification",
+    "checker": {
+      "show": "Path through the Checker · {count, plural, one {# question} other {# questions}}",
+      "hide": "Hide the Checker path",
+      "columns": {
+        "question": "Checker question",
+        "answer": "Answer",
+        "evidence": "Evidence"
+      },
+      "decisive": "decision",
+      "decisiveTitle": "The classification was decided at this question"
+    },
+    "factStatus": {
+      "userAsserted": "statement",
+      "documentSupported": "document",
+      "observed": "observed",
+      "inferred": "inferred",
+      "unknown": "unknown",
+      "conflicting": "conflicting"
+    },
+    "decisionsXlsx": {
+      "sheetName": "Decisions and Checker",
+      "id": "ID",
+      "useCase": "Use case",
+      "topic": "Question or topic",
+      "classification": "Classification",
+      "limitation": "Limitation",
+      "reasoning": "Reasoning",
+      "sources": "Provisions",
+      "evidence": "Evidence"
+    },
+    "heading": "Result · v{version}",
+    "warningTitle": "Internal escalation level",
+    "total": "{count, plural, one {# finding} other {# findings}}",
+    "changes": "Against v{from}: closed {closed} · new {added} · changed {changed} · superseded {superseded}",
+    "columns": {
+      "id": "ID",
+      "requirement": "Requirement",
+      "category": "Category",
+      "status": "Status",
+      "verification": "Verification",
+      "evidence": "Evidence",
+      "action": "Next action"
+    },
+    "category": {
+      "law": "law",
+      "guidance": "guidance",
+      "code": "code of practice",
+      "internal": "internal"
+    },
+    "verification": {
+      "verified": "verified",
+      "partial": "partly verified",
+      "missing": "missing",
+      "notVerified": "not verified",
+      "checkNeeded": "check needed"
+    },
+    "applicability": {
+      "now": "now",
+      "later": "later",
+      "notApplicable": "not applicable",
+      "undetermined": "undetermined"
+    },
+    "weight": {
+      "statement": "statement",
+      "document": "document",
+      "thirdParty": "third-party report",
+      "observed": "observed",
+      "none": "none"
+    },
+    "showAll": "Show all ({count})",
+    "showLess": "Show less",
+    "unread": "Unread documents",
+    "conflicts": "Conflicting sources",
+    "continue": "Continue the assessment",
+    "continuePrefix": "Continue assessment {id}: ",
+    "xlsx": {
+      "fileName": "Assessment {id} v{version}",
+      "sheetName": "Findings",
+      "id": "ID",
+      "check": "Check",
+      "requirement": "Requirement",
+      "category": "Category",
+      "applicability": "Applicability",
+      "status": "Status",
+      "verification": "Verification",
+      "weight": "Evidence weight",
+      "evidence": "Evidence",
+      "action": "Next action",
+      "owner": "Owner",
+      "due": "Due",
+      "closure": "Closure criterion"
+    }
   }
 }

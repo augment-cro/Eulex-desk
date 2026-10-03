@@ -13,6 +13,10 @@ const DOCS: Array<{ file: string; paths: string[] }> = [
     },
     { file: "pre-inference-hook.openapi.json", paths: ["/pre-inference"] },
     { file: "audit-sink.openapi.json", paths: ["/audit"] },
+    {
+        file: "billing-provider.openapi.json",
+        paths: ["/offline/config", "/offline/quotes", "/documents", "/internal/billing/grants"],
+    },
 ];
 
 describe("open interface contracts", () => {

@@ -347,9 +347,10 @@ integrationsRouter.post(
             });
             res.status(201).json(doc);
         } catch (err) {
-            // Google Sheets/Slides export as xlsx/pptx and are rejected
-            // here until those formats are supported — same structured
-            // 400 as a direct upload so the UI can name the format.
+            // Google Slides export as pptx and are rejected here until
+            // that format is supported (Sheets export as xlsx and are
+            // accepted) — same structured 400 as a direct upload so the
+            // UI can name the format.
             if (err instanceof UnsupportedFileTypeError) {
                 return void res.status(400).json(err.toResponseBody());
             }

@@ -3,7 +3,7 @@ import { streamGemini, completeGeminiText } from "./gemini";
 import { streamOpenAI, completeOpenAIText } from "./openai";
 import { streamMistral, completeMistralText } from "./mistral";
 import { providerForModel } from "./models";
-import { attachUsage, emptyUsage, sumUsage } from "./usage";
+import { attachUsage, emptyUsage, legacyReceipt, sumUsage } from "./usage";
 import type {
     LlmUsage,
     StreamChatParams,
@@ -100,16 +100,12 @@ export async function streamChatWithTools(
             active.onUsage?.({
                 ...u,
                 calls: [
-                    {
+                    legacyReceipt(
                         provider,
-                        model: result.model ?? params.model,
-                        phase: params.usagePhase ?? "single",
-                        status: "legacy",
-                        inputTokens: u.inputTokens,
-                        outputTokens: u.outputTokens,
-                        cacheCreationInputTokens: u.cacheCreationInputTokens,
-                        cacheReadInputTokens: u.cacheReadInputTokens,
-                    },
+                        result.model ?? params.model,
+                        params.usagePhase ?? "single",
+                        u,
+                    ),
                 ],
             });
         }
@@ -141,6 +137,8 @@ export async function completeText(params: {
     user: string;
     maxTokens?: number;
     apiKeys?: UserApiKeys;
+    /** Claude only — see completeClaudeText. Other providers ignore it. */
+    effort?: "low" | "medium" | "high";
 }): Promise<CompleteTextResult> {
     const provider = providerForModel(params.model);
     if (provider === "claude") return completeClaudeText(params);

@@ -4,17 +4,20 @@ import { from } from "../lib/dbShim";
 import { buildContentDisposition, downloadFile } from "../lib/storage";
 import { verifyDownload } from "../lib/downloadTokens";
 import { ensureDocAccess } from "../lib/access";
+import {
+    canonicalUploadType,
+    contentTypeForUpload,
+    fileExtension,
+    isSupportedUploadType,
+} from "../lib/fileTypes";
 
 export const downloadsRouter = Router();
 
 function contentTypeFor(filename: string): string {
-    const lower = filename.toLowerCase();
-    if (lower.endsWith(".docx"))
-        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    if (lower.endsWith(".pdf")) return "application/pdf";
-    if (lower.endsWith(".xlsx"))
-        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    return "application/octet-stream";
+    const ext = canonicalUploadType(fileExtension(filename));
+    return isSupportedUploadType(ext)
+        ? contentTypeForUpload(ext)
+        : "application/octet-stream";
 }
 
 // GET /download/:token

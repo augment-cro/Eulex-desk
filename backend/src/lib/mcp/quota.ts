@@ -14,6 +14,38 @@
 import { query } from "../db";
 import { getEntitlements, intEntitlement } from "../entitlements";
 
+// Usage signal (migration 213, `mcp_tool_calls_daily`): every built-in MCP
+// tool call, every tier, keyed by (user, UTC day, server slug, tool). Read by
+// AdminMax ("who uses MCP" badge + MCP tab). Fire-and-forget: a missing
+// table or a DB hiccup must never slow down or fail the tool call, and the
+// warning is throttled so a missing migration doesn't flood the logs.
+let lastRecordWarnAt = 0;
+const RECORD_WARN_INTERVAL_MS = 60_000;
+
+export function recordMcpToolCall(
+    userId: string,
+    server: string,
+    tool: string,
+): void {
+    const serverKey = server.slice(0, 64) || "unknown";
+    const toolKey = tool.slice(0, 128) || "unknown";
+    void query(
+        `INSERT INTO mcp_tool_calls_daily (user_id, day, server, tool, calls)
+         VALUES ($1, (now() AT TIME ZONE 'utc')::date, $2, $3, 1)
+         ON CONFLICT (user_id, day, server, tool)
+         DO UPDATE SET calls = mcp_tool_calls_daily.calls + 1`,
+        [userId, serverKey, toolKey],
+    ).catch((err: unknown) => {
+        const now = Date.now();
+        if (now - lastRecordWarnAt < RECORD_WARN_INTERVAL_MS) return;
+        lastRecordWarnAt = now;
+        console.warn(
+            "[mcp-usage] tool-call record failed (throttled 60 s):",
+            err instanceof Error ? err.message : err,
+        );
+    });
+}
+
 /**
  * Resolve the daily built-in MCP call cap for a tier. 0 = unlimited.
  * Unknown tier (missing tierLevelId) or lookup failure → 0 (fail open).

@@ -564,6 +564,32 @@ export function SuperDocView({
         }
     }, [documentId, refreshTrackChanges]);
 
+    // First open from a citation pill: at onReady SuperDoc's visible
+    // (presentation) layer is not laid out yet, so goToSearchResult only
+    // scrolls the hidden host editor and the viewer stays at the top of the
+    // document — the click looks dead; a second click works (prod, 30. 9.).
+    // Re-run the highlight while the layout settles, but stop as soon as the
+    // visible scroller has moved — by the jump or by the user.
+    const retryCitationScrollAfterLayout = useCallback(
+        (superdoc: SuperDocInstance) => {
+            if (!quotesRef.current || quotesRef.current.length === 0) return;
+            const topAtReady =
+                findScrollElement(wrapperRef.current)?.scrollTop ?? 0;
+            for (const delay of [800, 1600, 3000, 5000]) {
+                window.setTimeout(() => {
+                    if (superdocRef.current !== superdoc) return;
+                    const el = findScrollElement(wrapperRef.current);
+                    if (!el || el.scrollTop !== topAtReady) return;
+                    highlightCitationsInSuperDoc(
+                        superdocRef.current,
+                        quotesRef.current,
+                    );
+                }, delay);
+            }
+        },
+        [],
+    );
+
     const handleReady = useCallback(
         async ({ superdoc }: SuperDocReadyEvent) => {
             superdocRef.current = superdoc;
@@ -612,12 +638,18 @@ export function SuperDocView({
                         superdocRef.current,
                         quotesRef.current,
                     );
+                    retryCitationScrollAfterLayout(superdoc);
                 }
             }, 0);
 
             onReadyRef.current?.();
         },
-        [bindScrollListener, refreshDbEdits, refreshTrackChanges],
+        [
+            bindScrollListener,
+            refreshDbEdits,
+            refreshTrackChanges,
+            retryCitationScrollAfterLayout,
+        ],
     );
 
     useEffect(() => {
@@ -1814,7 +1846,7 @@ function TrackChangesBubble({
                                         )}
                                         {it.dbEditId && (
                                             <span className="rounded-sm bg-success/10 px-1 py-px text-[9px] font-bold tracking-normal text-success">
-                                                Mike
+                                                {t("aiEditBadge")}
                                             </span>
                                         )}
                                     </span>

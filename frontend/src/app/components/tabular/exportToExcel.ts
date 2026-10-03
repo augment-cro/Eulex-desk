@@ -3,20 +3,25 @@
 import ExcelJS from "exceljs";
 import type { ColumnConfig, MikeDocument, TabularCell } from "../shared/types";
 import { preprocessCitations, unwrapNestedSummaryJson } from "./citation-utils";
+import { localizeNotFound, pillDisplayLabel, type TabularValueLabels } from "./pillUtils";
 
 function formatCellForExport(
     cell: TabularCell | undefined,
     errorLabel: string,
+    valueLabels?: TabularValueLabels,
 ): string {
     if (!cell) return "";
     if (cell.status === "pending" || cell.status === "generating") return "";
     if (cell.status === "error") return errorLabel;
-    const summary = unwrapNestedSummaryJson(cell.content?.summary ?? "");
+    const summary = localizeNotFound(
+        unwrapNestedSummaryJson(cell.content?.summary ?? ""),
+        valueLabels,
+    );
     if (!summary) return "";
     const { processed } = preprocessCitations(summary);
     return processed
         .replace(/§\d+§/g, "")
-        .replace(/\[\[([^\]]+)\]\]/g, "$1")
+        .replace(/\[\[([^\]]+)\]\]/g, (_, pill: string) => pillDisplayLabel(pill, valueLabels))
         .replace(/[ \t]+/g, " ")
         .trim();
 }
@@ -41,6 +46,8 @@ export async function exportTabularReviewToExcel(params: {
         sheetName?: string;
         documentHeader?: string;
         errorCell?: string;
+        /** "Not Found" / Yes / No as the UI shows them. */
+        values?: TabularValueLabels;
     };
 }) {
     const { reviewTitle, columns, documents, cells, labels } = params;
@@ -76,6 +83,7 @@ export async function exportTabularReviewToExcel(params: {
                 formatCellForExport(
                     cellMap.get(`${doc.id}:${col.index}`),
                     errorCell,
+                    labels?.values,
                 ),
             );
         }

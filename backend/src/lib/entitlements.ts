@@ -177,6 +177,16 @@ export const ENTITLEMENT_CATALOG: readonly EntitlementDef[] = [
         unlimitedWhenZero: true,
     },
     {
+        key: "systemContexts",
+        type: "bool",
+        group: "workbench",
+        labelHr: "EULEX sistemski konteksti",
+        labelEn: "EULEX system contexts",
+        // Internal accounts only while the first contexts are tried out;
+        // opening them to more tiers is a toggle here, not a deploy.
+        defaults: { free: F, plus: F, pro: F, legal_pro: F, team: F, eulex_legal_team: F, enterprise: F, foundation: T },
+    },
+    {
         key: "shareResearchLink",
         type: "bool",
         group: "sharing",
@@ -373,6 +383,19 @@ export async function getEntitlements(tierLevelId: number): Promise<Entitlements
 
 export function can(ent: Entitlements | null | undefined, key: string): boolean {
     return Boolean(ent?.[key]);
+}
+
+/**
+ * Whether a caller's tier grants the boolean `key` — false when the tier is
+ * unknown or the lookup fails (fail closed).
+ */
+export async function tierGrants(tierLevelId: unknown, key: string): Promise<boolean> {
+    if (typeof tierLevelId !== "number") return false;
+    try {
+        return can(await getEntitlements(tierLevelId), key);
+    } catch {
+        return false;
+    }
 }
 
 export function intEntitlement(

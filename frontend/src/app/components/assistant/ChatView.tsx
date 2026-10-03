@@ -5,7 +5,7 @@ import { ArrowDown } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
-import { ChatInput } from "./ChatInput";
+import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import {
     AssistantSidePanel,
     type AssistantSidePanelTab,
@@ -13,6 +13,7 @@ import {
 import { AssistantWorkflowModal } from "./AssistantWorkflowModal";
 import { ShareChatModal } from "../shared/ShareChatModal";
 import { SaveAsContextModal } from "../contexts/SaveAsContextModal";
+import { EuAiIcon } from "../shared/EuAiIcon";
 import type {
     LegalSource,
     MikeCitationAnnotation,
@@ -25,7 +26,7 @@ import {
     legalSourceDisplayTitle,
 } from "../shared/legalSourceUtils";
 import { useSidebar } from "@/app/contexts/SidebarContext";
-import { contextsServiceEnabled } from "@/app/lib/mikeApi";
+import { contextCreationEnabled } from "@/app/lib/mikeApi";
 import { invalidateDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 import { usePiiSessionForChat } from "@/app/hooks/usePiiSessionForChat";
 
@@ -60,6 +61,9 @@ export function ChatView({
 }: Props) {
     const tShare = useTranslations("shareChat");
     const t = useTranslations("assistant");
+    // The composer, for "Nastavi procjenu" on an answer's REZULTAT card.
+    const composerRef = useRef<ChatInputHandle | null>(null);
+    const tEuAi = useTranslations("euAiIcon");
     const [shareOpen, setShareOpen] = useState(false);
     const [tabs, setTabs] = useState<AssistantSidePanelTab[]>([]);
     const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -715,6 +719,9 @@ export function ChatView({
                                                 onLegalSourceClick={
                                                     openLegalSource
                                                 }
+                                                onContinueAssessment={(args) =>
+                                                    composerRef.current?.prefill(args)
+                                                }
                                                 minHeight={
                                                     i === lastAssistantIndex
                                                         ? minHeight
@@ -754,7 +761,7 @@ export function ChatView({
                                                         : undefined
                                                 }
                                                 onSaveAsContext={
-                                                    contextsServiceEnabled()
+                                                    contextCreationEnabled()
                                                         ? setSaveCtxSources
                                                         : undefined
                                                 }
@@ -795,14 +802,19 @@ export function ChatView({
                     <div className="w-full max-w-4xl mx-auto px-4 md:px-6">
                         <div className="w-full rounded-t-xl bg-background">
                             <ChatInput
+                                ref={composerRef}
                                 onSubmit={handleChat}
                                 onCancel={cancel}
                                 isLoading={isResponseLoading}
                                 chatId={chatId ?? null}
                             />
                             <div className="py-3 text-center">
-                                <p className="text-xs text-muted-foreground">
-                                    {t("disclaimer")}
+                                <p className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+                                    <EuAiIcon
+                                        className="size-3"
+                                        label={tEuAi("interaction")}
+                                    />
+                                    <span>{t("disclaimer")}</span>
                                 </p>
                             </div>
                         </div>

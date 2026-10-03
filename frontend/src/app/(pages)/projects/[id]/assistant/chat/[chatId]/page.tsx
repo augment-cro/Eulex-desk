@@ -13,8 +13,10 @@ import { useRouter } from "next/navigation";
 import {
     ChevronLeft,
     ChevronRight,
+    FileSpreadsheet,
     FileText,
     Loader2,
+    Mail,
     Plus,
     Scale,
     Trash2,
@@ -42,7 +44,6 @@ import { AssistantMessage } from "@/app/components/assistant/AssistantMessage";
 import { ChatInput } from "@/app/components/assistant/ChatInput";
 import type { ChatInputHandle } from "@/app/components/assistant/ChatInput";
 import { ProjectExplorer } from "@/app/components/projects/ProjectExplorer";
-import { DocView } from "@/app/components/shared/DocView";
 import { LegalSourcePanel } from "@/app/components/shared/LegalSourcePanel";
 import {
     harvestConversationLegalSources,
@@ -53,7 +54,10 @@ import { ShareChatModal } from "@/app/components/shared/ShareChatModal";
 import { UploadFailuresAlert } from "@/app/components/shared/UploadFailuresAlert";
 import { useConfirmDialog } from "@/app/components/modals/confirm-dialog";
 import { useTranslations } from "next-intl";
-import { DocxViewer } from "@/app/components/shared/DocxViewer";
+import {
+    ProjectDocView,
+    ProjectDocxPane,
+} from "@/app/components/projects/ProjectDocPane";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
@@ -74,6 +78,8 @@ import { uploadFilesBulk, type UploadFailure } from "@/app/lib/bulkUpload";
 import {
     SUPPORTED_UPLOAD_ACCEPT,
     SUPPORTED_UPLOAD_LABEL,
+    isEmailFileType,
+    isSpreadsheetFileType,
 } from "@/app/lib/supportedFileTypes";
 
 interface Props {
@@ -717,59 +723,73 @@ function ProjectAssistantChatPageInner({ params }: Props) {
         );
     };
 
-    const patchTab = (documentId: string, patch: Partial<DocTab>) => {
-        setTabs((prev) =>
-            prev.map((t) =>
-                t.kind === "doc" && t.documentId === documentId
-                    ? { ...t, ...patch }
-                    : t,
-            ),
-        );
-    };
+    // Stable identities (setState-only bodies): ProjectDocxPane is memoized
+    // and must not re-render on every frame of an answer's drip.
+    const patchTab = useCallback(
+        (documentId: string, patch: Partial<DocTab>) => {
+            setTabs((prev) =>
+                prev.map((t) =>
+                    t.kind === "doc" && t.documentId === documentId
+                        ? { ...t, ...patch }
+                        : t,
+                ),
+            );
+        },
+        [],
+    );
 
     const handleEditError = (args: { documentId: string; message: string }) => {
         patchTab(args.documentId, { warning: args.message });
     };
 
-    const dismissTabWarning = (documentId: string) => {
-        patchTab(documentId, { warning: null });
-    };
+    const dismissTabWarning = useCallback(
+        (documentId: string) => {
+            patchTab(documentId, { warning: null });
+        },
+        [patchTab],
+    );
 
-    const handleTabScrollChange = (documentId: string, scrollTop: number) => {
-        patchTab(documentId, { scrollTop });
-    };
+    const handleTabScrollChange = useCallback(
+        (documentId: string, scrollTop: number) => {
+            patchTab(documentId, { scrollTop });
+        },
+        [patchTab],
+    );
 
     // Bug 1 fix: nakon SuperDoc spremanja prebaci tab na novu verziju i
     // bumpa refetchKey + evict byte cache, da reload prikaže spremljeni
     // sadržaj umjesto stare prikvačene verzije. `docId` dolazi iz render
     // closure-a (ne iz `activeTabId`) jer save može završiti nakon što
     // korisnik prebaci tab.
-    const handleDocSaved = (
-        docId: string,
-        args: { versionId: string; versionNumber: number | null },
-    ) => {
-        invalidateDocxBytes(docId);
-        setTabs((prev) =>
-            prev.map((t) =>
-                t.kind === "doc" && t.documentId === docId
-                    ? {
-                          ...t,
-                          versionId: args.versionId,
-                          refetchKey: (t.refetchKey ?? 0) + 1,
-                      }
-                    : t,
-            ),
-        );
-    };
+    const handleDocSaved = useCallback(
+        (
+            docId: string,
+            args: { versionId: string; versionNumber: number | null },
+        ) => {
+            invalidateDocxBytes(docId);
+            setTabs((prev) =>
+                prev.map((t) =>
+                    t.kind === "doc" && t.documentId === docId
+                        ? {
+                              ...t,
+                              versionId: args.versionId,
+                              refetchKey: (t.refetchKey ?? 0) + 1,
+                          }
+                        : t,
+                ),
+            );
+        },
+        [],
+    );
 
-    const handleDocxReady = (documentId: string) => {
+    const handleDocxReady = useCallback((documentId: string) => {
         setReloadingDocIds((prev) => {
             if (!prev.has(documentId)) return prev;
             const next = new Set(prev);
             next.delete(documentId);
             return next;
         });
-    };
+    }, []);
 
     const handleChatDrop = (e: React.DragEvent) => {
         e.preventDefault();
@@ -1299,12 +1319,24 @@ function ProjectAssistantChatPageInner({ params }: Props) {
                                     .split(".")
                                     .pop()
                                     ?.toLowerCase();
+                                const isSpreadsheetTab =
+                                    isSpreadsheetFileType(ext);
+                                const isEmailTab = isEmailFileType(ext);
+                                const TabIcon = isSpreadsheetTab
+                                    ? FileSpreadsheet
+                                    : isEmailTab
+                                      ? Mail
+                                      : FileText;
                                 const iconColor =
                                     ext === "pdf"
                                         ? "text-destructive"
-                                        : ext === "doc" || ext === "docx"
+                                        : ext === "doc" ||
+                                            ext === "docx" ||
+                                            isEmailTab
                                           ? "text-foreground"
-                                          : "text-muted-foreground/70";
+                                          : isSpreadsheetTab
+                                            ? "text-success"
+                                            : "text-muted-foreground/70";
                                 // Pull the doc's latest_version_number out
                                 // of the project state so the tab shows V#
                                 // whenever the doc has been edited.
@@ -1333,7 +1365,7 @@ function ProjectAssistantChatPageInner({ params }: Props) {
                                                 : "bg-background hover:bg-accent"
                                         }`}
                                     >
-                                        <FileText
+                                        <TabIcon
                                             className={`h-3.5 w-3.5 shrink-0 ${iconColor}`}
                                         />
                                         <span
@@ -1382,7 +1414,7 @@ function ProjectAssistantChatPageInner({ params }: Props) {
                                     focusNonce={activeTab.focusNonce}
                                 />
                             ) : isDocxTab(activeTab.filename) ? (
-                                <DocxViewer
+                                <ProjectDocxPane
                                     key={activeTab.documentId}
                                     documentId={activeTab.documentId}
                                     versionId={activeTab.versionId}
@@ -1395,38 +1427,20 @@ function ProjectAssistantChatPageInner({ params }: Props) {
                                             ? editScrollTarget
                                             : null
                                     }
-                                    onReady={() =>
-                                        handleDocxReady(activeTab.documentId)
-                                    }
+                                    onReadyFor={handleDocxReady}
                                     warning={activeTab.warning ?? null}
-                                    onWarningDismiss={() =>
-                                        dismissTabWarning(activeTab.documentId)
-                                    }
+                                    onWarningDismissFor={dismissTabWarning}
                                     initialScrollTop={
                                         activeTab.scrollTop ?? null
                                     }
-                                    onScrollChange={(top) =>
-                                        handleTabScrollChange(
-                                            activeTab.documentId,
-                                            top,
-                                        )
-                                    }
-                                    onSaved={(args) =>
-                                        handleDocSaved(
-                                            activeTab.documentId,
-                                            args,
-                                        )
-                                    }
-                                    rounded={false}
-                                    bordered={false}
+                                    onScrollChangeFor={handleTabScrollChange}
+                                    onSavedFor={handleDocSaved}
                                 />
                             ) : (
-                                <DocView
+                                <ProjectDocView
                                     key={activeTab.documentId}
-                                    doc={{ document_id: activeTab.documentId }}
+                                    documentId={activeTab.documentId}
                                     quotes={activeQuotes ?? undefined}
-                                    rounded={false}
-                                    bordered={false}
                                 />
                             )
                         ) : (
@@ -1532,6 +1546,9 @@ function ProjectAssistantChatPageInner({ params }: Props) {
                                             }
                                             onLegalSourceClick={
                                                 openLegalSource
+                                            }
+                                            onContinueAssessment={(args) =>
+                                                chatInputRef.current?.prefill(args)
                                             }
                                             minHeight={
                                                 i === lastAssistantIdx

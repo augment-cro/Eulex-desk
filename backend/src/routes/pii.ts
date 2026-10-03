@@ -33,7 +33,7 @@ import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
 import { requireAuth } from "../middleware/auth";
 import { requireEntitlement } from "../lib/entitlements";
 import { getPool } from "../lib/db";
-import { piiClient, type PiiMode } from "../lib/pii";
+import { analysisKeyFor, piiClient, type PiiMode } from "../lib/pii";
 import { downloadFile } from "../lib/storage";
 import { extractDocumentText } from "../lib/documentText";
 import { isSupportedUploadType } from "../lib/fileTypes";
@@ -267,14 +267,18 @@ piiRouter.post(
                 });
             }
 
+            const language = body.language ?? "hr";
             const result = await piiClient.anonymize({
                 text,
                 userId,
                 mode: body.mode ?? "standard",
-                language: body.language ?? "hr",
+                language,
                 sessionId: body.session_id ?? null,
                 chatId: body.chat_id ?? null,
                 documentVersionId: versionId,
+                // Same key the chat's read_document computes, so the
+                // strict review's analysis is the one the turn serves.
+                analysisKey: analysisKeyFor({ versionId, text, language }),
                 source: "document",
             });
             if (!result.ok) {

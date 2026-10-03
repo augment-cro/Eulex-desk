@@ -1067,6 +1067,19 @@ const STATEMENTS: ReadonlyArray<{ name: string; sql: string }> = [
                 ON public.chats (user_id, status);
         `,
     },
+    {
+        // Explicit Stop (tracker #96) — see migration 214 and
+        // lib/turnStop.ts. A stop for a turn running on another Cloud Run
+        // instance waits here until that instance's poll consumes it.
+        name: "turn_stop_requests",
+        sql: `
+            CREATE TABLE IF NOT EXISTS public.turn_stop_requests (
+                chat_id      text        PRIMARY KEY,
+                user_id      text        NOT NULL,
+                requested_at timestamptz NOT NULL DEFAULT now()
+            );
+        `,
+    },
 ];
 
 // Errors that indicate the connection itself died (Cloud SQL Auth Proxy

@@ -21,7 +21,7 @@ export interface ModelOption {
 
 export const MODELS: ModelOption[] = [
     { id: "claude-opus-4-8", label: "Claude Opus 4.8", group: "Anthropic" },
-    { id: "claude-sonnet-5", label: "Claude Sonnet 5", group: "Anthropic" },
+    { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", group: "Anthropic" },
     {
         id: "gemini-3.1-pro-preview",
         label: "Gemini 3.1 Pro",
@@ -35,9 +35,9 @@ export const MODELS: ModelOption[] = [
 ];
 
 // Primary model. Backend ships with a server-level Anthropic key (via Secret
-// Manager) so the add-in defaults to Claude Sonnet 5 even before the user
+// Manager) so the add-in defaults to Claude Sonnet 5.5 even before the user
 // has pasted their own key in /account/models.
-export const DEFAULT_MODEL_ID = "claude-sonnet-5";
+export const DEFAULT_MODEL_ID = "claude-sonnet-5-5";
 export const MODEL_STORAGE_KEY = "mike.lastModel";
 
 type Availability = { anthropic: boolean; gemini: boolean };

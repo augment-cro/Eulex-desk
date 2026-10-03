@@ -86,7 +86,13 @@ export async function getSignedUrl(
       responseDisposition,
     });
     return url;
-  } catch {
+  } catch (err) {
+    // Callers answer 503 "Storage not configured". Swallowed silently, a
+    // missing iam.serviceAccounts.signBlob grant broke every single-document
+    // download for 10+ days (fixed 30. 9. 2026) — keep the cause visible.
+    console.error(
+      `[storage] signed URL failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return null;
   }
 }
@@ -97,8 +103,22 @@ export function normalizeDownloadFilename(name: string): string {
   return base.replace(/[\x00-\x1F\x7F]/g, "_").replace(/[\\/]/g, "_");
 }
 
+/**
+ * The quoted `filename="…"` fallback of Content-Disposition. It must be
+ * plain ASCII: Node's `setHeader` throws ERR_INVALID_CHAR on any character
+ * above U+00FF (č, ć, š, ž, đ…), and Express 4 leaves that async throw
+ * unanswered — the download and the viewer hung until Cloud Run's 20-minute
+ * 504 for every document named with Croatian diacritics. The real name
+ * travels in `filename*=UTF-8''…`, which every current browser prefers.
+ */
 export function sanitizeDispositionFilename(name: string): string {
-  return normalizeDownloadFilename(name).replace(/["\\]/g, "_");
+  return normalizeDownloadFilename(name)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .replace(/[^\x20-\x7E]/g, "_")
+    .replace(/["\\]/g, "_");
 }
 
 export function encodeRFC5987(str: string): string {

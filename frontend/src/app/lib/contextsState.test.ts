@@ -4,6 +4,7 @@ import {
     activeCount,
     initialContextsState,
     MAX_ACTIVE,
+    cappedActiveCount,
 } from "./contextsState";
 import type { MikeContext, MikeContextListItem } from "./mikeApi";
 
@@ -63,3 +64,21 @@ describe("contextsReducer", () => {
         expect(MAX_ACTIVE).toBe(5);
     });
 });
+
+describe("cappedActiveCount", () => {
+    it("does not count EULEX system contexts toward the cap", () => {
+        const item = (id: string, level: "system" | "personal") =>
+            ({ context: { id, level }, isOwner: false, allowEdit: false }) as never;
+        const s = contextsReducer(initialContextsState, {
+            type: "loaded",
+            items: [item("sys", "system"), item("p1", "personal")],
+            toggles: [
+                { contextId: "sys", enabled: true },
+                { contextId: "p1", enabled: true },
+            ],
+        });
+        expect(activeCount(s)).toBe(2);
+        expect(cappedActiveCount(s)).toBe(1);
+    });
+});
+

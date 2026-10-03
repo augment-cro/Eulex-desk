@@ -9,10 +9,11 @@
  *
  *   POST /auth/pair/redeem  (NO auth)
  *     Body: { code }. If a non-expired row exists, returns the bound JWT
- *     and deletes the row. Wrong attempts increment the row's `attempts`
- *     counter; after 5 wrong tries the code is invalidated. On top of the
- *     per-code counter the route is rate-limited per client IP and
- *     globally (fixed 15-min windows, lib/ipRateLimit.ts, issue #148).
+ *     and deletes the row. The code IS the lookup key, so a wrong guess
+ *     matches no row and a right one is burned on first use — a per-code
+ *     attempt counter can never fire (the `attempts` column is unused).
+ *     Guessing is bounded by the per-IP and route-global rate limits
+ *     instead (fixed 15-min windows, lib/ipRateLimit.ts, issue #148).
  *
  * The `token` stored alongside each code is the eulex.ai-issued JWT
  * verbatim — no re-signing, no separate audience. The add-in stores it
@@ -31,10 +32,9 @@ import { envInt, ipRateLimit } from "../lib/ipRateLimit";
 export const authPairRouter = Router();
 
 const CODE_TTL_MINUTES = 5;
-const MAX_ATTEMPTS = 5;
 
-// /redeem is unauthenticated, so the per-code counter alone lets a
-// distributed guesser burn through many DIFFERENT codes. Two fixed
+// /redeem is unauthenticated and a guess never touches a specific row, so
+// these limits are the only brute-force defence (tracker #95a). Two fixed
 // 15-minute windows on top (issue #148): per-IP (default 10 attempts)
 // and route-global across all IPs (default 300) as the backstop against
 // a botnet spreading guesses thin. In-process, i.e. per Cloud Run
@@ -135,10 +135,9 @@ authPairRouter.post("/redeem", redeemRateLimit, async (req, res) => {
   try {
     const { rows } = await pool.query<{
       token: string;
-      attempts: number;
       expired: boolean;
     }>(
-      `SELECT token, attempts, expires_at < now() AS expired
+      `SELECT token, expires_at < now() AS expired
          FROM auth_pair_codes
         WHERE code = $1`,
       [code],
@@ -155,12 +154,6 @@ authPairRouter.post("/redeem", redeemRateLimit, async (req, res) => {
       res.status(410).json({ detail: "Code expired" });
       return;
     }
-    if (row.attempts >= MAX_ATTEMPTS) {
-      await pool.query("DELETE FROM auth_pair_codes WHERE code = $1", [code]);
-      res.status(429).json({ detail: "Too many attempts" });
-      return;
-    }
-
     // Success: hand over the JWT and burn the code.
     await pool.query("DELETE FROM auth_pair_codes WHERE code = $1", [code]);
     res.json({ token: row.token });

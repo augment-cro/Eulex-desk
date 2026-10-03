@@ -322,6 +322,148 @@ export async function cancelSubscriptionRenewal(): Promise<{
     return apiRequest("/billing/cancel", { method: "POST" });
 }
 
+// ---------------------------------------------------------------------------
+// Offline-payment quotes + fiscal documents — routes/billingProvider.ts
+// (billing-provider seam; inert when no provider is configured)
+// ---------------------------------------------------------------------------
+
+/** A billing call that failed with the backend's `{code, field, detail}`. */
+export class BillingApiError extends Error {
+    readonly code: string | null;
+    readonly field: string | null;
+    constructor(message: string, code: string | null, field: string | null) {
+        super(message);
+        this.name = "BillingApiError";
+        this.code = code;
+        this.field = field;
+    }
+}
+
+/** apiRequest throws the raw body as the message; lift its code out. */
+async function billingRequest<T>(path: string, init?: RequestInit): Promise<T> {
+    try {
+        return await apiRequest<T>(path, init);
+    } catch (err) {
+        const text = err instanceof Error ? err.message : String(err);
+        try {
+            const body = JSON.parse(text) as { code?: unknown; field?: unknown; detail?: unknown };
+            throw new BillingApiError(
+                typeof body.detail === "string" ? body.detail : text,
+                typeof body.code === "string" ? body.code : null,
+                typeof body.field === "string" ? body.field : null,
+            );
+        } catch (parsed) {
+            if (parsed instanceof BillingApiError) throw parsed;
+            throw new BillingApiError(text, null, null);
+        }
+    }
+}
+
+export interface BankTransferCompany {
+    name: string;
+    oib: string;
+    street: string;
+    postalCode: string;
+    city: string;
+}
+
+export interface BankTransferConfig {
+    enabled: boolean;
+    eligible?: boolean;
+    reason?: string | null;
+    email?: string | null;
+    company?: Partial<BankTransferCompany>;
+    companyComplete?: boolean;
+    validDays?: number;
+    /** 0 = the plan starts only once the payment is recorded. */
+    provisionalDays?: number;
+    periodMonths?: number;
+    vatRate?: number;
+}
+
+export interface BankTransferQuote {
+    id: string;
+    number: string | null;
+    status: "creating" | "issued" | "paid" | "expired" | "cancelled" | "failed";
+    plan: string;
+    planName: string;
+    seats: number;
+    netAmount: number;
+    grossAmount: number;
+    currency: string;
+    periodMonths: number;
+    validUntil: string | null;
+    createdAt: string;
+    recipientEmail: string;
+    emailStatus: "pending" | "sent" | "failed" | "skipped";
+    emailSentAt: string | null;
+    paymentReference: string | null;
+    provisionalUntil: string | null;
+    paidAt: string | null;
+    accessUntil: string | null;
+    invoiceNumbers: string[];
+    canDownload: boolean;
+}
+
+export interface FiscalInvoice {
+    documentId: string;
+    number: string;
+    date: string;
+    amount: number | null;
+    currency: string | null;
+    methodOfPayment: string | null;
+    paid: boolean | null;
+}
+
+export interface BillingDocuments {
+    available: boolean;
+    quotes: BankTransferQuote[];
+    invoices: FiscalInvoice[];
+}
+
+export async function getBankTransferConfig(): Promise<BankTransferConfig> {
+    return billingRequest<BankTransferConfig>("/billing/offline/config");
+}
+
+/** Have the billing provider issue a quote for the plan and e-mail it. */
+export async function requestBankTransferQuote(input: {
+    plan: string;
+    seats?: number;
+    company: BankTransferCompany;
+}): Promise<{ quote: BankTransferQuote }> {
+    return billingRequest("/billing/offline/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+}
+
+export async function getBillingDocuments(): Promise<BillingDocuments> {
+    return billingRequest<BillingDocuments>("/billing/documents");
+}
+
+/** The original ERP PDF of one of my quotes or invoices. */
+export async function downloadBillingDocumentPdf(
+    kind: "quotes" | "invoices",
+    id: string,
+): Promise<Blob> {
+    const response = await fetch(
+        `${API_BASE}/billing/documents/${kind}/${encodeURIComponent(id)}/pdf`,
+        { cache: "no-store", headers: { ...getUiLocaleHeader(), ...getAuthHeader() } },
+    );
+    if (!response.ok) {
+        const text = await response.text();
+        let code: string | null = null;
+        try {
+            code = (JSON.parse(text) as { code?: string }).code ?? null;
+        } catch {
+            /* non-JSON error body */
+        }
+        throw new BillingApiError(text || `API error: ${response.status}`, code, null);
+    }
+    return response.blob();
+}
+
 export async function getProject(projectId: string): Promise<MikeProject> {
     return apiRequest<MikeProject>(`/projects/${projectId}`);
 }
@@ -583,10 +725,17 @@ export async function uploadProjectDocument(
 
 export async function uploadStandaloneDocument(
     file: File,
+    opts?: {
+        /** The chat the composer is uploading into. Lets the backend
+         *  pre-anonymize the document for that chat's PII session so the
+         *  first read in the next turn is a cache hit. */
+        chatId?: string | null;
+    },
 ): Promise<MikeDocument> {
     const authHeaders = getAuthHeader();
     const form = new FormData();
     form.append("file", file);
+    if (opts?.chatId) form.append("chat_id", opts.chatId);
     const response = await fetch(`${API_BASE}/single-documents`, {
         method: "POST",
         headers: { ...authHeaders },
@@ -1137,6 +1286,20 @@ async function streamFetch(
         }
     }
     return response;
+}
+
+/**
+ * Explicit Stop for the caller's live turn on a chat — assistant, project or
+ * tabular-review chat (tracker #96). Aborting the fetch alone never reaches
+ * the backend behind Cloud Run, so the model kept generating and billing.
+ * Fire-and-forget; `keepalive` lets it complete while the page is left.
+ */
+export function stopChatTurn(chatId: string): void {
+    void fetch(`${API_BASE}/chat/${encodeURIComponent(chatId)}/stop`, {
+        method: "POST",
+        headers: { ...getAuthHeader() },
+        keepalive: true,
+    }).catch(() => {});
 }
 
 export async function streamChat(payload: {
@@ -1712,6 +1875,19 @@ export function contextsServiceEnabled(): boolean {
     return contextsServiceUrl().length > 0;
 }
 
+/**
+ * Whether users may create their own contexts ("Novi kontekst", "Spremi kao
+ * kontekst"). Off for the system-contexts MVP — only EULEX publishes
+ * contexts; existing personal contexts stay visible and usable. Turn back on
+ * with NEXT_PUBLIC_CONTEXT_CREATION=1.
+ */
+export function contextCreationEnabled(): boolean {
+    return (
+        contextsServiceEnabled() &&
+        process.env.NEXT_PUBLIC_CONTEXT_CREATION === "1"
+    );
+}
+
 // Keyed by the core access token that minted it. A sign-out or in-place
 // account switch (AuthContext swaps the user with no page reload) changes
 // the core token but NOT this module cache — so without the key check the
@@ -1798,7 +1974,8 @@ export type ContextSourceKind =
     | "legal_instrument"
     | "legal_article"
     | "caselaw"
-    | "web";
+    | "web"
+    | "document";
 export type ContextSourceMode = "pinned" | "retrieved";
 
 export interface MikeContext {
@@ -1813,6 +1990,42 @@ export interface MikeContext {
     version: number;
     created_at: string;
     updated_at: string;
+    /** "system" = published by EULEX for every user (read-only for users).
+     *  Optional: older contexts-service builds omit the system fields. */
+    level?: "personal" | "system";
+    area?: string | null;
+    rules_md?: string | null;
+    answer_mode?: "strict" | "extended";
+    name_i18n?: { hr?: string | null; en?: string | null } | null;
+    description_i18n?: { hr?: string | null; en?: string | null } | null;
+    status?: "draft" | "published" | "withdrawn" | null;
+    version_label?: string | null;
+    published_at?: string | null;
+    /** System contexts: the model that answers while the context is active
+     *  and its reasoning effort (null = the app's default). */
+    model?: string | null;
+    reasoning_effort?: "low" | "medium" | "high" | "xhigh" | "max" | null;
+    /** System contexts: the tasks (workflows) the context defines; the
+     *  context detail lists them without their steps. */
+    tasks?: MikeContextTask[];
+}
+
+export type MikeLocalizedText = { hr?: string; en?: string };
+
+/** A system context's task, e.g. "RT-10 Provjera usklađenosti dokumenta". */
+export interface MikeContextTask {
+    id: string;
+    /** name_i18n.hr */
+    name: string;
+    name_i18n?: MikeLocalizedText;
+    summary: string;
+    summary_i18n?: MikeLocalizedText;
+    when_i18n?: MikeLocalizedText;
+    inputs?: { required?: string[]; optional?: string[] };
+    checks?: string[];
+    output?: { kind: "docx" | "xlsx" | "chat"; name?: string; name_i18n?: MikeLocalizedText };
+    done_when?: string[];
+    status: "ready" | "draft";
 }
 
 export interface MikeContextListItem {
@@ -1834,6 +2047,12 @@ export interface MikeContextSource {
     added_from: string;
     position: number;
     tracked_for_alerts: boolean;
+    /** Authority tier: "1"–"6" or "internal". */
+    authority_tier?: string | null;
+    doc_status?: "final" | "draft" | "consultation" | "living" | null;
+    issuer?: string | null;
+    doc_type?: string | null;
+    published_on?: string | null;
 }
 
 export interface MikeContextShare {
@@ -1850,7 +2069,9 @@ export interface MikeContextToggle {
 export function listContexts(): Promise<MikeContextListItem[]> {
     // Dormant feature → empty list without a network call.
     if (!contextsServiceEnabled()) return Promise.resolve([]);
-    return contextsRequest<MikeContextListItem[]>("");
+    // ?system=1: include EULEX system contexts (the service hides them from
+    // clients that do not ask).
+    return contextsRequest<MikeContextListItem[]>("?system=1");
 }
 
 export function createContext(input: {
@@ -1882,6 +2103,7 @@ export function updateContext(
             | "instructions_md"
             | "visibility"
             | "alerts_enabled"
+            | "rules_md"
         >
     >,
 ): Promise<MikeContext> {

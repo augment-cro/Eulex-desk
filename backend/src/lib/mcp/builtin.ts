@@ -30,7 +30,11 @@ import {
     isEulexPartnerConfigured,
     type EulexPartnerTier,
 } from "./partnerJwt";
-import { resolveMcpDailyLimit, checkAndCountMcpCall } from "./quota";
+import {
+    resolveMcpDailyLimit,
+    checkAndCountMcpCall,
+    recordMcpToolCall,
+} from "./quota";
 import { tierKeyForLevelId } from "../entitlements";
 
 const SLUG_RE = /^[a-z0-9_-]{1,20}$/;
@@ -391,6 +395,10 @@ export async function loadBuiltinMcpServers(
                 instructions: client.getInstructions(),
                 client: {
                     callTool: async (name, args) => {
+                        // Usage signal first (every tier), then the quota gate
+                        // (capped tiers only) — an over-quota attempt is still
+                        // "this user uses MCP" for AdminMax.
+                        if (userId) recordMcpToolCall(userId, row.slug, name);
                         if (userId && mcpDailyLimit > 0) {
                             const over = await checkAndCountMcpCall(
                                 userId,
@@ -404,6 +412,7 @@ export async function loadBuiltinMcpServers(
                     // Built-in tools don't emit legal-source structuredContent;
                     // expose the rich shape as text-only for type parity.
                     callToolRich: async (name, args) => {
+                        if (userId) recordMcpToolCall(userId, row.slug, name);
                         if (userId && mcpDailyLimit > 0) {
                             const over = await checkAndCountMcpCall(
                                 userId,

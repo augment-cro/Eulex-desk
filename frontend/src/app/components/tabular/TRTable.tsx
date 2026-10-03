@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { Plus, Table2 } from "lucide-react";
 import type { ColumnConfig, MikeDocument, TabularCell } from "../shared/types";
 import { TabularCell as TabularCellComponent } from "./TabularCell";
+import type { ParsedCitation } from "./citation-utils";
 import { TREditColumnMenu } from "./TREditColumnMenu";
 
 const SKELETON_COLS = 4;
@@ -36,7 +37,7 @@ interface Props {
     activeColumnIndex?: number | null;
     onSelectionChange: (ids: string[]) => void;
     onExpand: (cell: TabularCell) => void;
-    onCitationClick: (cell: TabularCell, page: number, quote: string) => void;
+    onCitationClick: (cell: TabularCell, citation: ParsedCitation) => void;
     onUpdateColumn: (col: ColumnConfig) => void;
     onDeleteColumn: (colIndex: number) => void;
     onAddColumn: () => void;
@@ -310,12 +311,8 @@ export const TRTable = forwardRef<TRTableHandle, Props>(function TRTable(
                                             cell={cell}
                                             column={col}
                                             onExpand={() => onExpand(cell)}
-                                            onCitationClick={(page, quote) =>
-                                                onCitationClick(
-                                                    cell,
-                                                    page,
-                                                    quote,
-                                                )
+                                            onCitationClick={(citation) =>
+                                                onCitationClick(cell, citation)
                                             }
                                         />
                                     )}

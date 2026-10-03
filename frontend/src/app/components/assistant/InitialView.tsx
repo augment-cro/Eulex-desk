@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
@@ -8,7 +9,12 @@ import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useMcpServers } from "@/app/contexts/McpServersContext";
 import { ChatInput } from "./ChatInput";
 import { SelectAssistantProjectModal } from "./SelectAssistantProjectModal";
+import { EuAiIcon } from "../shared/EuAiIcon";
 import type { MikeMessage } from "../shared/types";
+import {
+    readWorkflowPreselect,
+    type PreselectedWorkflow,
+} from "@/app/lib/workflowPreselect";
 
 interface InitialViewProps {
     onSubmit: (message: MikeMessage) => void;
@@ -16,12 +22,32 @@ interface InitialViewProps {
 
 const GAP = 16; // gap-4 = 1rem = 16px
 
+/**
+ * Reads a new-chat link's preselected workflow (?workflow=…&workflowTitle=…)
+ * and drops the parameters from the address, so a reload starts clean. The
+ * composer takes the workflow when it mounts and keeps it after that.
+ */
+export function WithWorkflowPreselect({
+    children,
+}: {
+    children: (workflow: PreselectedWorkflow | null) => ReactNode;
+}) {
+    const params = useSearchParams();
+    const router = useRouter();
+    const workflow = useMemo(() => readWorkflowPreselect(params), [params]);
+    useEffect(() => {
+        if (workflow) router.replace("/assistant", { scroll: false });
+    }, [workflow, router]);
+    return <>{children(workflow)}</>;
+}
+
 export function InitialView({ onSubmit }: InitialViewProps) {
     const { user } = useAuth();
     const { profile, loading: profileLoading } = useUserProfile();
     const { chats } = useChatHistoryContext();
     const { loading: mcpLoading } = useMcpServers();
     const t = useTranslations("assistant");
+    const tEuAi = useTranslations("euAiIcon");
     const [loaded, setLoaded] = useState(false);
     const [projectModalOpen, setProjectModalOpen] = useState(false);
 
@@ -44,6 +70,18 @@ export function InitialView({ onSubmit }: InitialViewProps) {
         const t = setTimeout(() => setLoaded(true), 100);
         return () => clearTimeout(t);
     }, []);
+
+    const composer = (initialWorkflow: PreselectedWorkflow | null) => (
+        <ChatInput
+            onSubmit={onSubmit}
+            onCancel={() => {}}
+            isLoading={false}
+            disabled={isInitialLoading}
+            variant="hero"
+            onProjectsClick={() => setProjectModalOpen(true)}
+            initialWorkflow={initialWorkflow}
+        />
+    );
 
     return (
         <div className="flex flex-col h-full w-full px-6">
@@ -75,18 +113,20 @@ export function InitialView({ onSubmit }: InitialViewProps) {
                         </div>
                     </div>
 
-                    <ChatInput
-                        onSubmit={onSubmit}
-                        onCancel={() => {}}
-                        isLoading={false}
-                        disabled={isInitialLoading}
-                        variant="hero"
-                        onProjectsClick={() => setProjectModalOpen(true)}
-                    />
+                    {/* A new-chat link may preselect a workflow (a context
+                        task's "Pokreni"); the boundary is what
+                        useSearchParams needs. */}
+                    <Suspense fallback={composer(null)}>
+                        <WithWorkflowPreselect>{composer}</WithWorkflowPreselect>
+                    </Suspense>
 
                     <div className="text-center">
-                        <p className="text-xs py-3 mb-3 text-muted-foreground">
-                            {t("disclaimer")}
+                        <p className="flex items-center justify-center gap-1.5 text-xs py-3 mb-3 text-muted-foreground">
+                            <EuAiIcon
+                                className="size-3"
+                                label={tEuAi("interaction")}
+                            />
+                            <span>{t("disclaimer")}</span>
                         </p>
                     </div>
                 </div>

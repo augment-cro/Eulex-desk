@@ -11,11 +11,11 @@ const stubAuth: RequestHandler = (_req, res, next) => {
     next();
 };
 
-function buildApp(tenant: string | null = null) {
+function buildApp(tenant: string | null = null, systemContexts = false) {
     const app = express();
     app.use(
         "/service-token",
-        createServiceTokenRouter(stubAuth, async () => tenant),
+        createServiceTokenRouter(stubAuth, async () => tenant, async () => systemContexts),
     );
     return app;
 }
@@ -50,5 +50,16 @@ describe("GET /service-token/:service", () => {
         assert.equal(payload.sub, "desk-u-token");
         assert.equal(payload.tenant, "team-9");
         assert.equal(payload.scope, "seam:contexts");
+        assert.equal(payload.system_contexts, undefined);
+    });
+
+    it("adds the system_contexts claim to a contexts token only when the tier grants it", async () => {
+        process.env.CONTEXTS_SERVICE_SECRET = "s3cret";
+        process.env.GOVERNANCE_SERVICE_SECRET = "g3cret";
+        const claim = (token: string) => (jwt.decode(token) as jwt.JwtPayload).system_contexts;
+        const granted = await request(buildApp(null, true)).get("/service-token/contexts").expect(200);
+        assert.equal(claim(granted.body.token), true);
+        const other = await request(buildApp(null, true)).get("/service-token/governance").expect(200);
+        assert.equal(claim(other.body.token), undefined);
     });
 });

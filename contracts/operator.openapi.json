@@ -1,0 +1,2482 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Max operator API",
+    "version": "1.0.0",
+    "description": "The generic administration API of a Max deployment, served by the core itself under /operator/v1 and called server-to-server by an operator console. Genericity rule: this surface is plumbing any operator of the AGPL program needs to run their deployment — users, tiers/entitlements, credits, usage, chats, activity, audit, promo codes, MCP usage and the billing-provider admin relay. It holds no console logic (no dashboards, workflows, multi-deployment views or operator-specific decisions); the console implementation is a separate program that only speaks this contract, and anyone may write one. Failure posture: inert when OPERATOR_API_CALLERS is unset or empty — every path answers 404 {detail:'Not found'} before any token check and the app runs exactly as without a console (standalone-core rule). With callers set, a missing bearer answers 401 'Missing bearer token' and any token that fails verification or names an unlisted caller 401 'Invalid caller token'; an authenticated request to an unknown path falls through to the framework's plain 404. Optional dependencies degrade per route: the /billing relay answers 503 BILLING_PROVIDER_UNAVAILABLE without BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET; Stripe-backed promo routes answer GET {configured:false} and 503 on writes; suspend answers 503 without the Supabase admin key; MCP connector figures report available:false without the portal manage API. Errors: data routes answer {detail} (a human message; some in Croatian); the billing relay answers {code, detail} with a stable UPPER_SNAKE code and passes the provider's own status and JSON through; an unhandled exception (and a malformed JSON body) answers 500 {detail:'Internal server error', error}. Audit: every mutating call and each CSV export appends one public.admin_audit row (fire-and-forget — an audit failure never fails the call) with actor = X-Operator-Actor or the caller's service account; exceptions are the login-events / new-users/seen bookkeeping and billing/backfill-revenue. Conventions: from/to are ISO 8601, inclusive lower / exclusive upper bound, default the last 30 days → now (if either is unparseable both fall back silently); limit (default 50) and offset (default 0) are clamped to 1–500 and ≥ 0, never rejected. Raw database rows (usage, messages, audit, credits, activity) may carry bigint/numeric columns as JSON strings. Field names are snake_case except in the billing relay, which keeps the provider's camelCase."
+  },
+  "servers": [{ "url": "https://{host}/operator/v1", "variables": { "host": { "default": "api.example.com", "description": "This deployment's backend host" } } }],
+  "security": [{ "serviceIdentity": [] }],
+  "tags": [
+    { "name": "console", "description": "Console helpers: identity, model registry, login bookkeeping, new-user badge" },
+    { "name": "users", "description": "Users, manual tier overrides, profile, suspension" },
+    { "name": "tiers", "description": "Tier definitions, daily quotas, entitlements, plan marketing copy" },
+    { "name": "credits", "description": "Token-credit packs" },
+    { "name": "usage", "description": "LLM usage, analytics and CSV exports" },
+    { "name": "chats", "description": "Conversations and messages (support / compliance oversight)" },
+    { "name": "activity", "description": "Workspace activity events and feature adoption" },
+    { "name": "mcp", "description": "MCP tool usage" },
+    { "name": "audit", "description": "The admin_audit trail" },
+    { "name": "promos", "description": "Promotion codes (Stripe)" },
+    { "name": "jobs", "description": "Manual triggers of scheduled jobs and repairs" },
+    { "name": "billing", "description": "Billing-provider admin relay (offline-payment quotes, fiscal documents); 503 without the seam" }
+  ],
+  "paths": {
+    "/whoami": {
+      "get": {
+        "tags": ["console"],
+        "operationId": "whoami",
+        "summary": "Caller identity and build (smoke test)",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "caller": {
+                      "type": ["string", "null"],
+                      "description": "The audit actor of this request: a valid X-Operator-Actor, else the caller's service-account e-mail ('dev' with the dev token)"
+                    },
+                    "build": { "type": ["string", "null"], "description": "BUILD_GIT_SHA of this deployment" }
+                  },
+                  "required": ["caller", "build"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/models": {
+      "get": {
+        "tags": ["console"],
+        "operationId": "listModels",
+        "summary": "This build's model registry",
+        "description": "What this deployment can run, per model tier. A console or benchmark service cannot know it otherwise. Local-LLM ids are left out. Cache-Control: no-store.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": { "description": "Registry", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ModelCatalogue" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/audit": {
+      "get": {
+        "tags": ["audit"],
+        "operationId": "listAudit",
+        "summary": "Admin action audit trail, newest first",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "$ref": "#/components/parameters/from" },
+          { "$ref": "#/components/parameters/to" },
+          { "name": "q", "in": "query", "description": "Case-insensitive substring of action, target_id, target_type or actor (trimmed)", "schema": { "type": "string" } },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/offset" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "range": { "$ref": "#/components/schemas/Range" },
+                    "limit": { "type": "integer" },
+                    "offset": { "type": "integer" },
+                    "total": { "type": "integer" },
+                    "rows": { "type": "array", "items": { "$ref": "#/components/schemas/AuditRow" } }
+                  },
+                  "required": ["range", "limit", "offset", "total", "rows"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      },
+      "post": {
+        "tags": ["audit"],
+        "operationId": "recordAudit",
+        "summary": "Record an action the console performed elsewhere",
+        "description": "Keeps one admin_audit trail: the console logs actions it performed outside this API. actor = X-Operator-Actor or the caller. Once the body validates the answer is 201 — the insert is fire-and-forget like every audit write, so a database failure is logged, not returned.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{2,63}$", "description": "Dot-namespaced verb, e.g. console.user.note" },
+                  "target_type": { "type": ["string", "null"], "maxLength": 200 },
+                  "target_id": { "type": ["string", "null"], "maxLength": 200 },
+                  "payload": { "type": ["object", "null"], "additionalProperties": true, "description": "At most 8 KiB as JSON; never secrets or document content" }
+                },
+                "required": ["action"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Recorded",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "const": true } }, "required": ["ok"] } } }
+          },
+          "400": {
+            "description": "action / target_type / target_id / payload invalid",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "413": { "description": "payload too large (max 8 KB)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/login-events": {
+      "post": {
+        "tags": ["console"],
+        "operationId": "recordLogin",
+        "summary": "An operator signed in to the console",
+        "description": "Shifts the deployment-wide login pair (current → previous, current = now). 'previous' is the reference point of 'new users since last login' (GET /new-users, GET /users totals.new_users_count). Global, not per operator; shared with the legacy password login. No body; not audited.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "const": true },
+                    "previous_login_at": { "type": ["string", "null"], "format": "date-time", "description": "The login before this one; null on a fresh install" }
+                  },
+                  "required": ["ok", "previous_login_at"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/new-users": {
+      "get": {
+        "tags": ["console"],
+        "operationId": "newUsers",
+        "summary": "Signups since the operator's previous login",
+        "description": "since = the previous login (7 days ago on a fresh install), or the last POST /new-users/seen when that is more recent.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Badge",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "since": { "type": "string", "format": "date-time" },
+                    "count": { "type": "integer" },
+                    "recent": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string", "format": "uuid" },
+                          "email": { "type": "string" },
+                          "display_name": { "type": ["string", "null"] },
+                          "created_at": { "type": "string", "format": "date-time" }
+                        }
+                      },
+                      "maxItems": 10,
+                      "description": "Newest first"
+                    }
+                  },
+                  "required": ["since", "count", "recent"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/new-users/seen": {
+      "post": {
+        "tags": ["console"],
+        "operationId": "markNewUsersSeen",
+        "summary": "Reset the new-users reference point to now",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "ok": { "const": true }, "last_checked_at": { "type": "string", "format": "date-time" } },
+                  "required": ["ok", "last_checked_at"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/weekly-summary/send": {
+      "post": {
+        "tags": ["jobs"],
+        "operationId": "sendWeeklySummary",
+        "summary": "Send the weekly operator summary e-mail now (same as the cron)",
+        "description": "Recipient: ADMIN_SUMMARY_EMAIL. Audited as email.weekly_summary.send.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "sent_to": { "type": "string" },
+                    "stats": {
+                      "type": "object",
+                      "properties": {
+                        "new_users": { "type": "integer" },
+                        "active_users": { "type": "integer" },
+                        "total_users": { "type": "integer" },
+                        "requests": { "type": "integer" },
+                        "cost_usd": { "type": "number" },
+                        "revenue_eur_cents": { "type": "integer" },
+                        "paid_users": { "type": "integer" }
+                      }
+                    }
+                  },
+                  "required": ["ok", "sent_to", "stats"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/context-alerts/send": {
+      "post": {
+        "tags": ["jobs"],
+        "operationId": "sendContextAlerts",
+        "summary": "Run the context-alert digest sweep now (same as the cron)",
+        "description": "Audited as email.context_alerts.send.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Sweep result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "const": true },
+                    "pending": { "type": "integer" },
+                    "recipients": { "type": "integer" },
+                    "sent": { "type": "integer" },
+                    "skipped_no_email": { "type": "integer" },
+                    "failed": { "type": "integer" },
+                    "claimed": { "type": "integer" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/expiry-reminders/send": {
+      "post": {
+        "tags": ["jobs"],
+        "operationId": "sendExpiryReminders",
+        "summary": "Run the plan-expiry reminder sweep now (same as the cron)",
+        "description": "Audited as email.expiry_reminders.send.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Sweep result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "const": true },
+                    "expiring": { "type": "integer" },
+                    "skipped_auto_renew": { "type": "integer" },
+                    "already_reminded": { "type": "integer" },
+                    "sent": { "type": "integer" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/billing/backfill-revenue": {
+      "post": {
+        "tags": ["jobs"],
+        "operationId": "backfillRevenue",
+        "summary": "Re-insert paid Stripe subscription invoices missing from the revenue ledger",
+        "description": "Idempotent repair of billing_revenue; safe to re-run. Not audited. NOTE: the /billing relay is mounted ahead of this route and gates every /billing/* path, so without the billing-provider seam this answers 503 BILLING_PROVIDER_UNAVAILABLE even when Stripe is configured.",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          {
+            "name": "days",
+            "in": "query",
+            "description": "Look-back window in days; clamped to 1–1095, 0 or non-numeric → 365",
+            "schema": { "type": "number", "default": 365, "minimum": 1, "maximum": 1095 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "const": true },
+                    "days": { "type": "number" },
+                    "scanned": { "type": "integer" },
+                    "inserted": { "type": "integer" },
+                    "skipped_no_subscription": { "type": "integer" },
+                    "skipped_zero_amount": { "type": "integer" },
+                    "failed": { "type": "integer" }
+                  },
+                  "required": ["ok", "days"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" },
+          "503": {
+            "description": "Stripe not configured ({detail}) — or the billing-provider gate ({code: BILLING_PROVIDER_UNAVAILABLE, detail})",
+            "content": { "application/json": { "schema": { "anyOf": [{ "$ref": "#/components/schemas/Error" }, { "$ref": "#/components/schemas/BillingError" }] } } }
+          }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "tags": ["users"],
+        "operationId": "listUsers",
+        "summary": "Users with rolled-up LLM usage in a window (paginated, searchable, sortable)",
+        "description": "Every user is listed (idle ones too unless only_active). Usage sums cover llm_usage rows in [from, to). totals covers the whole filtered set, not just the page.",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "$ref": "#/components/parameters/from" },
+          { "$ref": "#/components/parameters/to" },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/offset" },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring of email or display_name (trimmed, first 200 chars)",
+            "schema": { "type": "string", "maxLength": 200 }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["created", "cost", "requests", "questions", "errors", "last_used", "email", "last_login", "tier", "documents"], "default": "created" },
+            "description": "Unknown values → created; ties broken by email ascending, NULLs last"
+          },
+          {
+            "name": "dir",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["asc", "desc"], "default": "desc" },
+            "description": "Case-insensitive; anything but asc → desc"
+          },
+          {
+            "name": "only_active",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["true", "1", "yes", "false"], "default": "false" },
+            "description": "true | 1 | yes (case-insensitive) drops users with no usage in the window"
+          },
+          {
+            "name": "tier",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1 },
+            "description": "Effective tier level (an expired override counts as the free level); other values ignored"
+          },
+          {
+            "name": "created_after",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" },
+            "description": "Only users created at or after this instant; unparseable → ignored"
+          },
+          {
+            "name": "grant",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["manual", "external", "stripe", "expired"] },
+            "description": "manual | external | stripe: live paid grants by who wrote them (see UserSummary.grant_kind); expired: grants whose end date has passed. Other values ignored"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "range": { "$ref": "#/components/schemas/Range" },
+                    "pagination": { "$ref": "#/components/schemas/Pagination" },
+                    "filter": {
+                      "type": "object",
+                      "properties": {
+                        "q": { "type": "string" },
+                        "sort": { "type": "string" },
+                        "dir": { "type": "string", "enum": ["asc", "desc"] },
+                        "only_active": { "type": "boolean" },
+                        "tier": { "type": ["integer", "null"] },
+                        "created_after": { "type": ["string", "null"], "format": "date-time" },
+                        "grant": { "type": ["string", "null"], "enum": ["manual", "external", "stripe", "expired", null] }
+                      }
+                    },
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "cost_usd_total": { "type": "number" },
+                        "request_count": { "type": "integer" },
+                        "input_tokens_total": { "type": "number" },
+                        "output_tokens_total": { "type": "number" },
+                        "cache_read_input_tokens_total": { "type": "number" },
+                        "cache_creation_input_tokens_total": { "type": "number" },
+                        "error_count": { "type": "integer" },
+                        "question_count": { "type": "integer", "description": "The users' own messages (regular and project chats) in the range" },
+                        "documents_uploaded": { "type": "integer", "description": "document.uploaded audit events in the range (recorded since 2026-08-18)" },
+                        "new_users_count": { "type": "integer", "description": "Signups since new_users_since — global, ignores the filters" },
+                        "new_users_since": { "type": "string", "format": "date-time" },
+                        "total_users": { "type": "integer" },
+                        "paid_users_count": { "type": ["integer", "null"], "description": "Distinct Stripe customers with an active subscription (cached 5 min); null without Stripe" },
+                        "paid_subs_count": { "type": ["integer", "null"] },
+                        "paid_mrr_cents": { "type": ["integer", "null"], "description": "Monthly run-rate of active subscriptions, cents" }
+                      }
+                    },
+                    "users": { "type": "array", "items": { "$ref": "#/components/schemas/UserSummary" } }
+                  },
+                  "required": ["range", "pagination", "filter", "totals", "users"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/users/{userId}": {
+      "get": {
+        "tags": ["users"],
+        "operationId": "getUser",
+        "summary": "One user: identity, tier, login, auth-provider facts and usage totals",
+        "description": "Usage totals cover [from, to). tier is the stored override as-is (not folded for expiry, unlike GET /users). Supabase auth facts are best-effort: a lookup failure fills supabase.error instead of failing the call.",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "$ref": "#/components/parameters/userId" },
+          { "$ref": "#/components/parameters/from" },
+          { "$ref": "#/components/parameters/to" }
+        ],
+        "responses": {
+          "200": {
+            "description": "User",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "mcp": { "oneOf": [{ "$ref": "#/components/schemas/AdminUserMcp" }, { "type": "null" }] },
+                    "user": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string", "format": "uuid" },
+                        "email": { "type": "string" },
+                        "display_name": { "type": ["string", "null"] },
+                        "country": { "type": ["string", "null"] },
+                        "wp_user_id": { "type": ["integer", "null"] },
+                        "created_at": { "type": ["string", "null"], "format": "date-time" }
+                      }
+                    },
+                    "tier": {
+                      "type": "object",
+                      "properties": {
+                        "active_tier_level_id": { "type": ["integer", "null"] },
+                        "active_tier_until": { "type": ["string", "null"], "format": "date-time" },
+                        "tier_label": { "type": ["string", "null"] },
+                        "tier_slug": { "type": ["string", "null"] },
+                        "stripe_customer_id": { "type": ["string", "null"] },
+                        "effective_tier_level_id": { "type": ["integer", "null"], "description": "What the user has now; null = free (no grant, or active_tier_until has passed)" },
+                        "effective_tier_label": { "type": ["string", "null"] },
+                        "expired": { "type": "boolean", "description": "A paid grant is stored but its end date has passed" },
+                        "grant_kind": { "$ref": "#/components/schemas/GrantKind" },
+                        "grant_reason": { "type": ["string", "null"] },
+                        "grant_at": { "type": ["string", "null"], "format": "date-time", "description": "When the grant behind the stored tier was written" }
+                      }
+                    },
+                    "login": { "type": "object", "properties": { "last_login_at": { "type": ["string", "null"], "format": "date-time" }, "login_count": { "type": "integer" } } },
+                    "supabase": {
+                      "type": "object",
+                      "properties": {
+                        "configured": { "type": "boolean" },
+                        "supabase_user_id": { "type": ["string", "null"] },
+                        "auth": { "oneOf": [{ "$ref": "#/components/schemas/SupabaseAuthInfo" }, { "type": "null" }] },
+                        "error": { "type": ["string", "null"] }
+                      }
+                    },
+                    "range": { "$ref": "#/components/schemas/Range" },
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "iterations_total": { "type": "number" },
+                        "input_tokens_total": { "type": "number" },
+                        "output_tokens_total": { "type": "number" },
+                        "cache_creation_input_tokens_total": { "type": "number" },
+                        "cache_read_input_tokens_total": { "type": "number" },
+                        "cost_usd_total": { "type": "number", "description": "USD" },
+                        "request_count": { "type": "integer" },
+                        "error_count": { "type": "integer" },
+                        "question_count": { "type": "integer", "description": "The user's own messages (regular and project chats) in the range" },
+                        "first_used": { "type": ["string", "null"], "format": "date-time" },
+                        "last_used": { "type": ["string", "null"], "format": "date-time" }
+                      }
+                    },
+                    "documents": {
+                      "type": "object",
+                      "properties": {
+                        "uploaded": { "type": "integer", "description": "document.uploaded audit events in the range (recorded since 2026-08-18)" },
+                        "last_uploaded_at": { "type": ["string", "null"], "format": "date-time" },
+                        "stored_count": { "type": "integer", "description": "Documents the user keeps now, any origin" },
+                        "stored_bytes": { "type": "integer" }
+                      }
+                    }
+                  },
+                  "required": ["user", "tier", "login", "supabase", "range", "totals"]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidUserId" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "User not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/users/{userId}/tier-history": {
+      "get": {
+        "tags": ["users"],
+        "operationId": "getTierHistory",
+        "summary": "Tier transitions of one user (append-only), newest first",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/userId" }],
+        "responses": {
+          "200": {
+            "description": "History",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "history": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "old_tier_level_id": { "type": ["integer", "null"] },
+                          "new_tier_level_id": { "type": ["integer", "null"] },
+                          "old_until": { "type": ["string", "null"], "format": "date-time" },
+                          "new_until": { "type": ["string", "null"], "format": "date-time" },
+                          "source": { "type": "string", "description": "Who changed it: stripe | admin | ump_sync, or expiry — a row computed on read, dated at the end date of the current grant once it has passed (an expiry writes nothing)" },
+                          "reason": { "type": ["string", "null"] },
+                          "created_at": { "type": "string", "format": "date-time" },
+                          "old_label": { "type": ["string", "null"] },
+                          "new_label": { "type": ["string", "null"] }
+                        }
+                      },
+                      "maxItems": 100
+                    }
+                  },
+                  "required": ["history"]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidUserId" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/users/{userId}/tier": {
+      "patch": {
+        "tags": ["users"],
+        "operationId": "setUserTier",
+        "summary": "Assign or clear a user's manual tier override",
+        "description": "tier_level_id null, absent or equal to the free level clears the override (the user is free on the next request) — an empty body therefore clears. A paid level takes effect immediately; it must exist (POST /tiers first) and `until`, when given, must be in the future (null = no expiry). Clears ignore `until`. Records tier_change_history (source admin) and, for users linked to the external membership partner (wp_user_id) with the partner push configured, mirrors the change there best-effort. Audited as user.tier.set / user.tier.clear.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/userId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tier_level_id": { "type": ["integer", "null"], "minimum": 1 },
+                  "until": { "type": ["string", "null"], "format": "date-time", "description": "Expiry of a paid grant; non-string values are ignored" },
+                  "reason": { "type": "string", "maxLength": 500, "description": "Trimmed, truncated to 500 chars" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "const": true },
+                    "tier": {
+                      "type": "object",
+                      "properties": { "active_tier_level_id": { "type": ["integer", "null"] }, "active_tier_until": { "type": ["string", "null"], "format": "date-time" } }
+                    }
+                  },
+                  "required": ["ok", "tier"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid user id | Invalid tier_level_id | Invalid until date | until must be in the future | Unknown tier_level_id N",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "User not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/users/{userId}/profile": {
+      "patch": {
+        "tags": ["users"],
+        "operationId": "updateUserProfile",
+        "summary": "Edit operator-managed profile fields",
+        "description": "A present string updates the field (trimmed; \"\" → cleared); null clears; an absent or non-string key leaves it unchanged. Audited as user.profile.update.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/userId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "display_name": { "type": ["string", "null"], "maxLength": 200, "description": "Truncated to 200 chars" },
+                  "country": { "type": ["string", "null"], "maxLength": 120, "description": "ISO 3166-1 alpha-2 expected; not validated, truncated to 120 chars" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "const": true },
+                    "user": { "type": "object", "properties": { "display_name": { "type": ["string", "null"] }, "country": { "type": ["string", "null"] } } }
+                  },
+                  "required": ["ok", "user"]
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid user id | Nothing to update", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "User not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/users/{userId}/suspend": {
+      "post": {
+        "tags": ["users"],
+        "operationId": "suspendUser",
+        "summary": "Ban or unban the user's sign-in account (Supabase Auth)",
+        "description": "Any action other than \"unban\" bans. Audited as user.suspend (payload {hours}) / user.unsuspend.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/userId" }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": { "type": "string", "enum": ["ban", "unban"], "default": "ban" },
+                  "hours": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 876000,
+                    "default": 876000,
+                    "description": "Ban length; non-positive or missing → 876000 (≈100 years, effectively permanent); capped at 876000"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Applied",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "ok": { "const": true }, "action": { "type": "string", "enum": ["ban", "unban"] } }, "required": ["ok", "action"] }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidUserId" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": {
+            "description": "The user has no Supabase account (legacy login) — also the answer for an unknown user id",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": { "$ref": "#/components/responses/ServerError" },
+          "503": {
+            "description": "Supabase admin not configured (SUPABASE_SECRET_KEY)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/tiers": {
+      "get": {
+        "tags": ["tiers"],
+        "operationId": "listTiers",
+        "summary": "Every tier definition with entitlements, marketing copy and live user counts",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Tiers",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "tiers": { "type": "array", "items": { "$ref": "#/components/schemas/TierListItem" } } }, "required": ["tiers"] }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      },
+      "post": {
+        "tags": ["tiers"],
+        "operationId": "createTier",
+        "summary": "Create (or overwrite) a tier definition",
+        "description": "Upsert: an existing tier_level_id is overwritten — scalars replaced, entitlements merged over the stored ones, marketing untouched — and still answers 201. Unknown entitlement keys and wrong types are dropped silently. Audited as tier.create.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tier_level_id": { "type": "integer", "minimum": 1 },
+                  "tier_slug": { "type": "string", "minLength": 1, "description": "Trimmed" },
+                  "display_label": { "type": "string", "minLength": 1, "description": "Trimmed" },
+                  "daily_tokens": { "type": "number", "minimum": 0, "maximum": 1000000000, "description": "Floored" },
+                  "entitlements": { "$ref": "#/components/schemas/EntitlementsInput" }
+                },
+                "required": ["tier_level_id", "tier_slug", "display_label", "daily_tokens"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Stored",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "const": true } }, "required": ["ok"] } } }
+          },
+          "400": {
+            "description": "Invalid tier_level_id | tier_slug required | display_label required | daily_tokens out of range",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/tier-limits": {
+      "get": {
+        "tags": ["tiers"],
+        "operationId": "listTierLimits",
+        "summary": "Alias of GET /tiers",
+        "description": "Same handler and response as GET /tiers (kept for older clients).",
+        "deprecated": true,
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Tiers",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "tiers": { "type": "array", "items": { "$ref": "#/components/schemas/TierListItem" } } }, "required": ["tiers"] }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/tiers/{tierLevelId}": {
+      "patch": {
+        "tags": ["tiers"],
+        "operationId": "updateTier",
+        "summary": "Update a tier's label, slug, daily quota, entitlements or marketing copy",
+        "description": "Only the fields sent change. entitlements is shallow-merged (unknown keys / wrong types dropped silently); marketing replaces the stored copy whole and is ignored unless both locales.hr and locales.en are objects; blank display_label / tier_slug are ignored; daily_tokens null counts as 0. A body that leaves nothing valid answers 400. Feature-gate and plan-catalogue caches are busted on this instance; others refresh within their TTL (≈30–60 s). Audited as tier.update.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "name": "tierLevelId", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "daily_tokens": { "type": "number", "minimum": 0, "maximum": 1000000000, "description": "Floored" },
+                  "display_label": { "type": "string", "minLength": 1 },
+                  "tier_slug": { "type": "string", "minLength": 1 },
+                  "entitlements": { "$ref": "#/components/schemas/EntitlementsInput" },
+                  "marketing": { "$ref": "#/components/schemas/PlanMarketing" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "tier": { "$ref": "#/components/schemas/TierDefinition" } }, "required": ["tier"] } } }
+          },
+          "400": {
+            "description": "Invalid tier_level_id | daily_tokens out of range | No fields to update",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "Tier not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/entitlement-catalog": {
+      "get": {
+        "tags": ["tiers"],
+        "operationId": "entitlementCatalog",
+        "summary": "The code-defined catalogue of every entitlement key",
+        "description": "Type, editor group, hr/en label and per-tier default of each key; an editor renders from this so it cannot drift from the keys the deployment accepts.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Catalogue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "catalog": { "type": "array", "items": { "$ref": "#/components/schemas/EntitlementDef" } } },
+                  "required": ["catalog"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/users/{userId}/credits": {
+      "get": {
+        "tags": ["credits"],
+        "operationId": "listCredits",
+        "summary": "A user's token-credit grants (voided included) and live bonus balance",
+        "description": "userId is not validated here: a malformed id answers 500.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/userId" }],
+        "responses": {
+          "200": {
+            "description": "Credits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "grants": { "type": "array", "items": { "$ref": "#/components/schemas/CreditGrant" }, "description": "Newest first" },
+                    "balance": {
+                      "type": "object",
+                      "properties": {
+                        "bonus_remaining": { "type": "integer", "description": "Unconsumed tokens of live (unvoided, unexpired, not used up) packs" },
+                        "pack_count": { "type": "integer" }
+                      }
+                    }
+                  },
+                  "required": ["grants", "balance"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      },
+      "post": {
+        "tags": ["credits"],
+        "operationId": "grantCredits",
+        "summary": "Grant a token-credit pack (bank transfer or discretionary)",
+        "description": "Card purchases are granted by the Stripe webhook, never here. granted_by_admin_id stays null on this surface — the operator identity is in admin_audit. userId is not validated (malformed or unknown → 500), and an unparseable expires_at answers 500 rather than 400. Audited as credits.grant.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/userId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tokens_granted": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000000, "description": "Floored when stored" },
+                  "payment_method": { "type": "string", "enum": ["bank_transfer", "admin_manual"], "default": "admin_manual" },
+                  "external_reference": { "type": "string", "description": "e.g. bank statement reference; trimmed" },
+                  "amount_eur_cents": { "type": ["number", "null"], "minimum": 0, "description": "Floored; negative → 0" },
+                  "expires_at": { "type": "string", "format": "date-time", "description": "Absent or blank → no expiry" },
+                  "notes": { "type": "string" }
+                },
+                "required": ["tokens_granted"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Granted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "id": { "type": "string" }, "tokens_granted": { "type": "number", "description": "As sent (not floored)" } },
+                  "required": ["id", "tokens_granted"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "tokens_granted out of range | payment_method must be bank_transfer or admin_manual",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/credits/{creditId}/void": {
+      "post": {
+        "tags": ["credits"],
+        "operationId": "voidCredit",
+        "summary": "Void a credit grant (soft delete; excluded from the balance from now on)",
+        "description": "Audited as credits.void. A malformed id answers 500.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "name": "creditId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": false,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "reason": { "type": "string", "description": "Trimmed; blank → null" } } } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Voided",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "const": true } }, "required": ["ok"] } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "Credit not found or already voided", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/analytics": {
+      "get": {
+        "tags": ["usage"],
+        "operationId": "analytics",
+        "summary": "Growth, usage and revenue time series plus the tier distribution",
+        "description": "daily is dense (one entry per UTC day in [from, to), zero-filled). Revenue = token packs + subscription invoices, EUR cents. tiers is a current snapshot by effective tier. revenue_metrics is anchored to now (independent of the window): MRR = subscription revenue of the last 30 days, ARR = trailing 365 days, bridge/NRR = last 30 days vs the 30 before, per payer.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/from" }, { "$ref": "#/components/parameters/to" }],
+        "responses": {
+          "200": {
+            "description": "Analytics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "range": { "$ref": "#/components/schemas/Range" },
+                    "daily": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "day": { "type": "string", "format": "date" },
+                          "signups": { "type": "integer" },
+                          "active_users": { "type": "integer" },
+                          "requests": { "type": "integer" },
+                          "questions": { "type": "integer", "description": "Users' own messages that day" },
+                          "cost_usd": { "type": "number" },
+                          "tokens": { "type": "number" },
+                          "revenue_eur_cents": { "type": "integer" }
+                        }
+                      }
+                    },
+                    "tiers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": { "tier_level_id": { "type": "integer" }, "label": { "type": ["string", "null"] }, "users": { "type": "integer" } }
+                      }
+                    },
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "new_users": { "type": "integer" },
+                        "active_users": { "type": "integer" },
+                        "requests": { "type": "integer" },
+                        "questions": { "type": "integer" },
+                        "cost_usd": { "type": "number" },
+                        "revenue_eur_cents": { "type": "integer" }
+                      }
+                    },
+                    "revenue_metrics": {
+                      "type": "object",
+                      "properties": {
+                        "mrr_cents": { "type": "integer" },
+                        "arr_cents": { "type": "integer" },
+                        "active_payers": { "type": "integer" },
+                        "arpu_cents": { "type": "integer" },
+                        "nrr_pct": { "type": ["number", "null"], "description": "Null when there was no prior-window revenue" },
+                        "bridge": {
+                          "type": "object",
+                          "properties": {
+                            "new_cents": { "type": "integer" },
+                            "expansion_cents": { "type": "integer" },
+                            "contraction_cents": { "type": "integer" },
+                            "churned_cents": { "type": "integer" }
+                          }
+                        }
+                      }
+                    },
+                    "surfaces": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "surface": { "type": "string", "description": "Product surface tag (web, word, tabular, …); 'unknown' for untagged rows" },
+                          "requests": { "type": "integer" },
+                          "users": { "type": "integer" },
+                          "cost_usd": { "type": "number" },
+                          "tokens": { "type": "number" }
+                        }
+                      }
+                    }
+                  },
+                  "required": ["range", "daily", "tiers", "totals", "revenue_metrics", "surfaces"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/users/{userId}/usage": {
+      "get": {
+        "tags": ["usage"],
+        "operationId": "listUserUsage",
+        "summary": "A user's LLM usage rows, newest first",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "$ref": "#/components/parameters/userId" },
+          { "$ref": "#/components/parameters/from" },
+          { "$ref": "#/components/parameters/to" },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/offset" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "range": { "$ref": "#/components/schemas/Range" },
+                    "limit": { "type": "integer" },
+                    "offset": { "type": "integer" },
+                    "total": { "type": "integer" },
+                    "rows": { "type": "array", "items": { "$ref": "#/components/schemas/UsageRow" } }
+                  },
+                  "required": ["range", "limit", "offset", "total", "rows"]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidUserId" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "description": "Failed to load usage", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/users/{userId}/usage.csv": {
+      "get": {
+        "tags": ["usage"],
+        "operationId": "exportUserUsageCsv",
+        "summary": "A user's LLM usage rows as CSV, oldest first (unpaginated)",
+        "description": "Columns: id, created_at, provider, model, chat_id, project_id, iterations, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd, duration_ms, status, error_message. Filename adminmax_usage_<userId>_<from>_<to>.csv. Audited as export.usage_csv (target user).",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "$ref": "#/components/parameters/userId" },
+          { "$ref": "#/components/parameters/from" },
+          { "$ref": "#/components/parameters/to" }
+        ],
+        "responses": {
+          "200": {
+            "description": "CSV export",
+            "headers": { "Content-Disposition": { "description": "attachment; filename=\"…\"", "schema": { "type": "string" } } },
+            "content": { "text/csv": { "schema": { "type": "string", "description": "RFC 4180 CSV, UTF-8, header row first" } } }
+          },
+          "400": { "$ref": "#/components/responses/InvalidUserId" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "description": "Failed to export usage CSV", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/usage.csv": {
+      "get": {
+        "tags": ["usage"],
+        "operationId": "exportUsageCsv",
+        "summary": "Every user's LLM usage rows as CSV, oldest first (unpaginated)",
+        "description": "Columns: id, created_at, user_email, user_id, provider, model, chat_id, project_id, iterations, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd, duration_ms, status, error_message. Filename adminmax_usage_all_<from>_<to>.csv. Audited as export.usage_csv (target export/global).",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/from" }, { "$ref": "#/components/parameters/to" }],
+        "responses": {
+          "200": {
+            "description": "CSV export",
+            "headers": { "Content-Disposition": { "description": "attachment; filename=\"…\"", "schema": { "type": "string" } } },
+            "content": { "text/csv": { "schema": { "type": "string", "description": "RFC 4180 CSV, UTF-8, header row first" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "description": "Failed to export global CSV", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/chats": {
+      "get": {
+        "tags": ["chats"],
+        "operationId": "listChats",
+        "summary": "Every chat (regular and project), newest activity first",
+        "description": "One row per chat with its owner and a cost/message roll-up. The window applies to last activity (newest message, or creation for an empty chat).",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "$ref": "#/components/parameters/from" },
+          { "$ref": "#/components/parameters/to" },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring of the chat title, the owner's email / display_name, or any message's raw content (trimmed)",
+            "schema": { "type": "string" }
+          },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/offset" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "range": { "$ref": "#/components/schemas/Range" },
+                    "limit": { "type": "integer" },
+                    "offset": { "type": "integer" },
+                    "total": { "type": "integer" },
+                    "rows": { "type": "array", "items": { "$ref": "#/components/schemas/ChatRow" } }
+                  },
+                  "required": ["range", "limit", "offset", "total", "rows"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/users/{userId}/messages": {
+      "get": {
+        "tags": ["chats"],
+        "operationId": "listUserMessages",
+        "summary": "A user's chat messages (regular and project chats), newest first",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "$ref": "#/components/parameters/userId" },
+          { "$ref": "#/components/parameters/from" },
+          { "$ref": "#/components/parameters/to" },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/offset" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "range": { "$ref": "#/components/schemas/Range" },
+                    "limit": { "type": "integer" },
+                    "offset": { "type": "integer" },
+                    "total": { "type": "integer" },
+                    "rows": { "type": "array", "items": { "$ref": "#/components/schemas/MessageRow" } }
+                  },
+                  "required": ["range", "limit", "offset", "total", "rows"]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidUserId" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "description": "Failed to load messages", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/chats/{chatId}/full": {
+      "get": {
+        "tags": ["chats"],
+        "operationId": "getChatThread",
+        "summary": "A whole conversation, chronological, with per-answer and total cost",
+        "description": "Each message carries `usage` (null for user turns and for answers without a usage row). totals counts every usage row of the chat, including ones not linked to a surviving message.",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "name": "chatId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+          {
+            "name": "userId",
+            "in": "query",
+            "description": "Ownership cross-check (camelCase, unlike activity-events' user_id): a valid UUID that does not own the chat → 403; anything else is ignored",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Thread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "chat": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string", "format": "uuid" },
+                        "title": { "type": ["string", "null"] },
+                        "user_id": { "type": "string" },
+                        "project_id": { "type": ["string", "null"] },
+                        "created_at": { "type": "string", "format": "date-time" }
+                      }
+                    },
+                    "user": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": { "id": { "type": "string", "format": "uuid" }, "email": { "type": "string" }, "display_name": { "type": ["string", "null"] } }
+                        },
+                        { "type": "null" }
+                      ]
+                    },
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "role": { "type": "string", "description": "user | assistant" },
+                          "content": { "description": "Stored message content (JSON)" },
+                          "files": {},
+                          "annotations": {},
+                          "is_flagged": { "type": ["boolean", "null"] },
+                          "created_at": { "type": "string", "format": "date-time" },
+                          "usage": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "cost_usd": { "type": ["number", "null"], "description": "Null when any contributing row has an unknown cost" },
+                                  "input_tokens": { "type": "number" },
+                                  "output_tokens": { "type": "number" },
+                                  "cache_creation_input_tokens": { "type": "number" },
+                                  "cache_read_input_tokens": { "type": "number" },
+                                  "iterations": { "type": "number" },
+                                  "model": { "type": ["string", "null"] },
+                                  "duration_ms": { "type": ["number", "null"] },
+                                  "had_error": { "type": "boolean" }
+                                }
+                              },
+                              { "type": "null" }
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "cost_usd_total": { "type": "number" },
+                        "input_tokens_total": { "type": "number" },
+                        "output_tokens_total": { "type": "number" },
+                        "cache_creation_input_tokens_total": { "type": "number" },
+                        "cache_read_input_tokens_total": { "type": "number" },
+                        "request_count": { "type": "integer" },
+                        "error_count": { "type": "integer" }
+                      }
+                    }
+                  },
+                  "required": ["chat", "user", "messages", "totals"]
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid chat id", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "Chat does not belong to the requested user", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "Chat not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/activity-events": {
+      "get": {
+        "tags": ["activity"],
+        "operationId": "listActivityEvents",
+        "summary": "Workspace activity events (audit_events): raw rows or grouped counts",
+        "description": "Without `aggregate`: raw rows, newest first, with pagination. With it: {key, events, users} groups ordered by event count; limit/offset page the groups and no total is returned. Metadata holds ids/enums only.",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "$ref": "#/components/parameters/from" },
+          { "$ref": "#/components/parameters/to" },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/offset" },
+          {
+            "name": "user_id",
+            "in": "query",
+            "schema": { "type": "string", "format": "uuid" },
+            "description": "Only this user's events. NOTE: a malformed value is dropped silently, so the answer is unfiltered"
+          },
+          {
+            "name": "event_type",
+            "in": "query",
+            "schema": { "type": "string", "maxLength": 80 },
+            "description": "Prefix match, e.g. document. (trimmed, first 80 chars)"
+          },
+          { "name": "surface", "in": "query", "schema": { "type": "string", "maxLength": 32 }, "description": "Exact surface (trimmed, first 32 chars)" },
+          {
+            "name": "aggregate",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["user", "day", "type", "surface"] },
+            "description": "Group by; other values ignored"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events or groups",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "range": { "$ref": "#/components/schemas/Range" },
+                        "pagination": { "$ref": "#/components/schemas/Pagination" },
+                        "events": { "type": "array", "items": { "$ref": "#/components/schemas/ActivityEvent" } }
+                      },
+                      "required": ["range", "pagination", "events"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "range": { "$ref": "#/components/schemas/Range" },
+                        "aggregate": { "type": "string", "enum": ["user", "day", "type", "surface"] },
+                        "rows": {
+                          "type": "array",
+                          "items": { "type": "object", "properties": { "key": { "type": ["string", "null"] }, "events": { "type": "integer" }, "users": { "type": "integer" } } }
+                        }
+                      },
+                      "required": ["range", "aggregate", "rows"]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "description": "Failed to load activity events", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/features": {
+      "get": {
+        "tags": ["activity"],
+        "operationId": "featureAdoption",
+        "summary": "Feature adoption overview",
+        "description": "Per feature: users who ever used it and first uses inside the window; per event type and per surface: event and user counts inside the window.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/from" }, { "$ref": "#/components/parameters/to" }],
+        "responses": {
+          "200": {
+            "description": "Adoption",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "range": { "$ref": "#/components/schemas/Range" },
+                    "features": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "feature": { "type": "string" },
+                          "users_total": { "type": "integer" },
+                          "first_uses_in_range": { "type": "integer" },
+                          "last_first_use": { "type": ["string", "null"], "format": "date-time" }
+                        }
+                      }
+                    },
+                    "events_by_type": {
+                      "type": "array",
+                      "items": { "type": "object", "properties": { "event_type": { "type": "string" }, "events": { "type": "integer" }, "users": { "type": "integer" } } }
+                    },
+                    "events_by_surface": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "surface": { "type": "string", "description": "'unknown' for untagged events" },
+                          "events": { "type": "integer" },
+                          "users": { "type": "integer" }
+                        }
+                      }
+                    }
+                  },
+                  "required": ["range", "features", "events_by_type", "events_by_surface"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "description": "Failed to load feature adoption", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/users/{userId}/features": {
+      "get": {
+        "tags": ["activity"],
+        "operationId": "userFeatureAdoption",
+        "summary": "One user's feature adoption and recent activity",
+        "description": "The window applies to event_counts only; features lists every first use, recent_events the 30 newest events regardless of the window.",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "$ref": "#/components/parameters/userId" },
+          { "$ref": "#/components/parameters/from" },
+          { "$ref": "#/components/parameters/to" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Adoption",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "range": { "$ref": "#/components/schemas/Range" },
+                    "features": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": { "feature": { "type": "string" }, "surface": { "type": ["string", "null"] }, "first_used_at": { "type": "string", "format": "date-time" } }
+                      }
+                    },
+                    "event_counts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": { "event_type": { "type": "string" }, "count": { "type": "integer" }, "last_at": { "type": "string", "format": "date-time" } }
+                      }
+                    },
+                    "recent_events": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "event_type": { "type": "string" },
+                          "surface": { "type": ["string", "null"] },
+                          "project_id": { "type": ["string", "null"] },
+                          "chat_id": { "type": ["string", "null"] },
+                          "review_id": { "type": ["string", "null"] },
+                          "document_id": { "type": ["string", "null"] },
+                          "metadata": { "type": ["object", "null"], "additionalProperties": true },
+                          "created_at": { "type": "string", "format": "date-time" }
+                        }
+                      },
+                      "maxItems": 30
+                    }
+                  },
+                  "required": ["range", "features", "event_counts", "recent_events"]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidUserId" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "description": "Failed to load user features", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/mcp/desk": {
+      "get": {
+        "tags": ["mcp"],
+        "operationId": "deskMcpOverview",
+        "summary": "Built-in MCP tool calls made from in-app chat: totals, daily series, top tools and users",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/days" }],
+        "responses": {
+          "200": { "description": "Overview", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeskMcpOverview" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/users/{userId}/mcp": {
+      "get": {
+        "tags": ["mcp"],
+        "operationId": "userMcpDetail",
+        "summary": "One user's MCP usage, both legs (in-app chat and external connector)",
+        "description": "Each leg fails soft: an unavailable source reports available:false with zero counts.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/userId" }, { "$ref": "#/components/parameters/days" }],
+        "responses": {
+          "200": { "description": "Detail", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminUserMcpDetail" } } } },
+          "400": { "$ref": "#/components/responses/InvalidUserId" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/promos": {
+      "get": {
+        "tags": ["promos"],
+        "operationId": "listPromos",
+        "summary": "Promotion codes (newest 100) with their coupon terms and revenue attribution",
+        "description": "Without Stripe: 200 {configured:false, promos:[]}.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": {
+            "description": "Promos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "configured": { "type": "boolean" }, "promos": { "type": "array", "items": { "$ref": "#/components/schemas/Promo" } } },
+                  "required": ["configured", "promos"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      },
+      "post": {
+        "tags": ["promos"],
+        "operationId": "createPromo",
+        "summary": "Create a percent-off coupon plus its customer-facing promotion code",
+        "description": "An unknown plan, or a plan without a configured product, is a hard error so a typo cannot silently widen the coupon. A failed promotion-code create deletes the coupon again. Audited as promo.create. Error details are in Croatian.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": { "type": "string", "pattern": "^[A-Za-z0-9_-]{3,30}$", "description": "Trimmed and upper-cased" },
+                  "percent_off": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+                  "duration": { "type": "string", "enum": ["forever", "once", "repeating"], "default": "forever" },
+                  "duration_in_months": { "type": "integer", "minimum": 1, "maximum": 60, "description": "Required with duration=repeating, ignored otherwise" },
+                  "plans": { "type": "array", "items": { "type": "string" }, "description": "Plan keys or tier slugs; absent or [] = every product" },
+                  "expires_at": { "type": ["string", "null"], "format": "date-time", "description": "Last moment the code can be redeemed; must be in the future; null / \"\" = none" },
+                  "max_redemptions": { "type": ["integer", "null"], "minimum": 1 }
+                },
+                "required": ["code", "percent_off"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "ok": { "const": true }, "id": { "type": "string", "description": "promo_…" }, "code": { "type": "string" } },
+                  "required": ["ok", "id", "code"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid code, percent_off, duration, duration_in_months, plans, expires_at or max_redemptions",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "description": "The code already exists", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "500": { "$ref": "#/components/responses/ServerError" },
+          "503": { "description": "Stripe not configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/promos/{id}": {
+      "patch": {
+        "tags": ["promos"],
+        "operationId": "setPromoActive",
+        "summary": "Activate or deactivate a promotion code",
+        "description": "Promotion codes cannot be deleted, only deactivated; an expired code cannot be reactivated. Stripe-side rejections (unknown id, expired code) answer 500. Audited as promo.update. Error details are in Croatian.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^promo_" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "active": { "type": "boolean" } }, "required": ["active"] } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "ok": { "const": true }, "id": { "type": "string" }, "active": { "type": "boolean" } },
+                  "required": ["ok", "id", "active"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid promotion code id | active must be a boolean",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" },
+          "503": { "description": "Stripe not configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/billing/quotes": {
+      "get": {
+        "tags": ["billing"],
+        "operationId": "listQuotes",
+        "summary": "All offline-payment quotes, with the user's e-mail",
+        "description": "Provider field names are mapped for the console: buyer.taxId → buyer.oib, note → paidNote; userEmail is added by the core. The provider's status and JSON body are relayed unchanged (contracts/billing-provider.openapi.json); a non-JSON error answer becomes 502.",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Forwarded to the provider (creating | issued | paid | expired | cancelled | failed)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Quotes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "config": { "type": ["object", "null"], "additionalProperties": true, "description": "Provider configuration as reported by it" },
+                    "quotes": { "type": "array", "items": { "$ref": "#/components/schemas/AdminQuote" } }
+                  },
+                  "required": ["config", "quotes"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/BillingInternal" },
+          "502": {
+            "description": "BILLING_PROVIDER_BAD_ANSWER — the provider answered an error status with a non-JSON body",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "503": {
+            "description": "BILLING_PROVIDER_UNAVAILABLE — seam not configured (BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET) or the provider is unreachable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["billing"],
+        "operationId": "createQuote",
+        "summary": "Issue a quote for a registered user",
+        "description": "The core prices the plan from its own catalogue (EUR, tax-exclusive, recurring) and fills the buyer country from the user's profile. Refused while the user has an active card subscription. On success the provider's answer (typically 201 {quote}) is relayed in the provider's own field names (buyer.taxId, note), not the mapped list shape. Audited as billing.quote.create. The provider's status and JSON body are relayed unchanged (contracts/billing-provider.openapi.json); a non-JSON error answer becomes 502.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userId": { "type": "string", "format": "uuid", "description": "A registered user" },
+                  "plan": { "type": "string", "description": "Plan key of this deployment's catalogue" },
+                  "seats": { "type": "integer", "description": "Per-seat plans only; clamped to the plan's minimum … 1000" },
+                  "company": {
+                    "type": "object",
+                    "properties": {
+                      "name": { "type": "string", "maxLength": 200 },
+                      "oib": { "type": "string", "maxLength": 40, "description": "Buyer tax id" },
+                      "street": { "type": "string", "maxLength": 200 },
+                      "postalCode": { "type": "string", "maxLength": 20 },
+                      "city": { "type": "string", "maxLength": 120 }
+                    },
+                    "description": "Strings trimmed and truncated; missing → \"\""
+                  },
+                  "email": { "type": "string", "description": "Recipient; blank → the user's e-mail" },
+                  "provisional": { "type": "boolean", "default": false, "description": "Ask for provisional access until payment" },
+                  "sendEmail": { "type": "boolean", "default": true }
+                },
+                "required": ["userId", "plan"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Issued (relayed)",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "quote": { "type": "object", "additionalProperties": true } } } } }
+          },
+          "400": {
+            "description": "USER_REQUIRED | PLAN_INVALID — or a relayed provider validation error",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "USER_NOT_FOUND", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } } },
+          "409": {
+            "description": "STRIPE_SUBSCRIPTION_ACTIVE — or a relayed provider conflict",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "500": { "$ref": "#/components/responses/BillingInternal" },
+          "502": {
+            "description": "BILLING_PROVIDER_BAD_ANSWER — the provider answered an error status with a non-JSON body",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "503": {
+            "description": "BILLING_PROVIDER_UNAVAILABLE — seam not configured (BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET) or the provider is unreachable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          }
+        }
+      }
+    },
+    "/billing/users/{userId}/billing": {
+      "get": {
+        "tags": ["billing"],
+        "operationId": "quotePrefill",
+        "summary": "Prefill for a new quote: stored buyer data and eligibility",
+        "description": "A malformed or unknown userId answers 404 (not 400 as on the data routes).",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "$ref": "#/components/parameters/userId" }],
+        "responses": {
+          "200": {
+            "description": "Prefill",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "email": { "type": ["string", "null"] },
+                    "buyer": { "$ref": "#/components/schemas/AdminBuyer" },
+                    "complete": { "type": "boolean", "description": "All buyer fields present" },
+                    "stripeActive": { "type": "boolean", "description": "An active card subscription blocks a quote" },
+                    "provisionalAvailable": { "type": "boolean" },
+                    "country": { "type": ["string", "null"] },
+                    "countrySupported": { "type": "boolean", "description": "False only when the provider says so" }
+                  },
+                  "required": ["email", "buyer", "complete", "stripeActive", "provisionalAvailable", "country", "countrySupported"]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "USER_NOT_FOUND", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } } },
+          "500": { "$ref": "#/components/responses/BillingInternal" },
+          "503": {
+            "description": "BILLING_PROVIDER_UNAVAILABLE — seam not configured (BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET) or the provider is unreachable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          }
+        }
+      }
+    },
+    "/billing/quotes/{id}/{action}": {
+      "post": {
+        "tags": ["billing"],
+        "operationId": "quoteAction",
+        "summary": "Act on a quote: mark-paid | resend | cancel | retry",
+        "description": "The body is forwarded unchanged: mark-paid {paidAt?, note?} | resend {email?} | cancel {note?} | retry {}. The provider's answer (typically 200 {quote}) is relayed in its own field names. Audited as billing.quote.<action with _>. The provider's status and JSON body are relayed unchanged (contracts/billing-provider.openapi.json); a non-JSON error answer becomes 502.",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+          { "name": "action", "in": "path", "required": true, "schema": { "type": "string", "enum": ["mark-paid", "resend", "cancel", "retry"] } }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "paidAt": { "type": "string", "description": "mark-paid" },
+                  "note": { "type": "string", "description": "mark-paid, cancel" },
+                  "email": { "type": "string", "description": "resend" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated (relayed)",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "quote": { "type": "object", "additionalProperties": true } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "NOT_FOUND (malformed id or unknown action) — or a relayed provider 404",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "409": { "description": "Relayed provider conflict", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } } },
+          "500": { "$ref": "#/components/responses/BillingInternal" },
+          "502": {
+            "description": "BILLING_PROVIDER_BAD_ANSWER — the provider answered an error status with a non-JSON body",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "503": {
+            "description": "BILLING_PROVIDER_UNAVAILABLE — seam not configured (BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET) or the provider is unreachable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          }
+        }
+      }
+    },
+    "/billing/quotes/{id}/pdf": {
+      "get": {
+        "tags": ["billing"],
+        "operationId": "quotePdf",
+        "summary": "A quote's PDF",
+        "description": "Relayed as application/pdf (Content-Disposition passed through, Cache-Control: private, no-store); provider errors as JSON.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "PDF", "content": { "application/pdf": { "schema": { "type": "string", "format": "binary" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "QUOTE_NOT_FOUND (malformed id) — or a relayed provider 404",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "500": { "$ref": "#/components/responses/BillingInternal" },
+          "502": {
+            "description": "BILLING_PROVIDER_BAD_ANSWER — the provider answered an error status with a non-JSON body",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "503": {
+            "description": "BILLING_PROVIDER_UNAVAILABLE — seam not configured (BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET) or the provider is unreachable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          }
+        }
+      }
+    },
+    "/billing/invoices/{docId}/pdf": {
+      "get": {
+        "tags": ["billing"],
+        "operationId": "invoicePdf",
+        "summary": "An invoice's PDF",
+        "description": "Relayed as application/pdf (Content-Disposition passed through, Cache-Control: private, no-store); provider errors as JSON.",
+        "parameters": [
+          { "$ref": "#/components/parameters/actor" },
+          { "name": "docId", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9A-Za-z:_-]{1,64}$" } }
+        ],
+        "responses": {
+          "200": { "description": "PDF", "content": { "application/pdf": { "schema": { "type": "string", "format": "binary" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "INVOICE_NOT_FOUND (malformed id) — or a relayed provider 404",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "500": { "$ref": "#/components/responses/BillingInternal" },
+          "502": {
+            "description": "BILLING_PROVIDER_BAD_ANSWER — the provider answered an error status with a non-JSON body",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "503": {
+            "description": "BILLING_PROVIDER_UNAVAILABLE — seam not configured (BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET) or the provider is unreachable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          }
+        }
+      }
+    },
+    "/billing/check-payments": {
+      "post": {
+        "tags": ["billing"],
+        "operationId": "checkPayments",
+        "summary": "Ask the provider to check open quotes for recorded payments now",
+        "description": "No body is forwarded. Audited as billing.check_payments on success. The provider's status and JSON body are relayed unchanged (contracts/billing-provider.openapi.json); a non-JSON error answer becomes 502.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": { "description": "Result (relayed)", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/BillingInternal" },
+          "502": {
+            "description": "BILLING_PROVIDER_BAD_ANSWER — the provider answered an error status with a non-JSON body",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "503": {
+            "description": "BILLING_PROVIDER_UNAVAILABLE — seam not configured (BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET) or the provider is unreachable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          }
+        }
+      }
+    },
+    "/billing/sync-invoices": {
+      "post": {
+        "tags": ["billing"],
+        "operationId": "syncInvoices",
+        "summary": "Ask the provider to refresh its invoice index now",
+        "description": "No body is forwarded. Audited as billing.sync_invoices on success. The provider's status and JSON body are relayed unchanged (contracts/billing-provider.openapi.json); a non-JSON error answer becomes 502.",
+        "parameters": [{ "$ref": "#/components/parameters/actor" }],
+        "responses": {
+          "200": { "description": "Result (relayed)", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/BillingInternal" },
+          "502": {
+            "description": "BILLING_PROVIDER_BAD_ANSWER — the provider answered an error status with a non-JSON body",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          },
+          "503": {
+            "description": "BILLING_PROVIDER_UNAVAILABLE — seam not configured (BILLING_PROVIDER_URL + BILLING_SERVICE_SECRET) or the provider is unreachable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "serviceIdentity": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Google OIDC ID token",
+        "description": "A Google-signed OIDC identity token of a service account (no shared password). Accepted when the signature verifies against Google's keys, email_verified is true and the email (case-insensitive) is listed in OPERATOR_API_CALLERS (separated by ',', ';' or whitespace — ';' survives gcloud's comma-split env flags), and aud is one of OPERATOR_API_AUDIENCE (same separators, trailing '/' ignored) or, when that is unset, this host's origin https://{Host} or https://{Host}/operator/v1. OPERATOR_API_CALLERS unset or empty ⇒ the API does not exist: every path answers 404 before the token is looked at. Outside production (NODE_ENV ≠ production) the static OPERATOR_API_DEV_TOKEN is accepted as well (audit actor fallback 'dev'), still only when OPERATOR_API_CALLERS is set."
+      }
+    },
+    "parameters": {
+      "actor": {
+        "name": "X-Operator-Actor",
+        "in": "header",
+        "required": false,
+        "description": "The human or tool behind this request (e.g. an operator's e-mail). Trimmed; anything not matching the pattern is ignored silently. Recorded as admin_audit.actor for every audited action and echoed by GET /whoami; absent or invalid → the caller's service-account e-mail ('dev' with the dev token). Trusted only because the caller itself is authenticated.",
+        "schema": { "type": "string", "pattern": "^[\\w.@:+-]{1,100}$" }
+      },
+      "userId": { "name": "userId", "in": "path", "required": true, "description": "public.users id", "schema": { "type": "string", "format": "uuid" } },
+      "from": { "name": "from", "in": "query", "description": "Inclusive lower bound (ISO 8601); default now − 30 days", "schema": { "type": "string", "format": "date-time" } },
+      "to": { "name": "to", "in": "query", "description": "Exclusive upper bound (ISO 8601); default now", "schema": { "type": "string", "format": "date-time" } },
+      "limit": { "name": "limit", "in": "query", "description": "Page size; clamped to 1–500", "schema": { "type": "integer", "default": 50, "minimum": 1, "maximum": 500 } },
+      "offset": { "name": "offset", "in": "query", "description": "Rows to skip; negative → 0", "schema": { "type": "integer", "default": 0, "minimum": 0 } },
+      "days": {
+        "name": "days",
+        "in": "query",
+        "description": "Window in whole days ending today (UTC); clamped to 1–365",
+        "schema": { "type": "integer", "default": 30, "minimum": 1, "maximum": 365 }
+      }
+    },
+    "responses": {
+      "Unauthorized": { "description": "Missing bearer token | Invalid caller token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "InvalidUserId": { "description": "Invalid user id (not a UUID)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "ServerError": {
+        "description": "Database or upstream failure; detail carries the message",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "BillingInternal": { "description": "INTERNAL — unexpected failure in the core", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingError" } } } }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["detail"],
+        "properties": { "detail": { "type": "string" }, "error": { "type": "string", "description": "Exception message (global error handler only)" } },
+        "additionalProperties": true
+      },
+      "BillingError": {
+        "type": "object",
+        "required": ["code"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "e.g. BILLING_PROVIDER_UNAVAILABLE, BILLING_PROVIDER_BAD_ANSWER, USER_REQUIRED, USER_NOT_FOUND, STRIPE_SUBSCRIPTION_ACTIVE, PLAN_INVALID, NOT_FOUND, QUOTE_NOT_FOUND, INVOICE_NOT_FOUND, INTERNAL, or a relayed provider code"
+          },
+          "detail": { "type": "string" },
+          "field": { "type": "string", "description": "Relayed provider validation errors only" }
+        },
+        "additionalProperties": true
+      },
+      "Range": {
+        "type": "object",
+        "required": ["from", "to"],
+        "properties": { "from": { "type": "string", "format": "date-time" }, "to": { "type": "string", "format": "date-time" } }
+      },
+      "Pagination": {
+        "type": "object",
+        "required": ["limit", "offset", "total"],
+        "properties": { "limit": { "type": "integer" }, "offset": { "type": "integer" }, "total": { "type": "integer" } }
+      },
+      "ModelCatalogue": {
+        "type": "object",
+        "properties": {
+          "defaults": { "type": "object", "properties": { "main": { "type": "string" }, "tabular": { "type": "string" }, "title": { "type": "string" } } },
+          "tiers": {
+            "type": "object",
+            "properties": {
+              "main": { "$ref": "#/components/schemas/ModelList" },
+              "mid": { "$ref": "#/components/schemas/ModelList" },
+              "low": { "$ref": "#/components/schemas/ModelList" }
+            }
+          },
+          "build": { "type": ["string", "null"] }
+        },
+        "required": ["defaults", "tiers", "build"]
+      },
+      "ModelList": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "provider": { "type": "string" } }, "required": ["id", "provider"] } },
+      "GrantKind": {
+        "type": ["string", "null"],
+        "enum": ["manual", "stripe", "external", "ump", "unknown", null],
+        "description": "Who wrote the user's paid grant, from the newest tier history row: manual = an operator (source admin), external = a seam service such as the billing provider (source admin, reason ext:<service>:…), stripe = a Stripe subscription, ump = the partner-site sync; null = no paid grant"
+      },
+      "UserSummary": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string" },
+          "display_name": { "type": ["string", "null"] },
+          "wp_user_id": { "type": ["integer", "null"], "description": "Legacy external-membership id" },
+          "created_at": { "type": ["string", "null"], "format": "date-time" },
+          "tier_level_id": { "type": ["integer", "null"], "description": "Effective tier (an expired override counts as the free level)" },
+          "tier_label": { "type": ["string", "null"] },
+          "tier_slug": { "type": ["string", "null"] },
+          "active_tier_until": { "type": ["string", "null"], "format": "date-time" },
+          "grant_kind": { "$ref": "#/components/schemas/GrantKind" },
+          "grant_expired": { "type": "boolean", "description": "The paid grant's end date has passed; tier_* already shows the free level" },
+          "grant_reason": { "type": ["string", "null"], "description": "Reason on the grant's tier history row" },
+          "granted_tier_label": { "type": ["string", "null"], "description": "Label of the granted tier (differs from tier_label once expired)" },
+          "last_login_at": { "type": ["string", "null"], "format": "date-time" },
+          "login_count": { "type": "integer" },
+          "iterations_total": { "type": "number" },
+          "input_tokens_total": { "type": "number" },
+          "output_tokens_total": { "type": "number" },
+          "cache_creation_input_tokens_total": { "type": "number" },
+          "cache_read_input_tokens_total": { "type": "number" },
+          "cost_usd_total": { "type": "number", "description": "USD" },
+          "request_count": { "type": "integer" },
+          "error_count": { "type": "integer" },
+          "question_count": { "type": "integer", "description": "The user's own messages (regular and project chats) in the range" },
+          "documents_uploaded": { "type": "integer", "description": "document.uploaded audit events in the range (recorded since 2026-08-18)" },
+          "last_used": { "type": ["string", "null"], "format": "date-time" },
+          "mcp": { "oneOf": [{ "$ref": "#/components/schemas/AdminUserMcp" }, { "type": "null" }] }
+        }
+      },
+      "SupabaseAuthInfo": {
+        "type": "object",
+        "properties": {
+          "supabase_user_id": { "type": "string" },
+          "provider": { "type": ["string", "null"], "description": "Primary sign-in provider (email, google, azure, …)" },
+          "providers": { "type": "array", "items": { "type": "string" } },
+          "email_confirmed_at": { "type": ["string", "null"], "format": "date-time" },
+          "last_sign_in_at": { "type": ["string", "null"], "format": "date-time" },
+          "created_at": { "type": ["string", "null"], "format": "date-time" },
+          "banned_until": { "type": ["string", "null"], "format": "date-time", "description": "null = not banned" }
+        }
+      },
+      "UsageRow": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "provider": { "type": "string" },
+          "model": { "type": "string" },
+          "chat_id": { "type": ["string", "null"] },
+          "project_id": { "type": ["string", "null"] },
+          "chat_message_id": { "type": ["string", "null"] },
+          "project_chat_message_id": { "type": ["string", "null"] },
+          "iterations": { "type": ["number", "string", "null"] },
+          "input_tokens": { "type": ["number", "string", "null"] },
+          "output_tokens": { "type": ["number", "string", "null"] },
+          "cache_creation_input_tokens": { "type": ["number", "string", "null"] },
+          "cache_read_input_tokens": { "type": ["number", "string", "null"] },
+          "cost_usd": { "type": ["number", "string", "null"], "description": "USD; null when unknown" },
+          "cost_breakdown": { "type": ["object", "null"], "additionalProperties": true },
+          "duration_ms": { "type": ["number", "string", "null"] },
+          "status": { "type": "string", "description": "ok | error" },
+          "error_message": { "type": ["string", "null"] },
+          "created_at": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": true
+      },
+      "MessageRow": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "role": { "type": "string" },
+          "content": { "description": "Stored message content (JSON)" },
+          "files": {},
+          "annotations": {},
+          "is_flagged": { "type": ["boolean", "null"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "chat_id": { "type": "string" },
+          "chat_title": { "type": ["string", "null"] },
+          "project_id": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      },
+      "ChatRow": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": ["string", "null"] },
+          "project_id": { "type": ["string", "null"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "user_id": { "type": "string" },
+          "email": { "type": ["string", "null"] },
+          "display_name": { "type": ["string", "null"] },
+          "message_count": { "type": "integer" },
+          "question_count": { "type": "integer", "description": "Messages with role user" },
+          "last_activity_at": { "type": "string", "format": "date-time" },
+          "cost_usd_total": { "type": "number" },
+          "request_count": { "type": "integer" },
+          "error_count": { "type": "integer" }
+        }
+      },
+      "AuditRow": {
+        "type": "object",
+        "properties": {
+          "id": { "type": ["number", "string", "null"] },
+          "actor": { "type": "string" },
+          "action": { "type": "string" },
+          "target_type": { "type": ["string", "null"] },
+          "target_id": { "type": ["string", "null"] },
+          "payload": { "type": ["object", "null"], "additionalProperties": true },
+          "ip": { "type": ["string", "null"] },
+          "created_at": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": true
+      },
+      "ActivityEvent": {
+        "type": "object",
+        "properties": {
+          "id": { "type": ["number", "string", "null"] },
+          "user_id": { "type": ["string", "null"] },
+          "event_type": { "type": "string" },
+          "surface": { "type": ["string", "null"] },
+          "project_id": { "type": ["string", "null"] },
+          "document_id": { "type": ["string", "null"] },
+          "review_id": { "type": ["string", "null"] },
+          "chat_id": { "type": ["string", "null"] },
+          "metadata": { "type": ["object", "null"], "additionalProperties": true },
+          "created_at": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": true
+      },
+      "TierDefinition": {
+        "type": "object",
+        "properties": {
+          "tier_level_id": { "type": "integer" },
+          "tier_slug": { "type": "string" },
+          "display_label": { "type": "string" },
+          "daily_tokens": { "type": "integer" },
+          "entitlements": { "type": "object", "additionalProperties": true, "description": "Stored overrides over the catalogue defaults (see GET /entitlement-catalog)" },
+          "marketing": { "type": "object", "additionalProperties": true, "description": "PlanMarketing, or {} when unset" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["tier_level_id", "tier_slug", "display_label", "daily_tokens", "entitlements", "marketing", "updated_at"]
+      },
+      "TierListItem": {
+        "allOf": [
+          { "$ref": "#/components/schemas/TierDefinition" },
+          {
+            "type": "object",
+            "properties": {
+              "price": { "type": ["string", "null"], "description": "Public monthly price string (the plan catalogue's hr copy); null for tiers without a public plan" },
+              "stripe_product_id": { "type": ["string", "null"] },
+              "user_count": { "type": "integer", "description": "Users on this tier through a live (non-expired) override; the free tier is the implicit default" },
+              "is_free": { "type": "boolean" }
+            },
+            "required": ["price", "stripe_product_id", "user_count", "is_free"]
+          }
+        ]
+      },
+      "EntitlementsInput": {
+        "type": "object",
+        "additionalProperties": { "type": ["boolean", "integer"], "minimum": 0 },
+        "description": "Entitlement key → value. Only catalogue keys with the right type survive (bool, or int ≥ 0 floored); everything else is dropped silently."
+      },
+      "EntitlementDef": {
+        "type": "object",
+        "properties": {
+          "key": { "type": "string" },
+          "type": { "type": "string", "enum": ["bool", "int"] },
+          "group": { "type": "string", "description": "Editor grouping" },
+          "labelHr": { "type": "string" },
+          "labelEn": { "type": "string" },
+          "defaults": {
+            "type": "object",
+            "additionalProperties": { "type": ["boolean", "number"] },
+            "description": "Per canonical tier key: free, plus, pro, legal_pro, team, eulex_legal_team, enterprise, foundation"
+          },
+          "unlimitedWhenZero": { "type": "boolean", "description": "int only: 0 means unlimited" }
+        },
+        "required": ["key", "type", "group", "labelHr", "labelEn", "defaults"]
+      },
+      "PlanMarketing": {
+        "type": "object",
+        "properties": {
+          "order": { "type": "integer", "default": 0, "description": "Display order, low → high" },
+          "popular": { "type": "boolean", "default": false },
+          "locales": {
+            "type": "object",
+            "properties": { "hr": { "$ref": "#/components/schemas/PlanLocaleCopy" }, "en": { "$ref": "#/components/schemas/PlanLocaleCopy" } },
+            "required": ["hr", "en"]
+          }
+        },
+        "required": ["locales"],
+        "description": "Public plan copy; non-string fields become \"\""
+      },
+      "PlanLocaleCopy": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "tagline": { "type": "string" },
+          "price": { "type": "string" },
+          "period": { "type": "string" },
+          "intro": { "type": "string" },
+          "cta": { "type": "string" },
+          "features": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "CreditGrant": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "tokens_granted": { "type": ["number", "string", "null"] },
+          "tokens_consumed": { "type": ["number", "string", "null"] },
+          "payment_method": { "type": "string", "enum": ["stripe", "bank_transfer", "admin_manual"] },
+          "external_reference": { "type": ["string", "null"] },
+          "stripe_event_id": { "type": ["string", "null"] },
+          "amount_eur_cents": { "type": ["number", "string", "null"] },
+          "granted_by_admin_id": { "type": ["string", "null"] },
+          "granted_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": ["string", "null"], "format": "date-time" },
+          "voided_at": { "type": ["string", "null"], "format": "date-time" },
+          "voided_reason": { "type": ["string", "null"] },
+          "notes": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      },
+      "Promo": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "promo_…" },
+          "code": { "type": "string" },
+          "active": { "type": "boolean" },
+          "coupon_id": { "type": ["string", "null"] },
+          "coupon_valid": { "type": ["boolean", "null"] },
+          "percent_off": { "type": ["number", "null"] },
+          "amount_off": { "type": ["integer", "null"] },
+          "currency": { "type": ["string", "null"] },
+          "duration": { "type": ["string", "null"], "enum": ["forever", "once", "repeating", null] },
+          "duration_in_months": { "type": ["integer", "null"] },
+          "plans": { "type": "array", "items": { "type": "string" }, "description": "Plan slugs the coupon is restricted to (raw product id when unmapped); [] = every product" },
+          "expires_at": { "type": ["string", "null"], "format": "date-time" },
+          "max_redemptions": { "type": ["integer", "null"] },
+          "times_redeemed": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "stats": {
+            "oneOf": [
+              { "type": "object", "properties": { "invoices": { "type": "integer" }, "subscribers": { "type": "integer" }, "revenue_cents": { "type": "integer" } } },
+              { "type": "null" }
+            ],
+            "description": "Revenue attributed to the code by the subscription ledger"
+          }
+        }
+      },
+      "AdminUserMcp": {
+        "type": "object",
+        "properties": {
+          "days": { "type": "integer" },
+          "desk_available": { "type": "boolean" },
+          "desk_calls": { "type": "integer" },
+          "desk_last_day": { "type": ["string", "null"] },
+          "desk_top_tool": { "type": ["string", "null"] },
+          "connector_available": { "type": "boolean" },
+          "connector_calls": { "type": "integer" },
+          "connector_last_day": { "type": ["string", "null"] },
+          "connector_calls_all": { "type": "integer" },
+          "connector_last_day_all": { "type": ["string", "null"] },
+          "connector_top_tool": { "type": ["string", "null"] },
+          "connector_clients": { "type": "array", "items": { "type": "string" } },
+          "connector_active_keys": { "type": "integer" }
+        },
+        "description": "Per-user MCP badge: desk = built-in tools from in-app chat, connector = external MCP connector (portal manage API); each leg fails soft"
+      },
+      "AdminUserMcpDetail": {
+        "type": "object",
+        "properties": {
+          "days": { "type": "integer" },
+          "desk": {
+            "type": "object",
+            "properties": {
+              "available": { "type": "boolean" },
+              "calls": { "type": "integer" },
+              "last_day": { "type": ["string", "null"] },
+              "by_tool": {
+                "type": "array",
+                "items": { "type": "object", "properties": { "server": { "type": "string" }, "tool": { "type": "string" }, "calls": { "type": "integer" } } }
+              },
+              "by_day": { "type": "array", "items": { "type": "object", "properties": { "day": { "type": "string" }, "calls": { "type": "integer" } } } }
+            }
+          },
+          "connector": {
+            "type": "object",
+            "properties": {
+              "available": { "type": "boolean" },
+              "supabase_user_id": { "type": ["string", "null"] },
+              "calls": { "type": "integer" },
+              "last_day": { "type": ["string", "null"] },
+              "active_keys": { "type": "integer" },
+              "clients": { "type": "array", "items": { "type": "string" } },
+              "by_tool": { "type": "array", "items": { "type": "object", "properties": { "tool": { "type": "string" }, "calls": { "type": "integer" } } } },
+              "by_day": { "type": "array", "items": { "type": "object", "properties": { "day": { "type": "string" }, "calls": { "type": "integer" } } } },
+              "by_scope": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "key | supabase | oauth | pat → calls" }
+            }
+          }
+        },
+        "required": ["days", "desk", "connector"]
+      },
+      "DeskMcpOverview": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "available": { "const": true },
+              "days": { "type": "integer" },
+              "totals": {
+                "type": "object",
+                "properties": { "calls": { "type": "integer" }, "users": { "type": "integer" }, "today": { "type": "integer" }, "users_all": { "type": "integer" } }
+              },
+              "series": {
+                "type": "array",
+                "items": { "type": "object", "properties": { "day": { "type": "string" }, "calls": { "type": "integer" }, "users": { "type": "integer" } } }
+              },
+              "top_tools": {
+                "type": "array",
+                "items": { "type": "object", "properties": { "server": { "type": "string" }, "tool": { "type": "string" }, "calls": { "type": "integer" } } },
+                "maxItems": 25
+              },
+              "top_users": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "user_id": { "type": "string" },
+                    "email": { "type": ["string", "null"] },
+                    "calls": { "type": "integer" },
+                    "last_day": { "type": ["string", "null"] },
+                    "top_tool": { "type": ["string", "null"] }
+                  }
+                },
+                "maxItems": 50
+              }
+            },
+            "required": ["available", "days", "totals", "series", "top_tools", "top_users"]
+          },
+          { "type": "object", "properties": { "available": { "const": false }, "detail": { "type": "string" } }, "required": ["available", "detail"] }
+        ]
+      },
+      "AdminBuyer": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "oib": { "type": "string", "description": "Buyer tax id (provider: taxId)" },
+          "street": { "type": "string" },
+          "postalCode": { "type": "string" },
+          "city": { "type": "string" }
+        }
+      },
+      "AdminQuote": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "The provider's AdminQuote (contracts/billing-provider.openapi.json) with buyer mapped to AdminBuyer, note renamed paidNote, and userEmail added by the core.",
+        "properties": {
+          "id": { "type": "string" },
+          "number": { "type": ["string", "null"] },
+          "status": { "type": "string", "enum": ["creating", "issued", "paid", "expired", "cancelled", "failed"] },
+          "plan": { "type": "string" },
+          "planName": { "type": "string" },
+          "seats": { "type": "integer" },
+          "netAmount": { "type": "number" },
+          "grossAmount": { "type": "number" },
+          "currency": { "type": "string" },
+          "periodMonths": { "type": "integer" },
+          "validUntil": { "type": ["string", "null"] },
+          "createdAt": { "type": "string" },
+          "createdBy": { "type": "string", "enum": ["user", "admin"] },
+          "recipientEmail": { "type": "string" },
+          "emailStatus": { "type": "string", "enum": ["pending", "sent", "failed", "skipped"] },
+          "emailSentAt": { "type": ["string", "null"] },
+          "paymentReference": { "type": ["string", "null"] },
+          "provisionalUntil": { "type": ["string", "null"] },
+          "paidAt": { "type": ["string", "null"] },
+          "paidSource": { "type": ["string", "null"] },
+          "accessUntil": { "type": ["string", "null"] },
+          "invoiceNumbers": { "type": "array", "items": { "type": "string" } },
+          "canDownload": { "type": "boolean" },
+          "userId": { "type": "string" },
+          "userEmail": { "type": ["string", "null"] },
+          "buyer": { "$ref": "#/components/schemas/AdminBuyer" },
+          "paidNote": { "type": ["string", "null"] },
+          "paidAmount": { "type": ["number", "null"] },
+          "lastError": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

@@ -1,11 +1,12 @@
 /**
  * Admin action audit trail — one append-only row in public.admin_audit
- * (migration 133) per mutating /adminmax/* action or data export.
+ * (migration 133) per mutating /operator/v1/* action or data export.
  *
  * Same contract as recordLlmUsage: fire-and-forget, failures are logged
  * at WARN and swallowed — a broken audit insert must never fail the
  * admin action itself. This is observability, not authorization.
  */
+import type { Request, Response } from "express";
 import { query } from "./db";
 
 export type AdminAuditInput = {
@@ -21,10 +22,8 @@ export type AdminAuditInput = {
      */
     payload?: Record<string, unknown> | null;
     /**
-     * Operator identity. AdminMax has a single shared login today so this
-     * defaults to "adminmax"; admin-mcp writes proxy through the same
-     * REST API and land with the same actor until per-operator identity
-     * exists.
+     * Operator identity: the /operator/v1 caller's declared X-Operator-Actor
+     * or service account (auditMeta). Defaults to "adminmax".
      */
     actor?: string;
     ip?: string | null;
@@ -57,4 +56,13 @@ export async function logAdminAudit(input: AdminAuditInput): Promise<void> {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[admin/audit] insert failed (non-fatal): ${msg}`);
     }
+}
+
+/** `ip` + `actor` for logAdminAudit from the current admin request. */
+export function auditMeta(
+    req: Request,
+    res: Response,
+): { ip: string | null; actor?: string } {
+    const actor = res.locals.adminActor as string | undefined;
+    return { ip: req.ip ?? null, ...(actor ? { actor } : {}) };
 }

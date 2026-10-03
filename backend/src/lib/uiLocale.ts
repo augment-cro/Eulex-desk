@@ -27,6 +27,23 @@ export function shortLocaleRule(locale: UiLocale): string {
 }
 
 /**
+ * Short UI-language reminder appended to every user message the model sees
+ * (buildMessages), outside the <user_input> wrapper. The system-prompt rule
+ * (localeContextForLlm, "JEZIK RAZMIŠLJANJA") alone left Opus 5.5 thinking
+ * in English on ~1 of 8 turns once the long English MCP / tool text follows
+ * it (staging 2026-09-24, same prompt and question, Vertex eu); with this
+ * note on the user turn it was 0 of 8. Anthropic documents per-message
+ * steering as the lever for thinking. Byte-stable per locale, and on EVERY
+ * user message, so the conversation prefix — and its prompt cache — does
+ * not change between turns.
+ */
+export function uiLanguageTurnNote(locale: UiLocale): string {
+    return locale === "hr"
+        ? "(Jezik sučelja: hrvatski — razmišljaj i odgovaraj na hrvatskom.)"
+        : "(UI language: English — think and answer in English.)";
+}
+
+/**
  * Current wall-clock in Europe/Zagreb, DELIBERATELY truncated to the hour
  * ("Friday, 4 July 2026, 14:00"). The line rides in the LLM prompt on
  * every request; hour precision keeps its bytes stable within an hour so

@@ -88,6 +88,7 @@ export function DocViewModal({
                 <div className="flex flex-col flex-1 overflow-hidden px-3 pb-3">
                     <DocView
                         key={versionId ?? "current"}
+                        filename={doc.filename}
                         doc={{
                             document_id: doc.id,
                             version_id: versionId ?? null,

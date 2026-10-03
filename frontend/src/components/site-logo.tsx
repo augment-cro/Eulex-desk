@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 interface SiteLogoProps {
-    size?: "sm" | "md" | "lg" | "xl";
+    size?: "xs" | "sm" | "md" | "lg" | "xl";
     className?: string;
     animate?: boolean;
     asLink?: boolean;
@@ -11,6 +11,7 @@ interface SiteLogoProps {
 // the brand SVG shared with eulex-www (public/eulex-logo.svg), matching the
 // sidebar + landing so every surface shows the same EULEX logo.
 const heightClasses: Record<NonNullable<SiteLogoProps["size"]>, string> = {
+    xs: "h-2.5",
     sm: "h-5",
     md: "h-6",
     lg: "h-8",

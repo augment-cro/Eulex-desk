@@ -18,7 +18,7 @@ import { piiClient } from "./client";
 export interface PiiDocumentAnalysisCache {
     sessionId: string;
     documentVersionId: string;
-    status: "pending" | "auto_confirmed" | "awaiting_review" | "confirmed";
+    status: "pending" | "auto_confirmed" | "ready_for_review" | "awaiting_review" | "confirmed";
     processedText: string | null;
     entitySummary: Record<string, number> | null;
 }

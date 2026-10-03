@@ -1,7 +1,19 @@
 "use client";
 
-import { FileText, File, X, AlertCircle, Loader2 } from "lucide-react";
+import {
+  FileText,
+  File,
+  FileSpreadsheet,
+  Mail,
+  X,
+  AlertCircle,
+  Loader2,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
+import {
+  isEmailFileType,
+  isSpreadsheetFileType,
+} from "@/app/lib/supportedFileTypes";
 import type { MikeDocument } from "./types";
 
 interface Props {
@@ -17,6 +29,12 @@ function FileIcon({ fileType }: { fileType: string | null }) {
   }
   if (fileType === "docx" || fileType === "doc") {
     return <File className="h-4 w-4 text-foreground shrink-0" />;
+  }
+  if (isSpreadsheetFileType(fileType)) {
+    return <FileSpreadsheet className="h-4 w-4 text-success shrink-0" />;
+  }
+  if (isEmailFileType(fileType)) {
+    return <Mail className="h-4 w-4 text-foreground shrink-0" />;
   }
   return <File className="h-4 w-4 text-muted-foreground shrink-0" />;
 }

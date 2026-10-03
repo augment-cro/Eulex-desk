@@ -9,6 +9,7 @@ import {
     buildCoreSystemPrompt,
     buildMcpPromptAddenda,
     buildMessages,
+    CONTEXT_DOCUMENT_CITATION_NOTE,
 } from "../chatTools.js";
 import { localeContextForLlm } from "../uiLocale.js";
 
@@ -154,5 +155,59 @@ describe("prompt assembly with a pinned pack", () => {
         assert.ok(localeContextForLlm("hr").includes("FIXTURE HR LEGAL"));
         assert.ok(localeContextForLlm("en").includes("FIXTURE EN LEGAL"));
         assert.ok(!localeContextForLlm("en").includes("FIXTURE HR LEGAL"));
+    });
+});
+
+describe("buildMessages — UI-language note on every user turn", () => {
+    const history = [
+        { role: "user" as const, content: "prvo pitanje" },
+        { role: "assistant" as const, content: "odgovor" },
+        { role: "user" as const, content: "mogu li onda pokrenuti ovrhu?" },
+    ];
+    const userTurns = (locale?: "hr" | "en") =>
+        (buildMessages(history, [], undefined, undefined, undefined, locale) as {
+            role: string;
+            content: string;
+        }[]).filter((m) => m.role === "user");
+
+    it("appends the locale note after the <user_input> wrapper on every user message", () => {
+        for (const m of userTurns("hr")) {
+            assert.match(m.content, /<\/user_input>\n\n\(Jezik sučelja: hrvatski — razmišljaj i odgovaraj na hrvatskom\.\)$/);
+        }
+        for (const m of userTurns("en")) {
+            assert.match(m.content, /\n\n\(UI language: English — think and answer in English\.\)$/);
+        }
+    });
+
+    it("leaves assistant turns and locale-less callers untouched", () => {
+        const all = buildMessages(history, [], undefined, undefined, undefined, "hr") as {
+            role: string;
+            content: string;
+        }[];
+        assert.equal(all.find((m) => m.role === "assistant")?.content, "odgovor");
+        for (const m of userTurns(undefined)) {
+            assert.ok(m.content.endsWith("</user_input>"));
+        }
+    });
+});
+
+describe("buildMessages — documents of an active EULEX context", () => {
+    const system = (docs: { doc_id: string; filename: string; context?: boolean }[]) =>
+        (buildMessages([{ role: "user", content: "probe" }], docs) as { role: string; content: string }[])[0]
+            .content;
+
+    it("marks context documents and tells the model to cite them with [N] markers", () => {
+        const s = system([
+            { doc_id: "doc-0", filename: "Ugovor.docx" },
+            { doc_id: "doc-1", filename: "AZOP-Smjernice.pdf", context: true },
+        ]);
+        assert.match(s, /- doc-0: Ugovor\.docx\n/);
+        assert.match(s, /- doc-1: AZOP-Smjernice\.pdf \(EULEX context document, read-only\)\n/);
+        assert.ok(s.includes(CONTEXT_DOCUMENT_CITATION_NOTE));
+    });
+
+    it("adds nothing when no context document is available", () => {
+        const s = system([{ doc_id: "doc-0", filename: "Ugovor.docx" }]);
+        assert.ok(!s.includes("EULEX context document"));
     });
 });

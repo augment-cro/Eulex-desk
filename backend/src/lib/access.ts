@@ -12,6 +12,7 @@
  */
 
 import { from } from "./dbShim";
+import { SYSTEM_CONTEXT_OWNER } from "./seams/contextOwner";
 
 export type ProjectAccess =
     | {
@@ -76,6 +77,21 @@ export async function ensureDocAccess(
     );
     if (access.ok) return { ok: true, isOwner: false };
     return { ok: false };
+}
+
+/**
+ * READ access to a document: everything `ensureDocAccess` allows, plus the
+ * EULEX context documents (reserved owner — official material published to
+ * every user through a system context), which any signed-in user may open
+ * so a citation into them resolves. Never use this for a write path.
+ */
+export async function ensureDocReadAccess(
+    doc: { user_id: string; project_id: string | null },
+    userId: string,
+    userEmail: string | null | undefined,
+): Promise<{ ok: true; isOwner: boolean } | { ok: false }> {
+    if (doc.user_id === SYSTEM_CONTEXT_OWNER) return { ok: true, isOwner: false };
+    return ensureDocAccess(doc, userId, userEmail);
 }
 
 /**

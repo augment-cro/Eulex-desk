@@ -12,13 +12,19 @@
  * Shared by both citation paths:
  *   - chat `<CITATIONS>` → `citation_data` annotations
  *     (chatTools.mapCitationsToAnnotations)
- *   - tabular `[[page:N||quote:…]]` markers at generation time
- *     (routes/tabular.ts, full run + single-cell regenerate)
+ *   - tabular `[[page:N||quote:…]]` / `[[sheet:S||cell:A1||quote:…]]`
+ *     markers at generation time (routes/tabular.ts, full run +
+ *     single-cell regenerate)
+ *
+ * A spreadsheet citation names its cell, so its quote is checked against
+ * that cell's text first and only then against the whole text.
  *
  * Fail-soft by contract: an unlocatable quote is only ever *flagged*; the
  * answer is never blocked or dropped, and callers omit verification entirely
  * when no source text is available (unknown ≠ unverified).
  */
+
+import { indexSpreadsheetText, spreadsheetCellText } from "./spreadsheet";
 
 export type QuoteVerificationStatus = "verified" | "repaired" | "unverified";
 
@@ -141,8 +147,25 @@ function normalizeQuote(quote: string): string {
  */
 const ELLIPSIS_SPLIT_RE = /\s*(?:\.{3}|…)\s*/;
 
+/**
+ * A quote that runs across a page boundary carries the `[[PAGE_BREAK]]`
+ * sentinel the prompt pack asks for (`page: "41-42"`). The source text has
+ * the page marker (and often a running footer/header) at that point, so
+ * each side is located on its own — in order, and the next side must start
+ * within PAGE_BREAK_MAX_GAP normalized chars of the previous one.
+ */
+const PAGE_BREAK_SPLIT_RE = /\s*\[\[\s*PAGE_BREAK\s*\]\]\s*/i;
+const PAGE_BREAK_JOIN = " [[PAGE_BREAK]] ";
+const PAGE_BREAK_MAX_GAP = 5_000;
+
 export interface QuoteMatcher {
     locate(quote: string): QuoteLocation;
+    /**
+     * Spreadsheet citation: the quote against the cited cell (or range)
+     * first, then against the whole text. The repaired text comes from
+     * whichever matched.
+     */
+    locateInCell(sheet: string, cell: string, quote: string): QuoteLocation;
 }
 
 /**
@@ -157,17 +180,23 @@ export function createQuoteMatcher(sourceText: string): QuoteMatcher {
         return normalized;
     };
 
-    /** Tolerant search of one fragment; returns exact source slice or null. */
+    /**
+     * Tolerant search of one fragment at or after `fromNorm` (and starting
+     * no later than `maxStartNorm`); returns the exact source slice or null.
+     * Strictly in order: a fragment that only occurs BEFORE the previous
+     * one means the quote is not verbatim, so it must stay unverified
+     * rather than be "repaired".
+     */
     const locateFragment = (
         fragment: string,
         fromNorm: number,
+        maxStartNorm = Infinity,
     ): { exact: string; normEnd: number } | null => {
         const nq = normalizeQuote(fragment);
         if (!nq) return null;
         const { norm, starts, ends } = getNormalized();
-        let at = norm.indexOf(nq, fromNorm);
-        if (at === -1 && fromNorm > 0) at = norm.indexOf(nq);
-        if (at === -1) return null;
+        const at = norm.indexOf(nq, fromNorm);
+        if (at === -1 || at > maxStartNorm) return null;
         const last = at + nq.length - 1;
         return {
             exact: source.slice(starts[at], ends[last]).trim(),
@@ -175,7 +204,18 @@ export function createQuoteMatcher(sourceText: string): QuoteMatcher {
         };
     };
 
-    return {
+    let sheets: ReturnType<typeof indexSpreadsheetText> | null = null;
+
+    const matcher: QuoteMatcher = {
+        locateInCell(sheet: string, cell: string, quote: string): QuoteLocation {
+            if (!sheets) sheets = indexSpreadsheetText(source);
+            const cellText = spreadsheetCellText(sheets, sheet, cell);
+            if (cellText) {
+                const inCell = createQuoteMatcher(cellText).locate(quote);
+                if (inCell.status !== "unverified") return inCell;
+            }
+            return matcher.locate(quote);
+        },
         locate(quote: string): QuoteLocation {
             const q = typeof quote === "string" ? quote.trim() : "";
             if (!q) return { status: "unverified" };
@@ -184,27 +224,53 @@ export function createQuoteMatcher(sourceText: string): QuoteMatcher {
             if (source.includes(q)) return { status: "verified" };
 
             // 2. Tolerant match (whitespace / case / diacritics / typographic
-            //    punctuation), fragment-wise across ellipsis elisions.
-            const fragments = q
-                .split(ELLIPSIS_SPLIT_RE)
-                .map((f) => f.trim())
-                .filter(Boolean);
-            if (fragments.length === 0) return { status: "unverified" };
+            //    punctuation), fragment-wise across [[PAGE_BREAK]] sides and
+            //    ellipsis elisions, in order.
+            const segments = q
+                .split(PAGE_BREAK_SPLIT_RE)
+                .map((side) =>
+                    side
+                        .split(ELLIPSIS_SPLIT_RE)
+                        .map((f) => f.trim())
+                        .filter(Boolean),
+                )
+                .filter((fragments) => fragments.length > 0);
+            if (segments.length === 0) return { status: "unverified" };
 
-            const exacts: string[] = [];
+            const exactSegments: string[] = [];
             let cursor = 0;
-            for (const fragment of fragments) {
-                const hit = locateFragment(fragment, cursor);
-                if (!hit) return { status: "unverified" };
-                exacts.push(hit.exact);
-                cursor = hit.normEnd;
+            let verbatim = true;
+            for (let s = 0; s < segments.length; s++) {
+                const exacts: string[] = [];
+                for (let f = 0; f < segments[s].length; f++) {
+                    const maxStart =
+                        s > 0 && f === 0 ? cursor + PAGE_BREAK_MAX_GAP : Infinity;
+                    const hit = locateFragment(segments[s][f], cursor, maxStart);
+                    if (!hit) return { status: "unverified" };
+                    if (hit.exact !== segments[s][f]) verbatim = false;
+                    exacts.push(hit.exact);
+                    cursor = hit.normEnd;
+                }
+                exactSegments.push(
+                    exacts.length === 1 ? exacts[0] : exacts.join(" … "),
+                );
             }
-            const exact =
-                fragments.length === 1 ? exacts[0] : exacts.join(" … ");
+            // A page-break quote can never be a plain substring (the source
+            // has the page marker where the quote has the sentinel), so
+            // verbatim sides are the page-break equivalent of step 1.
+            if (
+                segments.length > 1 &&
+                verbatim &&
+                segments.every((fragments) => fragments.length === 1)
+            ) {
+                return { status: "verified" };
+            }
+            const exact = exactSegments.join(PAGE_BREAK_JOIN);
             if (!exact) return { status: "unverified" };
             return { status: "repaired", exact };
         },
     };
+    return matcher;
 }
 
 /** One-shot convenience over `createQuoteMatcher`. */
@@ -213,17 +279,32 @@ export function verifyQuote(quote: string, sourceText: string): QuoteLocation {
 }
 
 // ---------------------------------------------------------------------------
-// Tabular `[[page:N||quote:…]]` marker verification
+// Tabular citation marker verification
 // ---------------------------------------------------------------------------
 
 /**
- * Must stay in lockstep with the frontend parser
- * (frontend/src/app/components/tabular/citation-utils.ts PAGE_CITATION_RE):
+ * Both tabular citation forms in ONE pattern:
+ *   [[page:<N>||quote:<text>]]                               paged documents
+ *   [[sheet:<SheetName>||cell:<A1 or A1:B2>||quote:<text>]]  spreadsheets
+ * Groups: 1 page · 2 sheet · 3 cell · 4 quote (`quote:` optional).
+ *
+ * Must stay byte-identical to the frontend parser
+ * (frontend/src/app/components/tabular/citation-utils.ts CITATION_MARKER_RE):
  * the i-th match here is the i-th citation badge the cell renders, which is
  * how `unverified_citations` indexes line up client-side.
  */
 export const CITATION_MARKER_RE =
-    /\[\[page:(\d+)\|\|(?:quote:)?((?:[^\[\]]|\[[^\]]*\])+)\]\]/gi;
+    /\[\[(?:page:(\d+)|sheet:([^|\[\]]+)\|\|cell:([A-Z]{1,3}\d+(?::[A-Z]{1,3}\d+)?))\|\|(?:quote:)?((?:[^\[\]]|\[[^\]]*\])+)\]\]/gi;
+
+/** A tabular marker with its quote replaced (the locator kept as matched). */
+export function citationMarker(
+    locator: { page: string } | { sheet: string; cell: string },
+    quote: string,
+): string {
+    return "page" in locator
+        ? `[[page:${locator.page}||quote:${quote}]]`
+        : `[[sheet:${locator.sheet}||cell:${locator.cell}||quote:${quote}]]`;
+}
 
 export interface MarkerVerificationResult {
     /** Input text with tolerant-matched quotes replaced by exact source text. */
@@ -233,12 +314,13 @@ export interface MarkerVerificationResult {
 }
 
 /**
- * Verify every `[[page:N||quote:…]]` marker in `text` against `matcher`.
- * Repaired quotes are rewritten in place with the exact source text —
- * unless that text itself contains square brackets (it would corrupt the
- * marker syntax), in which case the original quote is kept and the marker
- * counts as located ("verified"). Unverified markers are left untouched;
- * the caller flags them out-of-band.
+ * Verify every tabular citation marker in `text` against `matcher` — a
+ * sheet marker against its cell first. Repaired quotes are rewritten in
+ * place with the exact source text — unless that text itself contains
+ * square brackets (it would corrupt the marker syntax), in which case the
+ * original quote is kept and the marker counts as located ("verified").
+ * Unverified markers are left untouched; the caller flags them
+ * out-of-band.
  */
 export function verifyCitationMarkers(
     text: string,
@@ -251,8 +333,17 @@ export function verifyCitationMarkers(
     CITATION_MARKER_RE.lastIndex = 0;
     const out = text.replace(
         CITATION_MARKER_RE,
-        (marker, page, quote: string) => {
-            const loc = matcher.locate(quote.trim());
+        (
+            marker: string,
+            page: string | undefined,
+            sheet: string | undefined,
+            cell: string | undefined,
+            quote: string,
+        ) => {
+            const loc =
+                page !== undefined
+                    ? matcher.locate(quote.trim())
+                    : matcher.locateInCell(sheet!.trim(), cell!, quote.trim());
             if (loc.status === "repaired") {
                 if (/[\[\]]/.test(loc.exact)) {
                     // Located, but the exact text would break the marker
@@ -262,7 +353,10 @@ export function verifyCitationMarkers(
                     return marker;
                 }
                 statuses.push("repaired");
-                return `[[page:${page}||quote:${loc.exact}]]`;
+                return citationMarker(
+                    page !== undefined ? { page } : { sheet: sheet!, cell: cell! },
+                    loc.exact,
+                );
             }
             statuses.push(loc.status);
             return marker;

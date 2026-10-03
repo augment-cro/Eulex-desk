@@ -157,18 +157,17 @@ function getTextContent(wtEl: XNode): string {
     return out;
 }
 
-// Build a w:r element that wraps a piece of text. Newlines in the text are
-// emitted as <w:br/> soft line breaks (interleaved with w:t/w:delText
+// Build a w:r element that wraps a piece of text. Newlines and tabs in the
+// text are emitted as <w:br/> / <w:tab/> (interleaved with w:t/w:delText
 // segments) so models can request multi-line replacements without the
 // literal "\n" showing up as visible text.
 function buildRun(rPr: XNode | null, text: string, tagName: "w:t" | "w:delText"): XNode {
     const children: XNode[] = [];
     if (rPr) children.push(cloneNode(rPr));
-    const segments = text.split("\n");
-    for (let i = 0; i < segments.length; i++) {
-        if (i > 0) children.push(makeEl("w:br", []));
-        const seg = segments[i];
-        if (seg.length > 0) {
+    for (const seg of text.split(/(\n|\t)/)) {
+        if (seg === "\n") children.push(makeEl("w:br", []));
+        else if (seg === "\t") children.push(makeEl("w:tab", []));
+        else if (seg.length > 0) {
             children.push(
                 makeEl(tagName, [makeText(seg)], { "xml:space": "preserve" }),
             );
@@ -182,6 +181,233 @@ function cloneNode<T>(n: T): T {
 }
 
 // ---------------------------------------------------------------------------
+// Automatic numbering labels (tracker #94)
+// ---------------------------------------------------------------------------
+//
+// Word renders "Članak 1.", "1.1" or "a)" from numbering.xml — the label is
+// not in any w:t, so the model used to read contracts as if their articles
+// were unnumbered. Both the text the model reads (extractDocxBodyText) and
+// the edit matcher (applyTrackedEdits) now put the label in front of the
+// paragraph as synthetic characters: visible and matchable, but never part
+// of an edit's deleted text.
+
+interface NumLevel {
+    start: number;
+    numFmt: string;
+    lvlText: string;
+    suff: string;
+    isLgl: boolean;
+}
+
+interface NumberingDefs {
+    abstracts: Map<string, Map<number, NumLevel>>;
+    nums: Map<string, { abstractId: string; startOverrides: Map<number, number> }>;
+    styleNumPr: Map<string, { numId?: string; ilvl?: number }>;
+}
+
+function childEl(n: unknown, name: string): XNode | null {
+    for (const c of elChildren(n)) if (elName(c) === name) return c;
+    return null;
+}
+
+function valAttr(n: unknown): string | undefined {
+    const v = elAttrs(n)["@_w:val"];
+    return v == null ? undefined : String(v);
+}
+
+function readNumPr(pPr: unknown): { numId?: string; ilvl?: number } | null {
+    const numPr = childEl(pPr, "w:numPr");
+    if (!numPr) return null;
+    const numId = valAttr(childEl(numPr, "w:numId"));
+    const ilvlRaw = valAttr(childEl(numPr, "w:ilvl"));
+    const ilvl = ilvlRaw == null ? undefined : parseInt(ilvlRaw, 10);
+    return { numId, ilvl: Number.isFinite(ilvl) ? ilvl : undefined };
+}
+
+async function parseNumberingDefs(
+    zip: JSZip,
+    parser: ReturnType<typeof createParser>,
+): Promise<NumberingDefs> {
+    const defs: NumberingDefs = {
+        abstracts: new Map(),
+        nums: new Map(),
+        styleNumPr: new Map(),
+    };
+    try {
+        const numFile = getZipEntry(zip, "word/numbering.xml");
+        if (numFile) {
+            const tree = parser.parse(await numFile.async("string")) as XNode[];
+            for (const top of tree) {
+                if (elName(top) !== "w:numbering") continue;
+                for (const n of elChildren(top)) {
+                    const name = elName(n);
+                    const attrs = elAttrs(n);
+                    if (name === "w:abstractNum") {
+                        const levels = new Map<number, NumLevel>();
+                        for (const lvl of elChildren(n)) {
+                            if (elName(lvl) !== "w:lvl") continue;
+                            const ilvl = parseInt(String(elAttrs(lvl)["@_w:ilvl"] ?? "0"), 10);
+                            const start = parseInt(valAttr(childEl(lvl, "w:start")) ?? "1", 10);
+                            levels.set(ilvl, {
+                                start: Number.isFinite(start) ? start : 1,
+                                numFmt: valAttr(childEl(lvl, "w:numFmt")) ?? "decimal",
+                                lvlText: valAttr(childEl(lvl, "w:lvlText")) ?? "",
+                                suff: valAttr(childEl(lvl, "w:suff")) ?? "tab",
+                                isLgl: childEl(lvl, "w:isLgl") != null,
+                            });
+                        }
+                        defs.abstracts.set(String(attrs["@_w:abstractNumId"] ?? ""), levels);
+                    } else if (name === "w:num") {
+                        const abstractId = valAttr(childEl(n, "w:abstractNumId"));
+                        if (abstractId == null) continue;
+                        const startOverrides = new Map<number, number>();
+                        for (const o of elChildren(n)) {
+                            if (elName(o) !== "w:lvlOverride") continue;
+                            const ilvl = parseInt(String(elAttrs(o)["@_w:ilvl"] ?? "0"), 10);
+                            const so = valAttr(childEl(o, "w:startOverride"));
+                            if (so != null && Number.isFinite(parseInt(so, 10))) {
+                                startOverrides.set(ilvl, parseInt(so, 10));
+                            }
+                        }
+                        defs.nums.set(String(attrs["@_w:numId"] ?? ""), {
+                            abstractId,
+                            startOverrides,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Heading styles often carry the numbering ("Članak %1." on
+        // Heading 1) — resolve it through the basedOn chain.
+        const stylesFile = getZipEntry(zip, "word/styles.xml");
+        if (stylesFile) {
+            const tree = parser.parse(await stylesFile.async("string")) as XNode[];
+            const own = new Map<string, { numPr: { numId?: string; ilvl?: number } | null; basedOn?: string }>();
+            for (const top of tree) {
+                if (elName(top) !== "w:styles") continue;
+                for (const st of elChildren(top)) {
+                    if (elName(st) !== "w:style") continue;
+                    const id = String(elAttrs(st)["@_w:styleId"] ?? "");
+                    if (!id) continue;
+                    own.set(id, {
+                        numPr: readNumPr(childEl(st, "w:pPr")),
+                        basedOn: valAttr(childEl(st, "w:basedOn")),
+                    });
+                }
+            }
+            for (const id of own.keys()) {
+                let numId: string | undefined;
+                let ilvl: number | undefined;
+                let cur: string | undefined = id;
+                for (let depth = 0; cur && depth < 10; depth++) {
+                    const s = own.get(cur);
+                    if (!s) break;
+                    if (numId === undefined && s.numPr?.numId !== undefined) numId = s.numPr.numId;
+                    if (ilvl === undefined && s.numPr?.ilvl !== undefined) ilvl = s.numPr.ilvl;
+                    cur = s.basedOn;
+                }
+                if (numId !== undefined) defs.styleNumPr.set(id, { numId, ilvl });
+            }
+        }
+    } catch {
+        // Malformed numbering/styles — the text simply has no labels.
+    }
+    return defs;
+}
+
+function toRoman(n: number): string {
+    const table: [number, string][] = [
+        [1000, "m"], [900, "cm"], [500, "d"], [400, "cd"], [100, "c"], [90, "xc"],
+        [50, "l"], [40, "xl"], [10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"],
+    ];
+    let out = "";
+    let rest = n;
+    for (const [v, s] of table) {
+        while (rest >= v) {
+            out += s;
+            rest -= v;
+        }
+    }
+    return out;
+}
+
+function formatNumber(n: number, fmt: string): string {
+    switch (fmt) {
+        case "decimalZero":
+            return n < 10 ? `0${n}` : String(n);
+        case "lowerLetter":
+        case "upperLetter": {
+            if (n < 1) return String(n);
+            // Word repeats the letter past z: a … z, aa … zz.
+            const letter = String.fromCharCode(97 + ((n - 1) % 26)).repeat(Math.floor((n - 1) / 26) + 1);
+            return fmt === "upperLetter" ? letter.toUpperCase() : letter;
+        }
+        case "lowerRoman":
+            return n < 1 ? String(n) : toRoman(n);
+        case "upperRoman":
+            return n < 1 ? String(n) : toRoman(n).toUpperCase();
+        default:
+            return String(n);
+    }
+}
+
+/**
+ * Hands out numbering labels in document order. Counters are shared per
+ * abstract list — Word continues a list across w:num instances unless one
+ * carries a startOverride — and a level resets every deeper level.
+ */
+class NumberingCounter {
+    private counters = new Map<string, (number | undefined)[]>();
+    private seenNums = new Set<string>();
+
+    constructor(private defs: NumberingDefs) {}
+
+    /** Label for a paragraph ("" when it is not numbered). */
+    labelFor(pNode: XNode): string {
+        const pPr = childEl(pNode, "w:pPr");
+        const own = readNumPr(pPr);
+        const styleId = valAttr(childEl(pPr, "w:pStyle"));
+        const fromStyle = styleId ? this.defs.styleNumPr.get(styleId) : undefined;
+        const numId = own?.numId ?? fromStyle?.numId;
+        if (!numId || numId === "0") return "";
+        const ilvl = own?.ilvl ?? fromStyle?.ilvl ?? 0;
+        const num = this.defs.nums.get(numId);
+        if (!num) return "";
+        const levels = this.defs.abstracts.get(num.abstractId);
+        const lvl = levels?.get(ilvl);
+        if (!levels || !lvl) return "";
+
+        const st = this.counters.get(num.abstractId) ?? [];
+        if (!this.seenNums.has(numId)) {
+            this.seenNums.add(numId);
+            for (const [l, v] of num.startOverrides) st[l] = v - 1;
+        }
+        st[ilvl] = (st[ilvl] ?? lvl.start - 1) + 1;
+        for (let k = ilvl + 1; k < st.length; k++) st[k] = undefined;
+        this.counters.set(num.abstractId, st);
+
+        let label: string;
+        if (lvl.numFmt === "bullet") {
+            // Bullet glyphs usually live in a symbol font's private-use
+            // range — show a plain bullet instead of a mojibake character.
+            label = /^[-]*$/.test(lvl.lvlText) ? "•" : lvl.lvlText;
+        } else if (lvl.numFmt === "none") {
+            label = lvl.lvlText.replace(/%[1-9]/g, "");
+        } else {
+            label = lvl.lvlText.replace(/%([1-9])/g, (_, d: string) => {
+                const l = Number(d) - 1;
+                const lv = levels.get(l);
+                const value = st[l] ?? lv?.start ?? 1;
+                return formatNumber(value, lvl.isLgl ? "decimal" : (lv?.numFmt ?? "decimal"));
+            });
+        }
+        if (!label) return "";
+        return label + (lvl.suff === "nothing" ? "" : lvl.suff === "space" ? " " : "\t");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Paragraph flattening
 // ---------------------------------------------------------------------------
 
@@ -190,10 +416,19 @@ interface RunSlot {
     rPr: XNode | null;          // reference (not cloned)
     /**
      * Per-w:t info. Slots preserve the relative order of the run's textual
-     * children. Non-textual run children (w:tab, w:br, ...) are ignored for
-     * the char stream but left in place via their surrounding w:r.
+     * children. Line breaks and tabs (w:br, w:cr, w:tab) are entries too,
+     * `synthetic`, with "\n" / "\t" as their text — so the matcher sees
+     * the same characters the model reads, and rebuilding a touched run
+     * re-emits the original element instead of silently dropping it
+     * (tracker #94). Other children (w:sym, …) are ignored.
      */
-    textNodes: { wtEl: XNode; text: string; paraStart: number; paraEnd: number }[];
+    textNodes: {
+        wtEl: XNode;
+        text: string;
+        paraStart: number;
+        paraEnd: number;
+        synthetic?: boolean;
+    }[];
 }
 
 interface Flattened {
@@ -203,6 +438,13 @@ interface Flattened {
     charTextNode: Int32Array; // index into slot.textNodes
     charOffset: Int32Array;   // offset within that textNode.text
     runs: RunSlot[];          // order corresponds to their paragraph position
+}
+
+/** Synthetic character for a non-text run child, or null. */
+function runChildChar(name: string | null): string | null {
+    if (name === "w:br" || name === "w:cr") return "\n";
+    if (name === "w:tab") return "\t";
+    return null;
 }
 
 function flattenParagraph(paraChildren: XNode[]): Flattened {
@@ -220,25 +462,27 @@ function flattenParagraph(paraChildren: XNode[]): Flattened {
             const name = elName(rk);
             if (name === "w:rPr") {
                 rPr = rk;
-            } else if (name === "w:t") {
-                const txt = getTextContent(rk);
-                const start = paraText.length;
-                textNodes.push({
-                    wtEl: rk,
-                    text: txt,
-                    paraStart: start,
-                    paraEnd: start + txt.length,
-                });
-                const runIdx = runs.length;
-                const tnIdx = textNodes.length - 1;
-                paraText += txt;
-                for (let i = 0; i < txt.length; i++) {
-                    charRunArr.push(runIdx);
-                    charTextNodeArr.push(tnIdx);
-                    charOffsetArr.push(i);
-                }
+                continue;
             }
-            // other run children (w:tab, w:br, w:sym, …) are left alone
+            const synthCh = runChildChar(name);
+            if (name !== "w:t" && synthCh === null) continue;
+            const txt = synthCh ?? getTextContent(rk);
+            const start = paraText.length;
+            textNodes.push({
+                wtEl: rk,
+                text: txt,
+                paraStart: start,
+                paraEnd: start + txt.length,
+                ...(synthCh !== null ? { synthetic: true } : {}),
+            });
+            const runIdx = runs.length;
+            const tnIdx = textNodes.length - 1;
+            paraText += txt;
+            for (let i = 0; i < txt.length; i++) {
+                charRunArr.push(runIdx);
+                charTextNodeArr.push(tnIdx);
+                charOffsetArr.push(i);
+            }
         }
         runs.push({ childIndex: topChildIdx, rPr, textNodes });
     };
@@ -266,6 +510,93 @@ function flattenParagraph(paraChildren: XNode[]): Flattened {
         charOffset: Int32Array.from(charOffsetArr),
         runs,
     };
+}
+
+/**
+ * The paragraph as the model reads it — numbering label plus text (line
+ * breaks and tabs included) — whitespace-normalized for anchor matching.
+ * `start[i]` / `end[i]` give the paraText range behind normalized char i;
+ * label characters cover an empty range, so they are never deleted.
+ */
+interface ParaView {
+    norm: string;
+    start: number[];
+    end: number[];
+    /** Leading normalized chars that come from the numbering label. */
+    labelNormLen: number;
+}
+
+function buildParaView(flat: Flattened, label: string): ParaView {
+    const chars: string[] = [];
+    const srcStart: number[] = [];
+    const srcEnd: number[] = [];
+    const isLabel: boolean[] = [];
+    const push = (ch: string, s: number, e: number, lab: boolean) => {
+        chars.push(ch);
+        srcStart.push(s);
+        srcEnd.push(e);
+        isLabel.push(lab);
+    };
+    for (const ch of label) push(ch, 0, 0, true);
+    const text = flat.paraText;
+    for (let i = 0; i < text.length; i++) push(text[i], i, i + 1, false);
+
+    const pre = preNormalize(chars.join(""));
+    const norm: string[] = [];
+    const start: number[] = [];
+    const end: number[] = [];
+    let labelNormLen = 0;
+    let prevSpace = false;
+    for (let i = 0; i < pre.length; i++) {
+        const ch = pre[i];
+        const space = /\s/.test(ch);
+        if (space && prevSpace) continue;
+        norm.push(space ? " " : ch);
+        start.push(srcStart[i]);
+        end.push(srcEnd[i]);
+        if (isLabel[i]) labelNormLen = norm.length;
+        prevSpace = space;
+    }
+    return { norm: norm.join(""), start, end, labelNormLen };
+}
+
+/** Map a normalized [start, end) range of a ParaView back to paraText. */
+function mapViewRangeToPara(
+    view: ParaView,
+    origLen: number,
+    normStart: number,
+    normEnd: number,
+): { start: number; end: number } {
+    const start = normStart < view.start.length ? view.start[normStart] : origLen;
+    const end =
+        normEnd === normStart
+            ? start
+            : normEnd - 1 < view.end.length
+              ? Math.max(start, view.end[normEnd - 1])
+              : origLen;
+    return { start, end };
+}
+
+/**
+ * Cut the leading part of `s` whose whitespace-normalized form is `prefix`
+ * (case-insensitive). Returns null when `s` does not start with it.
+ */
+function stripNormalizedPrefix(s: string, prefix: string): string | null {
+    if (!prefix) return s;
+    const pre = preNormalize(s);
+    const want = prefix.toLowerCase();
+    let got = "";
+    let prevSpace = false;
+    let i = 0;
+    for (; i < pre.length && got.length < want.length; i++) {
+        const ch = pre[i];
+        const space = /\s/.test(ch);
+        if (space && prevSpace) continue;
+        got += space ? " " : ch.toLowerCase();
+        prevSpace = space;
+    }
+    if (got !== want) return null;
+    return s.slice(i);
 }
 
 // ---------------------------------------------------------------------------
@@ -404,8 +735,19 @@ function reconstructParagraph(
             }
             const slot = flat.runs[runIdx];
             const rPr = slot.rPr;
-            const slice = flat.paraText.slice(i, j);
-            newRunGroup.push(buildRun(rPr, slice, "w:t"));
+            const node = slot.textNodes[tnIdx];
+            if (node.synthetic) {
+                // Keep the original w:br / w:tab (incl. w:type="page").
+                newRunGroup.push(
+                    makeEl("w:r", [
+                        ...(rPr ? [cloneNode(rPr)] : []),
+                        cloneNode(node.wtEl),
+                    ]),
+                );
+            } else {
+                const slice = flat.paraText.slice(i, j);
+                newRunGroup.push(buildRun(rPr, slice, "w:t"));
+            }
             i = j;
         }
     };
@@ -427,8 +769,18 @@ function reconstructParagraph(
                 j++;
             }
             const slot = flat.runs[runIdx];
-            const slice = flat.paraText.slice(i, j);
-            inner.push(buildRun(slot.rPr, slice, "w:delText"));
+            const node = slot.textNodes[tnIdx];
+            if (node.synthetic) {
+                inner.push(
+                    makeEl("w:r", [
+                        ...(slot.rPr ? [cloneNode(slot.rPr)] : []),
+                        cloneNode(node.wtEl),
+                    ]),
+                );
+            } else {
+                const slice = flat.paraText.slice(i, j);
+                inner.push(buildRun(slot.rPr, slice, "w:delText"));
+            }
             i = j;
         }
         newRunGroup.push(
@@ -631,26 +983,6 @@ function findUniqueAnchor(
     };
 }
 
-/** Map a normalized [start, end) range back to the original string range. */
-function mapNormRangeToOriginal(
-    paraNorm: Normalized,
-    origLen: number,
-    normStart: number,
-    normEnd: number,
-): { start: number; end: number } {
-    const origStart =
-        normStart < paraNorm.origIdx.length
-            ? paraNorm.origIdx[normStart]
-            : origLen;
-    const origEnd =
-        normEnd === normStart
-            ? origStart
-            : normEnd - 1 < paraNorm.origIdx.length
-              ? paraNorm.origIdx[normEnd - 1] + 1
-              : origLen;
-    return { start: origStart, end: origEnd };
-}
-
 // ---------------------------------------------------------------------------
 // Main: applyTrackedEdits
 // ---------------------------------------------------------------------------
@@ -667,6 +999,11 @@ function createParser() {
         preserveOrder: true,
         trimValues: false,
         parseAttributeValue: false,
+        // Text nodes stay strings. The default coerces a run whose whole
+        // text looks numeric into a JS number, so "10.000" (Croatian
+        // thousands separator) read as "10" and every applyTrackedEdits
+        // rewrote untouched runs that way. Same fix as upstream d8183be4.
+        parseTagValue: false,
         processEntities: true,
     });
 }
@@ -791,6 +1128,7 @@ export async function extractDocxBodyText(bytes: Buffer): Promise<string> {
 
     // Load comments map (empty if no comments.xml)
     const commentsMap = await parseComments(zip, parser);
+    const numbering = new NumberingCounter(await parseNumberingDefs(zip, parser));
 
     const docXmlFile = getZipEntry(zip, "word/document.xml");
     if (!docXmlFile) return "";
@@ -807,27 +1145,30 @@ export async function extractDocxBodyText(bytes: Buffer): Promise<string> {
             if (name === "w:p") {
                 // Walk paragraph children to build text + inline comments
                 const paraKids = elChildren(n);
-                let paraText = "";
+                // Automatic numbering label ("Članak 1.\t"), same as the
+                // matcher's view (tracker #94).
+                let paraText = numbering.labelFor(n);
+                // Text, line breaks and tabs of one run — the same
+                // characters flattenParagraph + buildParaView match against.
+                const runText = (rEl: XNode) => {
+                    for (const rk of elChildren(rEl)) {
+                        const rkName = elName(rk);
+                        if (rkName === "w:t") {
+                            paraText += getTextContent(rk);
+                        } else {
+                            paraText += runChildChar(rkName) ?? "";
+                        }
+                    }
+                };
                 // Pending comment IDs that have started but not yet ended
                 for (const kid of paraKids) {
                     const kidName = elName(kid);
                     if (kidName === "w:r") {
-                        // Extract text from run
-                        for (const rk of elChildren(kid)) {
-                            if (elName(rk) === "w:t") {
-                                paraText += getTextContent(rk);
-                            }
-                        }
+                        runText(kid);
                     } else if (kidName === "w:ins") {
                         // Accepted view: include inserted text
                         for (const inner of elChildren(kid)) {
-                            if (elName(inner) === "w:r") {
-                                for (const rk of elChildren(inner)) {
-                                    if (elName(rk) === "w:t") {
-                                        paraText += getTextContent(rk);
-                                    }
-                                }
-                            }
+                            if (elName(inner) === "w:r") runText(inner);
                         }
                     } else if (kidName === "w:commentRangeEnd") {
                         // Insert comment marker at this position
@@ -923,6 +1264,9 @@ export async function applyTrackedEdits(
 
     const bodyChildren = findBody(tree);
     if (!bodyChildren) throw new Error("w:body missing from document.xml");
+    // Same labels, in the same document order, as extractDocxBodyText.
+    const numbering = new NumberingCounter(await parseNumberingDefs(zip, parser));
+    const labels: string[] = [];
 
     // Build paragraph table (only w:p at the top level of the body — does not
     // recurse into tables; for tables, w:p also appears inside w:tbl > w:tr >
@@ -935,6 +1279,7 @@ export async function applyTrackedEdits(
             if (name === "w:p") {
                 const kids = elChildren(n);
                 const flat = flattenParagraph(kids);
+                labels.push(numbering.labelFor(n));
                 paragraphs.push({
                     paraNode: n,
                     paraChildren: kids,
@@ -959,9 +1304,9 @@ export async function applyTrackedEdits(
         }
     }
 
-    // Precompute normalized forms per paragraph for reuse across edits.
-    const paraNorms: Normalized[] = paragraphs.map((p) =>
-        normalizeWs(p.flat.paraText),
+    // Precompute the match view per paragraph for reuse across edits.
+    const paraNorms: ParaView[] = paragraphs.map((p, i) =>
+        buildParaView(p.flat, labels[i]),
     );
 
     let nextWId = maxTrackedId(tree) + 1;
@@ -1065,7 +1410,28 @@ export async function applyTrackedEdits(
         const paraIdx = hit.paraIdx;
         const paraNorm = paraNorms[paraIdx];
         const origLen = paragraphs[paraIdx].flat.paraText.length;
-        const { start: findStart, end: findEnd } = mapNormRangeToOriginal(
+
+        // `find` may start inside the automatic numbering label the model
+        // read ("1.\tPredmet"). The label is not text: keep it only if
+        // `replace` repeats it, and refuse an edit that changes it.
+        let replaceText = replace;
+        if (findNorm.length > 0 && hit.normStart < paraNorm.labelNormLen) {
+            const labelPart = findNorm.slice(
+                0,
+                Math.min(paraNorm.labelNormLen - hit.normStart, findNorm.length),
+            );
+            const stripped = stripNormalizedPrefix(replaceText, labelPart);
+            if (stripped === null || hit.normEnd <= paraNorm.labelNormLen) {
+                errors.push({
+                    index: editIdx,
+                    reason: `"${truncate(labelPart.trim(), 40)}" is automatic Word numbering, not text — it cannot be edited. Leave the number out of find/replace and change only the text after it.`,
+                });
+                continue;
+            }
+            replaceText = stripped.replace(/^\s+/, "");
+        }
+
+        const { start: findStart, end: findEnd } = mapViewRangeToPara(
             paraNorm,
             origLen,
             hit.normStart,
@@ -1082,7 +1448,7 @@ export async function applyTrackedEdits(
 
         const { deleted, inserted, leadingEq } = collapseDiff(
             originalFind,
-            replace,
+            replaceText,
         );
         const minStart = findStart + leadingEq;
         const minEnd = minStart + deleted.length;

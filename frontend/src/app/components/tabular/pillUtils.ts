@@ -57,6 +57,46 @@ export function getPillClass(content: string, column?: ColumnConfig): string {
     return "bg-muted text-foreground";
 }
 
+/**
+ * Display labels for the fixed English values the tabular prompts ask the
+ * model for — the "Not Found" sentinel and the [[Yes]] / [[No]] pills. The
+ * stored values stay English (backend tabular.ts and getPillClass match on
+ * them); only what the user sees is localized.
+ */
+export interface TabularValueLabels {
+    notFound: string;
+    yes: string;
+    no: string;
+}
+
+export function pillDisplayLabel(content: string, labels?: TabularValueLabels): string {
+    if (!labels) return content;
+    const lower = content.trim().toLowerCase();
+    if (lower === "yes") return labels.yes;
+    if (lower === "no") return labels.no;
+    return content;
+}
+
+const NOT_FOUND_RE = /^\s*not found\.?\s*$/i;
+const NOT_FOUND_INLINE_RE = /\bnot found\b/gi;
+
+/**
+ * The "Not Found" sentinel, as the whole value or — when the model wrote it
+ * into its prose ("…nije naveden (Not Found)", prod 30. 9.) — inline, where
+ * the label is lower-cased unless it starts a sentence.
+ */
+export function localizeNotFound(summary: string, labels?: TabularValueLabels): string {
+    if (!labels) return summary;
+    if (NOT_FOUND_RE.test(summary)) return labels.notFound;
+    return summary.replace(NOT_FOUND_INLINE_RE, (_m, offset: number, str: string) => {
+        const before = str.slice(0, offset).replace(/[\s(„"*]+$/, "");
+        const startsSentence = before === "" || /[.!?:]$/.test(before);
+        return startsSentence
+            ? labels.notFound
+            : labels.notFound.charAt(0).toLowerCase() + labels.notFound.slice(1);
+    });
+}
+
 /** Split text on [[...]] pill markers, preserving surrounding text. */
 export function parsePills(text: string): PillSegment[] {
     const segments: PillSegment[] = [];

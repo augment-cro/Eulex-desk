@@ -2,17 +2,20 @@ import { describe, it, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import jwt from "jsonwebtoken";
 import { contextsClient } from "./contextsClient.js";
 
 // Every stub server started during the run — closed in after() so the
 // test process can exit (two tests each start their own stub).
 const servers: http.Server[] = [];
 let lastAuth: string | undefined;
+let lastUrl: string | undefined;
 
 function startStub(): Promise<string> {
     const server = http.createServer((req, res) => {
         lastAuth = req.headers.authorization;
-        if (req.method === "GET" && req.url === "/contexts") {
+        lastUrl = req.url;
+        if (req.method === "GET" && (req.url === "/contexts" || req.url === "/contexts?system=1")) {
             res.setHeader("content-type", "application/json");
             res.end(JSON.stringify([{ id: "c1", name: "Test context" }]));
             return;
@@ -45,6 +48,7 @@ describe("contextsClient", () => {
         delete process.env.CONTEXTS_URL;
         delete process.env.CONTEXTS_SERVICE_SECRET;
         lastAuth = undefined;
+        lastUrl = undefined;
     });
     after(() => {
         for (const server of servers) server.close();
@@ -88,6 +92,27 @@ describe("contextsClient", () => {
         assert.ok(resolved.ok);
         assert.equal(resolved.data.instructions_md, "Follow these.");
         assert.deepEqual(resolved.data.scope_allowlist, ["s1"]);
+    });
+
+    it("asks for system contexts, with the token claim, only for an entitled caller", async () => {
+        process.env.CONTEXTS_URL = await startStub();
+        process.env.CONTEXTS_SERVICE_SECRET = "s3cret";
+        const claim = () =>
+            (jwt.decode((lastAuth ?? "").replace(/^Bearer /, "")) as jwt.JwtPayload | null)
+                ?.system_contexts;
+
+        await contextsClient.list("u2");
+        assert.equal(lastUrl, "/contexts");
+        assert.equal(claim(), undefined);
+
+        await contextsClient.list("u2", null, null, { systemContexts: true });
+        assert.equal(lastUrl, "/contexts?system=1");
+        assert.equal(claim(), true);
+
+        await contextsClient.resolve("c1", "q", "u2", null, null, { systemContexts: true });
+        assert.equal(claim(), true);
+        await contextsClient.resolve("c1", "q", "u2");
+        assert.equal(claim(), undefined);
     });
 
     it("returns ok:false on HTTP errors instead of throwing", async () => {

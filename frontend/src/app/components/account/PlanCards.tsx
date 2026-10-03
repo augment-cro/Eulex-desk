@@ -379,10 +379,6 @@ export function PlanCards({ currentTier }: { currentTier?: TierKey | null }) {
             <PlusUpgradeModal
                 open={upgradePlan !== null}
                 plan={upgradePlan ?? "plus"}
-                dailyTokens={
-                    plans.find((p) => p.tierKey === upgradePlan)
-                        ?.dailyTokens ?? null
-                }
                 onClose={() => setUpgradePlan(null)}
                 onUpgraded={() => {
                     void reloadProfile();

@@ -13,8 +13,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import {
     contextsReducer,
     initialContextsState,
-    activeCount,
     MAX_ACTIVE,
+    cappedActiveCount,
 } from "@/app/lib/contextsState";
 import {
     contextsServiceEnabled,
@@ -81,10 +81,14 @@ export function ContextsProvider({ children }: { children: ReactNode }) {
 
     const toggle = useCallback<ContextsContextType["toggle"]>(
         async (id, enabled) => {
+            const isSystem = state.items.some(
+                (i) => i.context.id === id && i.context.level === "system",
+            );
             if (
                 enabled &&
+                !isSystem &&
                 !state.enabled[id] &&
-                activeCount(state) >= MAX_ACTIVE
+                cappedActiveCount(state) >= MAX_ACTIVE
             ) {
                 return { ok: false, limited: true };
             }
@@ -134,4 +138,9 @@ export function useContexts(): ContextsContextType {
         throw new Error("useContexts must be used within a ContextsProvider");
     }
     return ctx;
+}
+
+/** The same, or undefined outside a ContextsProvider (e.g. a shared chat). */
+export function useOptionalContexts(): ContextsContextType | undefined {
+    return useContext(ContextsCtx);
 }

@@ -10,7 +10,10 @@
 FROM node:22-slim AS builder
 WORKDIR /app
 
+# vendor/ holds SheetJS CE (xlsx-0.20.3.tgz), installed from the file by
+# package-lock.json — it must be in place before `npm ci`.
 COPY package.json package-lock.json ./
+COPY vendor ./vendor
 RUN npm ci --ignore-scripts
 
 COPY tsconfig.json ./
@@ -31,8 +34,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libreoffice-writer && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Production dependencies only
+# Production dependencies only (vendor/ again: the SheetJS tarball)
 COPY package.json package-lock.json ./
+COPY vendor ./vendor
 RUN npm ci --omit=dev --ignore-scripts
 
 # Compiled JS from builder stage

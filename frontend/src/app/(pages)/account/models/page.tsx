@@ -47,7 +47,7 @@ export default function ModelsAndApiKeysPage() {
                             {t("tabularModel")}
                         </label>
                         <TabularModelDropdown
-                            value={profile?.tabularModel ?? "claude-sonnet-5"}
+                            value={profile?.tabularModel ?? "claude-sonnet-5-5"}
                             apiKeys={{
                                 claudeApiKey: null,
                                 geminiApiKey: null,

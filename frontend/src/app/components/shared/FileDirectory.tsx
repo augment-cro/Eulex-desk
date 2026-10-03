@@ -7,10 +7,16 @@ import {
     ChevronDown,
     ChevronRight,
     File,
+    FileSpreadsheet,
     FileText,
     Folder,
+    Mail,
     Trash2,
 } from "lucide-react";
+import {
+    isEmailFileType,
+    isSpreadsheetFileType,
+} from "@/app/lib/supportedFileTypes";
 import type { MikeDocument, MikeProject } from "./types";
 import { VersionChip } from "./VersionChip";
 
@@ -28,6 +34,12 @@ function formatDate(iso: string | null, locale?: string) {
 export function DocFileIcon({ fileType }: { fileType: string | null }) {
     if (fileType === "pdf")
         return <FileText className="h-3.5 w-3.5 text-destructive shrink-0" />;
+    if (isSpreadsheetFileType(fileType))
+        return (
+            <FileSpreadsheet className="h-3.5 w-3.5 text-success shrink-0" />
+        );
+    if (isEmailFileType(fileType))
+        return <Mail className="h-3.5 w-3.5 text-foreground shrink-0" />;
     return <File className="h-3.5 w-3.5 text-foreground shrink-0" />;
 }
 

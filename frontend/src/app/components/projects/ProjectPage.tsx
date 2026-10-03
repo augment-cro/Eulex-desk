@@ -8,6 +8,7 @@ import {
     Loader2,
     FileText,
     File,
+    FileSpreadsheet,
     AlertCircle,
     ChevronDown,
     ChevronRight,
@@ -15,6 +16,7 @@ import {
     Folder,
     FolderOpen,
     FolderPlus,
+    Mail,
     MessageSquare,
     Pencil,
     Table2,
@@ -69,7 +71,11 @@ import { invalidateDocxBytes } from "@/app/hooks/useFetchDocxBytes";
 import { AddNewTRModal } from "@/app/components/tabular/AddNewTRModal";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { track } from "@/app/lib/analytics";
-import { SUPPORTED_UPLOAD_LABEL } from "@/app/lib/supportedFileTypes";
+import {
+    SUPPORTED_UPLOAD_LABEL,
+    isEmailFileType,
+    isSpreadsheetFileType,
+} from "@/app/lib/supportedFileTypes";
 import { useLocale, useTranslations } from "next-intl";
 
 interface Props {
@@ -108,6 +114,10 @@ function DocIcon({ fileType }: { fileType: string | null }) {
         return <FileText className="h-4 w-4 text-destructive shrink-0" />;
     if (fileType === "docx" || fileType === "doc")
         return <File className="h-4 w-4 text-foreground shrink-0" />;
+    if (isSpreadsheetFileType(fileType))
+        return <FileSpreadsheet className="h-4 w-4 text-success shrink-0" />;
+    if (isEmailFileType(fileType))
+        return <Mail className="h-4 w-4 text-foreground shrink-0" />;
     return <File className="h-4 w-4 text-muted-foreground shrink-0" />;
 }
 

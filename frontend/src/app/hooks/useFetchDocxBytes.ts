@@ -48,15 +48,17 @@ export function useFetchDocxBytes(
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    console.log("[useFetchDocxBytes] init", {
-        documentId,
-        versionId,
-        refetchKey,
-        initialKey,
-        cacheHit: initialKey ? bytesCache.has(initialKey) : null,
-    });
-
     useEffect(() => {
+        // Logged per fetch key, not per render: the hook re-renders with its
+        // parent, and a render log flooded the console ~60×/s (30. 9. 2026).
+        console.log("[useFetchDocxBytes] init", {
+            documentId,
+            versionId,
+            refetchKey,
+            cacheHit: documentId
+                ? bytesCache.has(cacheKey(documentId, versionId, refetchKey))
+                : null,
+        });
         if (!documentId) {
             setBytes(null);
             setDownloadUrl(null);

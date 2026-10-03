@@ -39,7 +39,7 @@ function renderIn(locale: "hr" | "en", ui: ReactElement): HTMLElement {
 }
 
 const failures: UploadFailure[] = [
-    { name: "tablica.xlsx", reason: "unsupported", fileType: "xlsx" },
+    { name: "prezentacija.pptx", reason: "unsupported", fileType: "pptx" },
     { name: "sken.pdf", reason: "too_large" },
     { name: "ugovor.docx", reason: "error" },
 ];
@@ -53,10 +53,12 @@ describe("UploadFailuresAlert", () => {
         );
         const text = container.textContent ?? "";
         expect(text).toContain("3 datoteke nisu učitane");
-        expect(text).toContain("tablica.xlsx· nepodržani format (XLSX)");
+        expect(text).toContain("prezentacija.pptx· nepodržani format (PPTX)");
         expect(text).toContain("sken.pdf· prevelika datoteka (najviše 100 MB)");
         expect(text).toContain("ugovor.docx· učitavanje nije uspjelo");
-        expect(text).toContain("Podržani formati: PDF, DOCX, DOC, TXT.");
+        expect(text).toContain(
+            "Podržani formati: PDF, DOCX, DOC, TXT, MD, XLSX, XLSM, XLS, CSV, EML, MSG.",
+        );
         const close = container.querySelector<HTMLButtonElement>(
             'button[aria-label="Zatvori"]',
         );

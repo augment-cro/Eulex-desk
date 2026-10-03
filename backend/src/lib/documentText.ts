@@ -15,12 +15,21 @@
  *   - "markdown" — tabular review. PDF pages are `## Page N` headings (the
  *                  chunker and `[[page:N||quote:…]]` citations key on them);
  *                  DOCX keeps headings, bold and lists via mammoth HTML.
+ * Spreadsheets (xlsx/xlsm/xls/csv) give the same cell-addressed text in both
+ * flavours — one `## Sheet:` table per sheet, cited by sheet + cell
+ * (lib/spreadsheet.ts).
+ * E-mails (eml/msg) are paged text (lib/emailText.ts): page 1 is the header
+ * block, the attachment list and the body; each supported attachment
+ * follows as further pages, read by this module's own extractors. The
+ * markdown flavour only turns `[Page N]` into `## Page N`.
  *
  * PDF OCR runs once per document version: Gemini's transcription (~35 s per
  * call on average in production, and ~40 % of calls re-read a PDF that was
  * already transcribed) is persisted next to the version's bytes and reused
  * by every later read, in either flavour. The cache object shares the
  * version's storage prefix and is deleted with it (`textCachePathsFor`).
+ * An e-mail's text is cached the same way, because its PDF attachments
+ * are OCR'd too.
  */
 
 import path from "path";
@@ -29,11 +38,41 @@ import { extractDocxBodyText } from "./docxTrackedChanges";
 import { normalizeDocxZipPaths } from "./convert";
 import { downloadFile, uploadFile } from "./storage";
 import { providerForModel } from "./llm/models";
+import {
+    SpreadsheetLimitError,
+    assertZipWithinLimits,
+    isSpreadsheetText,
+    oleKind,
+    splitSpreadsheetTextIntoParts,
+    zipPackageKind,
+    type SpreadsheetInput,
+} from "./spreadsheet";
+import {
+    canonicalUploadType,
+    fileExtension,
+    isSupportedUploadType,
+} from "./fileTypes";
+import {
+    looksLikeRfc822,
+    parseEmail,
+    renderEmailText,
+    type EmailAttachment,
+} from "./emailText";
+// SheetJS parses synchronously, so every workbook read runs in a worker
+// thread and never on the event loop.
+import {
+    spreadsheetSheetNamesOffThread,
+    spreadsheetTextOffThread,
+    spreadsheetXlsxOffThread,
+} from "./spreadsheetThread";
 
 export type TextFlavor = "plain" | "markdown";
 
 /** Bump to invalidate every persisted OCR transcription. */
 const OCR_CACHE_VERSION = 1;
+
+/** Bump to invalidate every persisted e-mail text (format changes). */
+const EMAIL_CACHE_VERSION = 1;
 
 const STANDARD_FONT_DATA_URL = (() => {
     try {
@@ -100,18 +139,44 @@ export function ocrCachePath(storagePath: string): string {
 }
 
 /**
+ * Where a spreadsheet version's viewer copy (.xls/.csv converted to .xlsx)
+ * is cached.
+ */
+export function spreadsheetViewCachePath(storagePath: string): string {
+    return `${storagePath}.view.xlsx`;
+}
+
+/** Where an e-mail version's text (with its attachments' text) is cached. */
+export function emailTextCachePath(storagePath: string): string {
+    return `${storagePath}.email-v${EMAIL_CACHE_VERSION}.txt`;
+}
+
+/**
  * Derived objects stored next to a version's bytes. Every code path that
  * deletes a version's `storage_path` must delete these too.
  */
 export function textCachePathsFor(storagePath: string): string[] {
-    return [ocrCachePath(storagePath)];
+    return [
+        ocrCachePath(storagePath),
+        spreadsheetViewCachePath(storagePath),
+        emailTextCachePath(storagePath),
+    ];
 }
 
 // ---------------------------------------------------------------------------
 // Extraction
 // ---------------------------------------------------------------------------
 
-type ContentKind = "pdf" | "docx" | "doc" | "txt";
+export type ContentKind =
+    | "pdf"
+    | "docx"
+    | "doc"
+    | "txt"
+    | "xlsx"
+    | "xls"
+    | "csv"
+    | "eml"
+    | "msg";
 
 function toBuffer(bytes: ArrayBuffer | Buffer): Buffer {
     return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
@@ -126,35 +191,148 @@ function toArrayBuffer(buf: Buffer): ArrayBuffer {
 
 const OLE_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 
-function sniff(buf: Buffer): ContentKind | null {
+/**
+ * What the bytes are, from the container:
+ *   - zip holding `xl/workbook.*` → "xlsx" (also xlsm); `word/…` → "docx";
+ *     any other zip → "zip"
+ *   - OLE with a top-level `Workbook`/`Book` stream → "xls"; with
+ *     `WordDocument` → "doc"; with Outlook message properties → "msg"; any
+ *     other OLE (e.g. an encrypted xlsx) → "ole"
+ *   - "pdf"; text that opens with RFC 822 mail headers → "eml"; null when
+ *     unrecognised (other text, HTML, …)
+ */
+export type SniffedContainer =
+    | "pdf"
+    | "docx"
+    | "xlsx"
+    | "zip"
+    | "doc"
+    | "xls"
+    | "msg"
+    | "ole"
+    | "eml";
+
+export function sniffDocument(bytes: ArrayBuffer | Buffer): SniffedContainer | null {
+    const buf = toBuffer(bytes);
     // The PDF header may sit anywhere in the first KiB.
     if (buf.subarray(0, 1024).includes("%PDF-")) return "pdf";
     if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04)
-        return "docx";
-    if (buf.subarray(0, 8).equals(OLE_MAGIC)) return "doc";
+        return zipPackageKind(buf);
+    if (buf.subarray(0, 8).equals(OLE_MAGIC)) return oleKind(buf);
+    if (looksLikeRfc822(buf)) return "eml";
     return null;
 }
+
+const SPREADSHEET_KINDS: readonly ContentKind[] = ["xlsx", "xls", "csv"];
 
 /**
  * Which extractor to run. The declared type wins, except where the bytes
  * say otherwise in a way we know how to read: a ".doc" that is really a
- * zip (renamed DOCX) or a ".docx" that is really an OLE file. Unknown
- * types fall back to sniffing; null means unreadable.
+ * zip (renamed DOCX), a ".docx" that is really an OLE file, a workbook
+ * saved under a Word or PDF name, an e-mail under a Word name, or the
+ * reverse. Unknown types fall back to sniffing; null means unreadable.
+ * An ".eml" holding an Outlook .msg is read as one, and vice versa.
  */
-function resolveKind(fileType: string, buf: Buffer): ContentKind | null {
-    const sniffed = sniff(buf);
-    switch (fileType) {
+export function resolveDocumentKind(
+    fileType: string | null | undefined,
+    bytes: ArrayBuffer | Buffer,
+): ContentKind | null {
+    const sniffed = sniffDocument(bytes);
+    // An unrecognised zip/OLE under a Word or PDF name keeps the historical
+    // reading (every zip was DOCX, every OLE file .doc).
+    const wordish =
+        sniffed === "zip" ? "docx" : sniffed === "ole" ? "doc" : sniffed;
+    switch ((fileType ?? "").toLowerCase()) {
         case "pdf":
-            return sniffed === "docx" || sniffed === "doc" ? sniffed : "pdf";
+            return wordish && wordish !== "pdf" ? wordish : "pdf";
         case "txt":
             return "txt";
         case "doc":
-            return sniffed === "docx" ? "docx" : "doc";
+            return wordish === "docx" ||
+                wordish === "xlsx" ||
+                wordish === "xls" ||
+                wordish === "msg" ||
+                wordish === "eml"
+                ? wordish
+                : "doc";
         case "docx":
-            return sniffed === "doc" ? "doc" : "docx";
+            return wordish === "doc" ||
+                wordish === "xlsx" ||
+                wordish === "xls" ||
+                wordish === "msg" ||
+                wordish === "eml"
+                ? wordish
+                : "docx";
+        case "eml":
+            return sniffed === "msg" ? "msg" : "eml";
+        case "msg":
+            // Anything that is not an RFC 822 text goes to msgreader, which
+            // says why it cannot read it.
+            return sniffed === "eml" ? "eml" : "msg";
+        case "xlsx":
+        case "xlsm":
+        case "xls":
+            if (sniffed === "pdf" || sniffed === "docx" || sniffed === "doc")
+                return sniffed;
+            // A zip is an OOXML (or ODS) workbook; anything else — BIFF,
+            // an encrypted package, HTML or XML "xls" exports — goes to
+            // SheetJS, which detects the format or says why it cannot.
+            return sniffed === "xlsx" || sniffed === "zip" ? "xlsx" : "xls";
+        case "csv":
+            if (sniffed === "xlsx" || sniffed === "zip") return "xlsx";
+            return sniffed === "xls" ? "xls" : "csv";
         default:
-            return sniffed;
+            return wordish;
     }
+}
+
+/** SheetJS input for a spreadsheet kind: decoded CSV text or workbook bytes. */
+function spreadsheetInput(kind: ContentKind, buf: Buffer): SpreadsheetInput {
+    return kind === "csv"
+        ? { kind: "csv", text: decodeText(buf) }
+        : { kind: "workbook", bytes: buf };
+}
+
+function isSpreadsheetKind(kind: ContentKind | null): kind is "xlsx" | "xls" | "csv" {
+    return kind !== null && SPREADSHEET_KINDS.includes(kind);
+}
+
+/**
+ * The bytes the spreadsheet viewer loads.
+ *   - A real .xlsx/.xlsm package is served as stored, but only within the
+ *     reader's size limit. The browser inflates it too, so a zip bomb must
+ *     not reach it.
+ *   - Anything else (.xls, .csv, a mislabelled workbook) is converted to
+ *     .xlsx with SheetJS. `converted` tells the caller to cache the result.
+ */
+export async function spreadsheetViewXlsx(
+    fileType: string | null | undefined,
+    bytes: ArrayBuffer | Buffer,
+): Promise<{ bytes: Buffer; converted: boolean }> {
+    const buf = toBuffer(bytes);
+    if (sniffDocument(buf) === "xlsx") {
+        await assertZipWithinLimits(buf);
+        return { bytes: buf, converted: false };
+    }
+    const kind = resolveDocumentKind(fileType, buf);
+    if (!isSpreadsheetKind(kind))
+        throw new Error(`Not a spreadsheet: file_type="${fileType ?? ""}"`);
+    return {
+        bytes: await spreadsheetXlsxOffThread(spreadsheetInput(kind, buf)),
+        converted: true,
+    };
+}
+
+/** Sheet names of a spreadsheet version (its structure tree); null otherwise. */
+export async function spreadsheetSheetNamesFor(
+    fileType: string | null | undefined,
+    bytes: ArrayBuffer | Buffer,
+): Promise<string[] | null> {
+    const buf = toBuffer(bytes);
+    const kind = resolveDocumentKind(fileType, buf);
+    return isSpreadsheetKind(kind)
+        ? spreadsheetSheetNamesOffThread(spreadsheetInput(kind, buf))
+        : null;
 }
 
 /**
@@ -174,8 +352,9 @@ export async function extractDocumentText(params: {
 }): Promise<string> {
     const buf = toBuffer(params.bytes);
     const fileType = (params.fileType ?? "").toLowerCase();
-    const kind = resolveKind(fileType, buf);
-    if (kind !== fileType && fileType) {
+    const kind = resolveDocumentKind(fileType, buf);
+    const expected = fileType === "xlsm" ? "xlsx" : fileType;
+    if (kind !== expected && fileType) {
         console.warn(
             `[documentText] declared file_type="${fileType}" read as "${kind ?? "unknown"}"`,
         );
@@ -202,6 +381,23 @@ export async function extractDocumentText(params: {
         }
         case "txt":
             return decodeText(buf);
+        case "xlsx":
+        case "xls":
+        case "csv":
+            // One text for both flavours: cell-addressed tables, no pages.
+            return spreadsheetTextOffThread(spreadsheetInput(kind, buf));
+        case "eml":
+        case "msg": {
+            const plain = await emailPlainText(
+                kind,
+                buf,
+                params.geminiApiKey ?? null,
+                params.storagePath ?? null,
+            );
+            return params.flavor === "markdown"
+                ? pdfPageMarkersToHeadings(plain)
+                : plain;
+        }
         default:
             throw new Error(
                 `Unreadable document: file_type="${fileType || "(none)"}" and no recognizable content`,
@@ -225,6 +421,33 @@ async function pdfPlainText(
         }
     }
 
+    const { text, complete } = await pdfOcrText(buf, apiKey, cacheKey !== null);
+    if (cacheKey && complete) {
+        void deps
+            .writeCache(cacheKey, text)
+            .catch((err) =>
+                console.warn(
+                    `[documentText] OCR cache write failed: ${err instanceof Error ? err.message : String(err)}`,
+                ),
+            );
+    }
+    return text;
+}
+
+/**
+ * A PDF's text: Gemini OCR, or the text layer when OCR cannot run or
+ * returns nothing. `complete` says whether the text may be persisted —
+ * only an OCR transcription that reaches the last page (a long PDF can hit
+ * the model's output limit, and a truncated text must not be pinned to a
+ * version forever) and never the text-layer fallback (an OCR outage must
+ * not pin the weaker result). The page count is read only when
+ * `checkComplete` asks for it.
+ */
+async function pdfOcrText(
+    buf: Buffer,
+    apiKey: string | null,
+    checkComplete: boolean,
+): Promise<{ text: string; complete: boolean }> {
     let ocr = "";
     try {
         ocr = await deps.ocrPdf(toArrayBuffer(buf), apiKey);
@@ -236,35 +459,134 @@ async function pdfPlainText(
         );
     }
     if (ocr.trim()) {
-        if (cacheKey) {
-            // Persist only a transcription that reaches the last page — a
-            // long PDF can hit the model's output limit, and a truncated
-            // text must not be pinned to this version forever.
-            const pages = await pdfPageCount(buf);
-            const lastMarked = lastPageMarker(ocr);
-            if (pages !== null && lastMarked < pages) {
-                console.warn(
-                    `[documentText] OCR covered ${lastMarked}/${pages} pages — not cached`,
-                );
-            } else {
-                void deps
-                    .writeCache(cacheKey, ocr)
-                    .catch((err) =>
-                        console.warn(
-                            `[documentText] OCR cache write failed: ${err instanceof Error ? err.message : String(err)}`,
-                        ),
-                    );
-            }
+        if (!checkComplete) return { text: ocr, complete: true };
+        const pages = await pdfPageCount(buf);
+        const lastMarked = lastPageMarker(ocr);
+        if (pages !== null && lastMarked < pages) {
+            console.warn(
+                `[documentText] OCR covered ${lastMarked}/${pages} pages — not cached`,
+            );
+            return { text: ocr, complete: false };
         }
-        return ocr;
+        return { text: ocr, complete: true };
     }
 
     console.warn(
         "[documentText] Gemini OCR returned nothing, falling back to pdfjs-dist",
     );
-    // Deliberately NOT cached: an OCR outage must not pin the weaker
-    // text-layer result to this version forever.
-    return pdfTextLayer(buf);
+    return { text: await pdfTextLayer(buf), complete: false };
+}
+
+// ---------------------------------------------------------------------------
+// E-mail (eml / msg)
+// ---------------------------------------------------------------------------
+
+/** MIME types of attachments that carry no usable file name. */
+const ATTACHMENT_KIND_BY_MIME: Readonly<Record<string, ContentKind>> = {
+    "application/pdf": "pdf",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "text/plain": "txt",
+    "text/markdown": "txt",
+    "text/csv": "csv",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-excel.sheet.macroenabled.12": "xlsx",
+    "message/rfc822": "eml",
+    "application/vnd.ms-outlook": "msg",
+};
+
+/**
+ * How to read an e-mail attachment: by its extension when that is a
+ * supported upload type (the bytes still win, as for an upload), else by
+ * its MIME type, else by what the bytes are. Containers we cannot name
+ * (a .pptx zip, an unknown OLE file) and everything else — images,
+ * archives, winmail.dat — are unsupported.
+ */
+export function emailAttachmentKind(att: {
+    filename: string;
+    contentType: string | null;
+    content: Buffer;
+}): ContentKind | null {
+    const ext = canonicalUploadType(fileExtension(att.filename));
+    if (isSupportedUploadType(ext)) return resolveDocumentKind(ext, att.content);
+    const byMime = ATTACHMENT_KIND_BY_MIME[att.contentType ?? ""];
+    if (byMime) return resolveDocumentKind(byMime, att.content);
+    const sniffed = sniffDocument(att.content);
+    return sniffed === "zip" || sniffed === "ole" ? null : sniffed;
+}
+
+/** Plain text of one attachment (never an e-mail — those nest, depth 1). */
+async function attachmentPlainText(
+    kind: string,
+    buf: Buffer,
+    apiKey: string | null,
+): Promise<{ text: string; complete: boolean }> {
+    switch (kind) {
+        case "pdf":
+            return pdfOcrText(buf, apiKey, true);
+        case "docx":
+            return { text: await docxPlainText(buf), complete: true };
+        case "doc": {
+            const WordExtractor = (await import("word-extractor")).default;
+            const doc = await new WordExtractor().extract(buf);
+            return { text: doc.getBody(), complete: true };
+        }
+        case "txt":
+            return { text: decodeText(buf), complete: true };
+        case "xlsx":
+        case "xls":
+        case "csv":
+            try {
+                return {
+                    text: await spreadsheetTextOffThread(spreadsheetInput(kind, buf)),
+                    complete: true,
+                };
+            } catch (err) {
+                // The worker's time and heap limits depend on load too, so
+                // this result is not final: do not cache the e-mail text.
+                if (err instanceof SpreadsheetLimitError)
+                    return { text: "", complete: false };
+                throw err;
+            }
+        default:
+            throw new Error(`Unsupported attachment kind "${kind}"`);
+    }
+}
+
+/**
+ * An e-mail's plain text (lib/emailText.ts), persisted per version like an
+ * OCR transcription: its PDF attachments are OCR'd, so a read of the same
+ * version never repeats that work. A text with a fallback in it (OCR fell
+ * back to the text layer, a spreadsheet hit a worker limit) is not cached.
+ */
+async function emailPlainText(
+    kind: "eml" | "msg",
+    buf: Buffer,
+    apiKey: string | null,
+    storagePath: string | null,
+): Promise<string> {
+    const cacheKey = storagePath ? emailTextCachePath(storagePath) : null;
+    if (cacheKey) {
+        const cached = await deps.readCache(cacheKey).catch(() => null);
+        if (cached && cached.trim()) return cached;
+    }
+    const email = await parseEmail(kind, buf);
+    const { text, complete } = await renderEmailText(email, {
+        kindOf: (att: EmailAttachment & { content: Buffer }) =>
+            emailAttachmentKind(att),
+        extract: (attKind, bytes) => attachmentPlainText(attKind, bytes, apiKey),
+    });
+    if (cacheKey && complete) {
+        void deps
+            .writeCache(cacheKey, text)
+            .catch((err) =>
+                console.warn(
+                    `[documentText] e-mail text cache write failed: ${err instanceof Error ? err.message : String(err)}`,
+                ),
+            );
+    }
+    return text;
 }
 
 async function pdfTextLayer(buf: Buffer): Promise<string> {
@@ -397,11 +719,14 @@ export function decodeText(buf: Buffer): string {
  * Split text into parts of at most `budget` characters. Parts follow page
  * markers when the text has them (`## Page N` or `[Page N]`, so page
  * numbers and citations stay globally correct), otherwise paragraph
- * breaks; a single segment larger than the budget is sliced. Deterministic:
- * the same text and budget always yield the same parts.
+ * breaks; a single segment larger than the budget is sliced. Spreadsheet
+ * text breaks between rows and repeats the sheet heading and column-letter
+ * header in every part. Deterministic: the same text and budget always
+ * yield the same parts.
  */
 export function splitTextIntoParts(text: string, budget: number): string[] {
     if (text.length <= budget) return [text];
+    if (isSpreadsheetText(text)) return splitSpreadsheetTextIntoParts(text, budget);
 
     // Last-resort split for a single segment larger than the budget
     // (a paragraph/page that alone exceeds it) — plain slices.

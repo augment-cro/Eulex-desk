@@ -1,0 +1,1165 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Billing Provider",
+        "version": "1.0.0",
+        "description": "Optional external billing provider, enabled when BILLING_PROVIDER_URL and BILLING_SERVICE_SECRET are set. It issues offline-payment quotes (e.g. a bank-transfer quote from an accounting system), tracks their payment, and serves the user's fiscal documents. The core relays: it sends the plan as opaque data priced from its own catalogue, passes answers through unchanged, and applies the plan grants the provider posts back to POST /internal/billing/grants (implemented BY the core) under its own rules (paid plan levels only, bounded in time, never over an equal-or-stronger grant from another source, withdraws only grants this service wrote). Identity: contracts/service-identity.md — user calls carry scope seam:billing (sub desk-<userId>, optional email claim); operator calls carry scope seam:billing-admin (sub adminmax). Billing tokens are never issued to a browser, so request bodies come from the core. With the provider absent the core runs unchanged (standalone-core rule)."
+    },
+    "paths": {
+        "/offline/config": {
+            "get": {
+                "summary": "Whether the user can request an offline-payment quote now",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "tax_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "The user's company tax id, when the core knows it"
+                    },
+                    {
+                        "name": "country",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "The user's billing country (ISO-2) from the core profile; quotes are offered only for supported countries"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Config",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": [
+                                        "enabled"
+                                    ],
+                                    "properties": {
+                                        "enabled": {
+                                            "type": "boolean"
+                                        },
+                                        "validDays": {
+                                            "type": "integer"
+                                        },
+                                        "provisionalDays": {
+                                            "type": "integer",
+                                            "description": "Days the plan is granted before payment; 0 = only after payment"
+                                        },
+                                        "periodMonths": {
+                                            "type": "integer"
+                                        },
+                                        "vatRate": {
+                                            "type": "number"
+                                        },
+                                        "countries": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Billing countries this provider issues quotes to"
+                                        },
+                                        "reason": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Why enabled is false, e.g. COUNTRY_UNSUPPORTED"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/offline/quotes": {
+            "post": {
+                "summary": "Issue a quote for the calling user and deliver it",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "plan",
+                                    "buyer"
+                                ],
+                                "properties": {
+                                    "plan": {
+                                        "$ref": "#/components/schemas/Plan"
+                                    },
+                                    "buyer": {
+                                        "$ref": "#/components/schemas/Buyer"
+                                    },
+                                    "email": {
+                                        "type": [
+                                            "string",
+                                            "null"
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Issued",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "quote": {
+                                            "$ref": "#/components/schemas/Quote"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents": {
+            "get": {
+                "summary": "The calling user's quotes and fiscal invoices",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "customer_ref",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "The user's payment-processor customer id, for matching invoices made from card payments"
+                    },
+                    {
+                        "name": "country",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "The user's billing country (ISO-2) from the core profile; documents are listed only for supported countries"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Documents",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "available": {
+                                            "type": "boolean"
+                                        },
+                                        "reason": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "COUNTRY_UNSUPPORTED when the billing country gets no documents"
+                                        },
+                                        "countries": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Supported billing countries (ISO-2)"
+                                        },
+                                        "quotes": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Quote"
+                                            }
+                                        },
+                                        "invoices": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Invoice"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/{kind}/{id}/pdf": {
+            "get": {
+                "summary": "One of the calling user's documents as PDF",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "kind",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "enum": [
+                                "quotes",
+                                "invoices"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "customer_ref",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "country",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "The user's billing country (ISO-2) from the core profile; unsupported countries get 404"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The document's original PDF",
+                        "content": {
+                            "application/pdf": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/quotes": {
+            "get": {
+                "summary": "All quotes (operator)",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "status",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Quotes",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "config": {
+                                            "type": "object"
+                                        },
+                                        "quotes": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/AdminQuote"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "summary": "Issue a quote for a given user (operator)",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "user_id",
+                                    "plan",
+                                    "buyer"
+                                ],
+                                "properties": {
+                                    "user_id": {
+                                        "type": "string"
+                                    },
+                                    "plan": {
+                                        "$ref": "#/components/schemas/Plan"
+                                    },
+                                    "buyer": {
+                                        "$ref": "#/components/schemas/Buyer"
+                                    },
+                                    "email": {
+                                        "type": [
+                                            "string",
+                                            "null"
+                                        ]
+                                    },
+                                    "provisional": {
+                                        "type": "boolean"
+                                    },
+                                    "send_email": {
+                                        "type": "boolean"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Issued",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "quote": {
+                                            "$ref": "#/components/schemas/Quote"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/eligibility": {
+            "get": {
+                "summary": "Would a new quote for this user get provisional access?",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "user_id",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "tax_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "country",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Eligibility",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "provisionalAvailable": {
+                                            "type": "boolean"
+                                        },
+                                        "countrySupported": {
+                                            "type": "boolean"
+                                        },
+                                        "countries": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/quotes/{id}/{action}": {
+            "post": {
+                "summary": "mark-paid {paidAt?, note?} | resend {email?} | cancel {note?} | retry",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "action",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "enum": [
+                                "mark-paid",
+                                "resend",
+                                "cancel",
+                                "retry"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": false,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Updated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "quote": {
+                                            "$ref": "#/components/schemas/Quote"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/quotes/{id}/pdf": {
+            "get": {
+                "summary": "A quote's PDF (operator)",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The document's original PDF",
+                        "content": {
+                            "application/pdf": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/invoices/{id}/pdf": {
+            "get": {
+                "summary": "An invoice's PDF (operator)",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The document's original PDF",
+                        "content": {
+                            "application/pdf": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/check-payments": {
+            "post": {
+                "summary": "Check open quotes for recorded payments now",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Result",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/sync-invoices": {
+            "post": {
+                "summary": "Refresh the invoice index now",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Result",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/billing/grants": {
+            "post": {
+                "summary": "Provider → core: the user's current plan grant from this provider (implemented BY the core; idempotent, send the whole state each time)",
+                "security": [
+                    {
+                        "serviceIdentity": []
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "user_id",
+                                    "grant"
+                                ],
+                                "properties": {
+                                    "user_id": {
+                                        "type": "string"
+                                    },
+                                    "grant": {
+                                        "oneOf": [
+                                            {
+                                                "type": "null"
+                                            },
+                                            {
+                                                "type": "object",
+                                                "required": [
+                                                    "tier_level_id",
+                                                    "until"
+                                                ],
+                                                "properties": {
+                                                    "tier_level_id": {
+                                                        "type": "integer",
+                                                        "description": "Echo of Plan.tierLevelId"
+                                                    },
+                                                    "until": {
+                                                        "type": "string",
+                                                        "format": "date-time"
+                                                    },
+                                                    "label": {
+                                                        "type": "string"
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Applied or deliberately not applied",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean"
+                                        },
+                                        "action": {
+                                            "enum": [
+                                                "set",
+                                                "none"
+                                            ]
+                                        },
+                                        "why": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "securitySchemes": {
+            "serviceIdentity": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": "contracts/service-identity.md"
+            }
+        },
+        "schemas": {
+            "Error": {
+                "type": "object",
+                "required": [
+                    "code"
+                ],
+                "properties": {
+                    "code": {
+                        "type": "string"
+                    },
+                    "detail": {
+                        "type": "string"
+                    },
+                    "field": {
+                        "type": "string",
+                        "description": "Offending buyer field on validation errors"
+                    }
+                }
+            },
+            "Plan": {
+                "type": "object",
+                "description": "Opaque to the provider except for pricing; tierLevelId and rank come back in grants.",
+                "required": [
+                    "key",
+                    "name",
+                    "tierLevelId",
+                    "rank",
+                    "netMonthlyPrice",
+                    "currency",
+                    "perSeat",
+                    "seats"
+                ],
+                "properties": {
+                    "key": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "tierLevelId": {
+                        "type": "integer"
+                    },
+                    "rank": {
+                        "type": "integer",
+                        "description": "Higher = better plan"
+                    },
+                    "productCode": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "netMonthlyPrice": {
+                        "type": "number"
+                    },
+                    "currency": {
+                        "type": "string"
+                    },
+                    "perSeat": {
+                        "type": "boolean"
+                    },
+                    "seats": {
+                        "type": "integer"
+                    }
+                }
+            },
+            "Buyer": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "taxId",
+                    "street",
+                    "postalCode",
+                    "city",
+                    "country"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "taxId": {
+                        "type": "string"
+                    },
+                    "street": {
+                        "type": "string"
+                    },
+                    "postalCode": {
+                        "type": "string"
+                    },
+                    "city": {
+                        "type": "string"
+                    },
+                    "country": {
+                        "type": "string",
+                        "description": "The account's billing country (ISO-2) as the core knows it; unsupported → 400 COUNTRY_UNSUPPORTED"
+                    }
+                }
+            },
+            "Quote": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "number": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "status": {
+                        "enum": [
+                            "creating",
+                            "issued",
+                            "paid",
+                            "expired",
+                            "cancelled",
+                            "failed"
+                        ]
+                    },
+                    "plan": {
+                        "type": "string"
+                    },
+                    "planName": {
+                        "type": "string"
+                    },
+                    "seats": {
+                        "type": "integer"
+                    },
+                    "netAmount": {
+                        "type": "number"
+                    },
+                    "grossAmount": {
+                        "type": "number"
+                    },
+                    "currency": {
+                        "type": "string"
+                    },
+                    "periodMonths": {
+                        "type": "integer"
+                    },
+                    "validUntil": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "createdAt": {
+                        "type": "string"
+                    },
+                    "createdBy": {
+                        "enum": [
+                            "user",
+                            "admin"
+                        ]
+                    },
+                    "recipientEmail": {
+                        "type": "string"
+                    },
+                    "emailStatus": {
+                        "enum": [
+                            "pending",
+                            "sent",
+                            "failed",
+                            "skipped"
+                        ]
+                    },
+                    "emailSentAt": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "paymentReference": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "provisionalUntil": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "paidAt": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "paidSource": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "accessUntil": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "invoiceNumbers": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "canDownload": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "AdminQuote": {
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/Quote"
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "userId": {
+                                "type": "string"
+                            },
+                            "buyer": {
+                                "$ref": "#/components/schemas/Buyer"
+                            },
+                            "paidAmount": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ]
+                            },
+                            "note": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "lastError": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+            "Invoice": {
+                "type": "object",
+                "properties": {
+                    "documentId": {
+                        "type": "string"
+                    },
+                    "number": {
+                        "type": "string"
+                    },
+                    "date": {
+                        "type": "string"
+                    },
+                    "amount": {
+                        "type": [
+                            "number",
+                            "null"
+                        ]
+                    },
+                    "currency": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "methodOfPayment": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "paid": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ]
+                    }
+                }
+            }
+        }
+    }
+}

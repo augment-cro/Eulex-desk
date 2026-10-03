@@ -1,4 +1,5 @@
 import { Mistral } from "@mistralai/mistralai";
+import { standardEffort } from "./models";
 import type {
     LlmUsage,
     StreamChatParams,
@@ -68,7 +69,7 @@ export async function streamMistral(
         apiKeys,
     } = params;
     const maxIter = params.maxIterations ?? 10;
-    const reasoningEffort = mistralReasoningEffort(model, params.reasoningEffort);
+    const reasoningEffort = mistralReasoningEffort(model, standardEffort(params.reasoningEffort));
     const mistral = client(apiKeys?.mistral);
 
     // Mistral rejects assistant messages with empty/blank content and no tool_calls.

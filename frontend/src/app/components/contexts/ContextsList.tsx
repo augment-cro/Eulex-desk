@@ -2,14 +2,24 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { Layers, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useContexts } from "@/app/contexts/ContextsContext";
-import { listContextAlertCounts } from "@/app/lib/mikeApi";
+import {
+    contextCreationEnabled,
+    listContextAlertCounts,
+} from "@/app/lib/mikeApi";
 import { NewContextModal } from "./NewContextModal";
+import { SystemContextBadge } from "./SystemContextBadge";
+import {
+    isSystemContext,
+    localizedContextDescription,
+    localizedContextName,
+} from "./contextLabels";
+import type { MikeContextListItem } from "@/app/lib/mikeApi";
 import { useConfirmDialog } from "@/app/components/modals/confirm-dialog";
 
 export function ContextsList() {
@@ -19,6 +29,19 @@ export function ContextsList() {
     const { confirm: confirmDialog, dialog: confirmDialogEl } =
         useConfirmDialog();
     const { items, enabled, loading, toggle, remove } = useContexts();
+    const locale = useLocale();
+    const canCreate = contextCreationEnabled();
+    const systemItems = items.filter((i) => isSystemContext(i.context));
+    const personalItems = items.filter((i) => !isSystemContext(i.context));
+    // System contexts grouped by area (Područje), in list order.
+    const systemByArea = systemItems.reduce<Map<string, MikeContextListItem[]>>(
+        (acc, item) => {
+            const key = item.context.area?.trim() || "";
+            acc.set(key, [...(acc.get(key) ?? []), item]);
+            return acc;
+        },
+        new Map(),
+    );
     const router = useRouter();
     const searchParams = useSearchParams();
     const [creating, setCreating] = useState(false);
@@ -65,6 +88,85 @@ export function ContextsList() {
         }
     }
 
+    function renderCard({ context, isOwner }: MikeContextListItem) {
+        const system = isSystemContext(context);
+        const name = system ? localizedContextName(context, locale) : context.name;
+        const description = system
+            ? localizedContextDescription(context, locale)
+            : context.description;
+        return (
+            <div
+                key={context.id}
+                className={cn(
+                    "rounded-lg border border-border p-4 transition-colors",
+                    enabled[context.id] && "bg-secondary",
+                )}
+            >
+                <div className="flex items-start justify-between gap-3">
+                    <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() => setEditId(context.id)}
+                    >
+                        <div className="flex items-center gap-2 font-medium text-foreground">
+                            {system && <SystemContextBadge />}
+                            <span className="truncate">{name}</span>
+                            {alertCounts[context.id] ? (
+                                <span
+                                    className="shrink-0 rounded-full bg-warning/10 px-1.5 py-0.5 text-xs text-warning"
+                                    title={t("recentAlerts", {
+                                        count: alertCounts[context.id],
+                                    })}
+                                >
+                                    {alertCounts[context.id]}
+                                </span>
+                            ) : null}
+                        </div>
+                        {description && (
+                            <div className="mt-0.5 text-sm text-muted-foreground line-clamp-2">
+                                {description}
+                            </div>
+                        )}
+                        {system && context.version_label && (
+                            <div className="mt-1 text-xs text-muted-foreground">
+                                {context.published_at
+                                    ? t("publishedVersion", {
+                                          version: context.version_label,
+                                          date: new Date(
+                                              context.published_at,
+                                          ).toLocaleDateString(locale),
+                                      })
+                                    : context.version_label}
+                            </div>
+                        )}
+                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                        <Switch
+                            checked={!!enabled[context.id]}
+                            onCheckedChange={(v) =>
+                                void handleToggle(context.id, v)
+                            }
+                            aria-label={t("toggleAria")}
+                        />
+                        {isOwner && !system && (
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    void handleDelete(context.id, context.name)
+                                }
+                                aria-label={t("deleteAria")}
+                                title={t("deleteAria")}
+                                className="rounded-md p-1 text-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive transition-colors"
+                            >
+                                <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     function closeEditor() {
         setEditId(null);
         // Drop a stale ?edit= deep link so a refresh doesn't reopen it.
@@ -78,10 +180,12 @@ export function ContextsList() {
                 <h1 className="text-2xl font-medium font-serif text-foreground">
                     {t("title")}
                 </h1>
-                <Button size="sm" onClick={() => setCreating(true)}>
-                    <Plus className="h-4 w-4" />
-                    {t("new")}
-                </Button>
+                {canCreate && (
+                    <Button size="sm" onClick={() => setCreating(true)}>
+                        <Plus className="h-4 w-4" />
+                        {t("new")}
+                    </Button>
+                )}
             </div>
 
             <div className="flex-1 overflow-y-auto px-8 pb-8">
@@ -115,87 +219,57 @@ export function ContextsList() {
                             {t("empty")}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground/70 text-left">
-                            {t("emptyDesc")}
+                            {canCreate ? t("emptyDesc") : t("emptyDescSystem")}
                         </p>
-                        <Button
-                            size="sm"
-                            className="mt-4"
-                            onClick={() => setCreating(true)}
-                        >
-                            <Plus className="h-4 w-4" />
-                            {t("new")}
-                        </Button>
+                        {canCreate && (
+                            <Button
+                                size="sm"
+                                className="mt-4"
+                                onClick={() => setCreating(true)}
+                            >
+                                <Plus className="h-4 w-4" />
+                                {t("new")}
+                            </Button>
+                        )}
                     </div>
                 ) : (
-                    <div className="grid gap-3 sm:grid-cols-2">
-                        {items.map(({ context, isOwner }) => (
-                            <div
-                                key={context.id}
-                                className={cn(
-                                    "rounded-lg border border-border p-4 transition-colors",
-                                    enabled[context.id] && "bg-secondary",
-                                )}
-                            >
-                                <div className="flex items-start justify-between gap-3">
-                                    <button
-                                        type="button"
-                                        className="min-w-0 flex-1 text-left"
-                                        onClick={() => setEditId(context.id)}
-                                    >
-                                        <div className="flex items-center gap-2 font-medium text-foreground">
-                                            <span className="truncate">
-                                                {context.name}
-                                            </span>
-                                            {alertCounts[context.id] ? (
-                                                <span
-                                                    className="shrink-0 rounded-full bg-warning/10 px-1.5 py-0.5 text-xs text-warning"
-                                                    title={t("recentAlerts", {
-                                                        count: alertCounts[
-                                                            context.id
-                                                        ],
-                                                    })}
-                                                >
-                                                    {alertCounts[context.id]}
-                                                </span>
-                                            ) : null}
-                                        </div>
-                                        {context.description && (
-                                            <div className="mt-0.5 text-sm text-muted-foreground line-clamp-2">
-                                                {context.description}
+                    <div className="flex flex-col gap-8">
+                        {systemItems.length > 0 && (
+                            <section className="flex flex-col gap-3">
+                                <h2 className="text-sm font-medium text-muted-foreground">
+                                    {t("systemSection")}
+                                </h2>
+                                {[...systemByArea.entries()].map(
+                                    ([area, group]) => (
+                                        <div
+                                            key={area || "_"}
+                                            className="flex flex-col gap-2"
+                                        >
+                                            {area && (
+                                                <h3 className="text-xs text-muted-foreground">
+                                                    {area}
+                                                </h3>
+                                            )}
+                                            <div className="grid gap-3 sm:grid-cols-2">
+                                                {group.map(renderCard)}
                                             </div>
-                                        )}
-                                    </button>
-                                    <div className="flex shrink-0 items-center gap-2">
-                                        <Switch
-                                            checked={!!enabled[context.id]}
-                                            onCheckedChange={(v) =>
-                                                void handleToggle(
-                                                    context.id,
-                                                    v,
-                                                )
-                                            }
-                                            aria-label={t("toggleAria")}
-                                        />
-                                        {isOwner && (
-                                            <button
-                                                type="button"
-                                                onClick={() =>
-                                                    void handleDelete(
-                                                        context.id,
-                                                        context.name,
-                                                    )
-                                                }
-                                                aria-label={t("deleteAria")}
-                                                title={t("deleteAria")}
-                                                className="rounded-md p-1 text-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive transition-colors"
-                                            >
-                                                <Trash2 className="h-3.5 w-3.5" />
-                                            </button>
-                                        )}
-                                    </div>
+                                        </div>
+                                    ),
+                                )}
+                            </section>
+                        )}
+                        {personalItems.length > 0 && (
+                            <section className="flex flex-col gap-3">
+                                {systemItems.length > 0 && (
+                                    <h2 className="text-sm font-medium text-muted-foreground">
+                                        {t("mySection")}
+                                    </h2>
+                                )}
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                    {personalItems.map(renderCard)}
                                 </div>
-                            </div>
-                        ))}
+                            </section>
+                        )}
                     </div>
                 )}
             </div>

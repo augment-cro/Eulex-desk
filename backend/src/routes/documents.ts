@@ -24,16 +24,27 @@ import {
   loadActiveVersion,
 } from "../lib/documentVersions";
 import { sealManifest } from "../lib/manifestSigning";
-import { ensureDocAccess } from "../lib/access";
+import { ensureDocAccess, ensureDocReadAccess } from "../lib/access";
 import { normalizeUploadFilename } from "../lib/filenameUtf8";
 import { singleFileUpload } from "../lib/upload";
 import { recordAuditEvent, recordFeatureUse } from "../lib/audit";
 import {
   UnsupportedFileTypeError,
+  XLSX_CONTENT_TYPE,
   assertSupportedUploadType,
   contentTypeForUpload,
+  isEmailType,
+  isSpreadsheetType,
 } from "../lib/fileTypes";
-import { textCachePathsFor } from "../lib/documentText";
+import {
+  extractDocumentText,
+  spreadsheetSheetNamesFor,
+  spreadsheetViewCachePath,
+  spreadsheetViewXlsx,
+  textCachePathsFor,
+} from "../lib/documentText";
+import { SpreadsheetLimitError } from "../lib/spreadsheet";
+import { parseUiLocale } from "../lib/uiLocale";
 
 export const documentsRouter = Router();
 
@@ -130,7 +141,7 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     .single();
   if (!doc)
     return void res.status(404).json({ detail: "Document not found" });
-  const access = await ensureDocAccess(doc, userId, userEmail, db);
+  const access = await ensureDocReadAccess(doc, userId, userEmail);
   if (!access.ok)
     return void res.status(404).json({ detail: "Document not found" });
 
@@ -140,6 +151,22 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
 
   const fileType = (doc.file_type as string) ?? "";
   const isDocx = fileType === "docx" || fileType === "doc";
+
+  if (isSpreadsheetType(fileType))
+    return void (await serveSpreadsheetView(
+      res,
+      doc.filename as string,
+      fileType,
+      active.storage_path,
+    ));
+
+  if (isEmailType(fileType))
+    return void (await serveEmailText(
+      res,
+      doc.filename as string,
+      fileType,
+      active.storage_path,
+    ));
 
   // For DOCX, prefer the per-version PDF rendition if one exists.
   const servePath =
@@ -179,6 +206,114 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     res.send(Buffer.from(raw));
   }
 });
+
+/**
+ * /display for a spreadsheet: always .xlsx bytes, which is all the browser
+ * viewer reads. An .xlsx/.xlsm package is served as stored; .xls and .csv
+ * are converted once per version with SheetJS and cached next to the
+ * version (`spreadsheetViewCachePath`, deleted with it via
+ * textCachePathsFor). Interim for owner decision 2: SheetJS CE carries
+ * values, number formats and merges but no cell styles; LibreOffice Calc
+ * would keep them and is not in the image yet.
+ */
+async function serveSpreadsheetView(
+  res: import("express").Response,
+  filename: string,
+  fileType: string,
+  storagePath: string,
+): Promise<void> {
+  const cachePath = spreadsheetViewCachePath(storagePath);
+  let view: Buffer | null = null;
+  if (fileType === "xls" || fileType === "csv") {
+    const cached = await downloadFile(cachePath);
+    if (cached) view = Buffer.from(cached);
+  }
+  if (!view) {
+    const raw = await downloadFile(storagePath);
+    if (!raw)
+      return void res
+        .status(404)
+        .json({ detail: "Document not found in storage" });
+    try {
+      const out = await spreadsheetViewXlsx(fileType, Buffer.from(raw));
+      view = out.bytes;
+      if (out.converted) {
+        void uploadFile(
+          cachePath,
+          view.buffer.slice(
+            view.byteOffset,
+            view.byteOffset + view.byteLength,
+          ) as ArrayBuffer,
+          XLSX_CONTENT_TYPE,
+        ).catch((err) =>
+          console.warn(
+            `[display] spreadsheet view cache write failed: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+      }
+    } catch (err) {
+      const tooLarge = err instanceof SpreadsheetLimitError;
+      console.warn(
+        `[display] spreadsheet view failed file_type=${fileType}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return void res.status(422).json({
+        code: tooLarge ? "spreadsheet_too_large" : "spreadsheet_unreadable",
+        detail: tooLarge
+          ? "Spreadsheet is too large to display."
+          : "Spreadsheet could not be read.",
+      });
+    }
+  }
+  res.setHeader("Content-Type", XLSX_CONTENT_TYPE);
+  res.setHeader(
+    "Content-Disposition",
+    buildContentDisposition("inline", filename),
+  );
+  res.send(view);
+}
+
+/**
+ * /display for an e-mail (eml/msg): the text the model reads — header
+ * block, body, then each attachment's pages — as text/plain, which the
+ * frontend shows in the plain-text viewer (citations highlight like .txt).
+ * The same per-version cache as read_document (`emailTextCachePath`), so
+ * PDF attachments are OCR'd once. HTML bodies are never rendered (v1).
+ */
+async function serveEmailText(
+  res: import("express").Response,
+  filename: string,
+  fileType: string,
+  storagePath: string,
+): Promise<void> {
+  const raw = await downloadFile(storagePath);
+  if (!raw)
+    return void res
+      .status(404)
+      .json({ detail: "Document not found in storage" });
+  let text: string;
+  try {
+    text = await extractDocumentText({
+      fileType,
+      bytes: Buffer.from(raw),
+      flavor: "plain",
+      storagePath,
+    });
+  } catch (err) {
+    console.warn(
+      `[display] e-mail text failed file_type=${fileType}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return void res.status(422).json({
+      code: "email_unreadable",
+      detail: "E-mail could not be read.",
+    });
+  }
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    buildContentDisposition("inline", filename),
+  );
+  res.send(text);
+}
 
 // POST /single-documents/download-zip
 documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
@@ -324,7 +459,7 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
     .single();
   if (error || !doc)
     return void res.status(404).json({ detail: "Document not found" });
-  const access = await ensureDocAccess(doc, userId, userEmail, db);
+  const access = await ensureDocReadAccess(doc, userId, userEmail);
   if (!access.ok)
     return void res.status(404).json({ detail: "Document not found" });
 
@@ -370,14 +505,14 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
 
   const { data: doc, error } = await db
     .from("documents")
-    .select("id, filename, user_id, project_id")
+    .select("id, filename, file_type, user_id, project_id")
     .eq("id", documentId)
     .single();
   if (error || !doc) {
     console.warn(`[docx] document ${documentId} not found:`, error);
     return void res.status(404).json({ detail: "Document not found" });
   }
-  const access = await ensureDocAccess(doc, userId, userEmail, db);
+  const access = await ensureDocReadAccess(doc, userId, userEmail);
   if (!access.ok) {
     console.warn(`[docx] access denied for ${documentId} user=${userId}`);
     return void res.status(404).json({ detail: "Document not found" });
@@ -408,9 +543,13 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
     });
   }
 
+  // Raw bytes of any type come through here; only Word documents are DOCX.
+  const rawType = (doc.file_type as string | null) ?? "";
   res.setHeader(
     "Content-Type",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    isSpreadsheetType(rawType) || isEmailType(rawType)
+      ? contentTypeForUpload(rawType)
+      : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   );
   res.setHeader(
     "Content-Disposition",
@@ -479,7 +618,7 @@ documentsRouter.get("/:documentId/versions", requireAuth, async (req, res) => {
     .single();
   if (!doc)
     return void res.status(404).json({ detail: "Document not found" });
-  const access = await ensureDocAccess(doc, userId, userEmail, db);
+  const access = await ensureDocReadAccess(doc, userId, userEmail);
   if (!access.ok)
     return void res.status(404).json({ detail: "Document not found" });
 
@@ -1272,6 +1411,14 @@ export async function processDocumentBytes(params: {
 /** Multipart upload → processDocumentBytes → HTTP response. Shared by the
  *  standalone (`POST /single-documents`) and project
  *  (`POST /projects/:id/documents`) upload routes. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Optional `chat_id` text field of a multipart upload, or null. */
+export function multipartChatId(body: unknown): string | null {
+  const raw = (body as { chat_id?: unknown } | null | undefined)?.chat_id;
+  return typeof raw === "string" && UUID_RE.test(raw) ? raw : null;
+}
+
 export async function handleDocumentUpload(
   req: import("express").Request,
   res: import("express").Response,
@@ -1290,6 +1437,35 @@ export async function handleDocumentUpload(
       content: file.buffer,
       db,
     });
+    // PII pre-warm (standard mode only): the chat composer sends the
+    // chat it is uploading into as a multipart `chat_id` field; the
+    // document is anonymized in the background so the turn's first
+    // read_document hits the shield's analysis cache. Fire-and-forget —
+    // the upload response never waits on it.
+    const chatId = multipartChatId(req.body);
+    const versionId = responseDoc.current_version_id;
+    if (chatId && typeof versionId === "string") {
+      void import("../lib/pii/prewarm").then(({ prewarmUploadedDocument }) =>
+        prewarmUploadedDocument({
+          userId,
+          chatId,
+          documentVersionId: versionId,
+          fileType:
+            typeof responseDoc.file_type === "string" ? responseDoc.file_type : null,
+          bytes: file.buffer,
+          storagePath:
+            typeof responseDoc.storage_path === "string" ? responseDoc.storage_path : null,
+          language: parseUiLocale(req),
+          tierLevelId: res.locals.tierLevelId as number | undefined,
+          db,
+        }),
+      ).catch((err: unknown) => {
+        console.warn(
+          "[pii.prewarm] upload hook scheduling failed (non-fatal):",
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }
     return void res.status(201).json(responseDoc);
   } catch (e) {
     if (e instanceof UnsupportedFileTypeError) {
@@ -1322,9 +1498,22 @@ async function extractStructureTree(
   _filename: string,
 ): Promise<unknown[] | null> {
   try {
-    // Plain text (pasted-text attachments) carries no useful outline;
-    // mammoth below would throw on a non-zip buffer anyway.
-    if (fileType === "txt") return null;
+    // Plain text (pasted-text attachments) and e-mails carry no useful
+    // outline; mammoth below would throw on a non-zip buffer anyway.
+    if (fileType === "txt" || isEmailType(fileType)) return null;
+    // A workbook's outline is its sheets, in workbook order.
+    if (isSpreadsheetType(fileType)) {
+      const names = await spreadsheetSheetNamesFor(fileType, Buffer.from(content));
+      return names?.length
+        ? names.map((name, i) => ({
+            id: `sheet-${i}`,
+            title: name,
+            level: 1,
+            page_number: null,
+            children: [],
+          }))
+        : null;
+    }
     if (fileType === "pdf") {
       const pdfjsLib = await import(
         "pdfjs-dist/legacy/build/pdf.mjs" as string

@@ -1,29 +1,26 @@
 /**
- * /adminmax — separate admin portal for billing & usage oversight.
+ * Admin data routes of this deployment — served as /operator/v1/* by
+ * routes/operator.ts (auth: requireOperatorCaller; contract:
+ * contracts/operator.openapi.json). The operator console itself is a
+ * separate program; nothing here renders UI or holds console logic.
  *
- * Auth model
- * ----------
- * - POST /adminmax/login     (body: { password })  — public, rate-limited
- *                              compare against ADMIN_MAX_PASSWORD env.
- *                              Returns { token, expiresAt } HS256 JWT.
- * - All other /adminmax/*    require Bearer admin token via
- *                              requireAdminMaxAuth middleware.
- *
- * Routes
+ * Routes (relative to /operator/v1)
  * ------
- *   POST  /adminmax/login
- *   GET   /adminmax/users                         — totals across all users
- *   GET   /adminmax/users/:userId                 — totals + meta for one user
- *   GET   /adminmax/users/:userId/usage           — paginated llm_usage rows
- *   GET   /adminmax/users/:userId/messages        — paginated chat_messages
- *   GET   /adminmax/users/:userId/usage.csv       — CSV export per user
- *   GET   /adminmax/usage.csv                     — global CSV export
- *   GET   /adminmax/chats                         — global searchable chat list
- *   GET   /adminmax/audit                         — admin action audit trail
- *   GET   /adminmax/bugfix/status                 — GitHub issue/PR/deploy status
- *   GET   /adminmax/promos                        — Stripe promo codes + usage stats
- *   POST  /adminmax/promos                        — create coupon + promotion code
- *   PATCH /adminmax/promos/:id                    — (de)activate a promotion code
+ *   GET   /users                         — totals across all users
+ *   GET   /users/:userId                 — totals + meta for one user
+ *   GET   /users/:userId/usage           — paginated llm_usage rows
+ *   GET   /users/:userId/messages        — paginated chat_messages
+ *   GET   /users/:userId/usage.csv       — CSV export per user
+ *   GET   /users/:userId/mcp             — MCP usage, both legs (Desk chat + portal connector)
+ *   GET   /mcp/desk                      — Desk-side MCP tool calls overview (mcp_tool_calls_daily)
+ *   GET   /usage.csv                     — global CSV export
+ *   GET   /chats                         — global searchable chat list
+ *   GET   /audit                         — admin action audit trail
+ *   GET   /promos                        — Stripe promo codes + usage stats
+ *   POST  /promos                        — create coupon + promotion code
+ *   PATCH /promos/:id                    — (de)activate a promotion code
+ *   …     tiers, credits, analytics, features, new-users, manual sends —
+ *         see the contract for the full list.
  *
  * Filters
  * -------
@@ -36,27 +33,19 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { timingSafeEqual } from "node:crypto";
 import { query } from "../lib/db";
-import {
-    requireAdminMaxAuth,
-    signAdminMaxToken,
-} from "../middleware/adminMaxAuth";
 import {
     bustEntitlementsCache,
     entitlementCatalog,
     sanitizeEntitlementsInput,
+    tierKeyForLevelId,
 } from "../lib/entitlements";
 import {
     bustPlanCatalogCache,
     getPlanCatalog,
     sanitizeMarketingInput,
 } from "../lib/planCatalog";
-import {
-    getNewUsersSince,
-    markNewUsersSeen,
-    recordAdminLogin,
-} from "../lib/adminState";
+import { getNewUsersSince, markNewUsersSeen } from "../lib/adminState";
 import { getStripe, isStripeConfigured } from "../lib/stripe";
 import { backfillSubscriptionRevenue } from "./billing";
 import {
@@ -82,16 +71,24 @@ import {
 import { getFreeTierLevelId, getPlanDefs } from "../lib/stripe";
 import { sendWeeklyAdminSummary } from "../lib/adminSummary";
 import { sendExpiryReminders } from "../lib/expiryReminders";
-import { backfillSignupContacts } from "../lib/brevoContacts";
 import { sendContextAlertDigests } from "../lib/contextAlertDigest";
-import { logAdminAudit } from "../lib/adminAudit";
+import { auditMeta, logAdminAudit } from "../lib/adminAudit";
+import { clampInt } from "../lib/portalManage";
 import {
-    OpsInventoryError,
-    opsInventoryConfigured,
-    opsInventoryFetch,
-} from "../lib/opsInventory";
+    loadDeskMcpOverview,
+    loadUserMcpDetail,
+    loadUserMcpSummaries,
+} from "../lib/mcp/adminUsage";
+import { describeTierGrant, expiryHistoryEntry } from "../lib/tierGrant";
 
-export const adminMaxRouter = Router();
+
+/**
+ * The data routes — every handler that reads or changes this deployment's
+ * own data (users, tiers, credits, usage, chats, audit, promos, MCP usage).
+ * No auth of its own: mounted behind requireOperatorCaller in
+ * routes/operator.ts (/operator/v1).
+ */
+export const adminDataRouter = Router();
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -183,208 +180,6 @@ function buildRevenueMetrics(row: RevenueMetricsRow | undefined) {
     };
 }
 
-// ── login ─────────────────────────────────────────────────────────────────
-
-// In-memory throttle to defang brute force. 10 failed attempts / IP / 5 min
-// triggers a hard 429 until the window rolls over. Cloud Run scales out so
-// this is per-instance — good enough at the volume we expect (manual ops).
-const FAIL_WINDOW_MS = 5 * 60 * 1000;
-const FAIL_LIMIT = 10;
-const failureLog = new Map<string, number[]>();
-
-function noteFailure(ip: string): number {
-    const now = Date.now();
-    const list = (failureLog.get(ip) ?? []).filter(
-        (t) => t > now - FAIL_WINDOW_MS,
-    );
-    list.push(now);
-    failureLog.set(ip, list);
-    return list.length;
-}
-
-function tooManyFailures(ip: string): boolean {
-    const now = Date.now();
-    const list = (failureLog.get(ip) ?? []).filter(
-        (t) => t > now - FAIL_WINDOW_MS,
-    );
-    failureLog.set(ip, list);
-    return list.length >= FAIL_LIMIT;
-}
-
-adminMaxRouter.post("/login", async (req: Request, res: Response) => {
-    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.ip ?? "unknown";
-
-    if (tooManyFailures(ip)) {
-        res.status(429).json({ detail: "Too many failed attempts" });
-        return;
-    }
-
-    const expected = process.env.ADMIN_MAX_PASSWORD;
-    if (!expected) {
-        console.error("[adminmax] ADMIN_MAX_PASSWORD not configured");
-        res.status(500).json({ detail: "Admin auth not configured" });
-        return;
-    }
-    const provided =
-        typeof req.body?.password === "string" ? req.body.password : "";
-    if (!provided) {
-        noteFailure(ip);
-        res.status(400).json({ detail: "Missing password" });
-        return;
-    }
-
-    // Constant-time comparison so we don't leak password length / prefix
-    // through response timing. Buffers must be equal length for
-    // timingSafeEqual to run; pad both to the longer of the two.
-    const expectedBuf = Buffer.from(expected);
-    const providedBuf = Buffer.from(provided);
-    const len = Math.max(expectedBuf.length, providedBuf.length);
-    const a = Buffer.alloc(len);
-    const b = Buffer.alloc(len);
-    expectedBuf.copy(a);
-    providedBuf.copy(b);
-    const sameLength = expectedBuf.length === providedBuf.length;
-    const ok = timingSafeEqual(a, b) && sameLength;
-
-    if (!ok) {
-        const count = noteFailure(ip);
-        console.warn(
-            `[adminmax] failed login from ${ip} (count=${count} in 5min window)`,
-        );
-        res.status(401).json({ detail: "Invalid password" });
-        return;
-    }
-
-    try {
-        const { token, expiresAt } = signAdminMaxToken();
-        // Stamp the login so "new users since last login" has a reference
-        // point. A DB hiccup here must never block a valid sign-in.
-        try {
-            await recordAdminLogin();
-        } catch (stampErr) {
-            const m =
-                stampErr instanceof Error ? stampErr.message : String(stampErr);
-            console.error("[adminmax] recordAdminLogin failed:", m);
-        }
-        res.json({ token, expiresAt });
-    } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error("[adminmax] token signing failed:", msg);
-        res.status(500).json({ detail: "Token signing failed" });
-    }
-});
-
-// ── cron (secret-guarded, NOT admin-JWT) ─────────────────────────────────
-//
-// Cloud Scheduler can't mint an AdminMax JWT, so the cron triggers sit
-// in front of requireAdminMaxAuth and are guarded by a dedicated shared
-// secret instead. Unset env → 503 (feature off).
-
-/** Constant-time X-Cron-Secret check; writes the error response itself. */
-function cronSecretOk(req: Request, res: Response): boolean {
-    const expected = process.env.ADMIN_CRON_SECRET?.trim();
-    if (!expected) {
-        res.status(503).json({ detail: "ADMIN_CRON_SECRET not configured" });
-        return false;
-    }
-    const provided =
-        typeof req.headers["x-cron-secret"] === "string"
-            ? req.headers["x-cron-secret"]
-            : "";
-    const a = Buffer.from(expected);
-    const b = Buffer.from(provided);
-    const len = Math.max(a.length, b.length);
-    const pa = Buffer.alloc(len);
-    const pb = Buffer.alloc(len);
-    a.copy(pa);
-    b.copy(pb);
-    if (!timingSafeEqual(pa, pb) || a.length !== b.length) {
-        res.status(401).json({ detail: "Invalid cron secret" });
-        return false;
-    }
-    return true;
-}
-
-adminMaxRouter.post(
-    "/cron/weekly-summary",
-    async (req: Request, res: Response) => {
-        if (!cronSecretOk(req, res)) return;
-        try {
-            const result = await sendWeeklyAdminSummary();
-            res.json(result);
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error("[adminmax/cron/weekly-summary]", msg);
-            res.status(500).json({ detail: msg });
-        }
-    },
-);
-
-/**
- * POST /adminmax/cron/expiry-reminders — daily. Reminds users whose
- * paid tier expires within 7 days AND won't auto-renew via Stripe
- * (manual/bank-transfer tiers, cancelled subscriptions, UMP leftovers).
- */
-adminMaxRouter.post(
-    "/cron/expiry-reminders",
-    async (req: Request, res: Response) => {
-        if (!cronSecretOk(req, res)) return;
-        try {
-            const result = await sendExpiryReminders();
-            res.json(result);
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error("[adminmax/cron/expiry-reminders]", msg);
-            res.status(500).json({ detail: msg });
-        }
-    },
-);
-
-/**
- * POST /adminmax/cron/brevo-backfill — one-shot. Imports every existing
- * public.users row into the Brevo newsletter list (BREVO_SIGNUP_LIST_ID).
- * New signups are synced live by the auth middleware; this only exists to
- * catch up users who registered before that hook shipped. Idempotent
- * (Brevo updates existing contacts), so re-running is safe.
- */
-adminMaxRouter.post(
-    "/cron/brevo-backfill",
-    async (req: Request, res: Response) => {
-        if (!cronSecretOk(req, res)) return;
-        try {
-            const result = await backfillSignupContacts();
-            res.status(result.errors.length ? 207 : 200).json(result);
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error("[adminmax/cron/brevo-backfill]", msg);
-            res.status(500).json({ detail: msg });
-        }
-    },
-);
-
-/**
- * POST /adminmax/cron/context-alerts — daily. Sends the hr/en digest of
- * context source-change notifications (service_notifications rows from
- * contexts-service) to context owners; claims each row on success.
- */
-adminMaxRouter.post(
-    "/cron/context-alerts",
-    async (req: Request, res: Response) => {
-        if (!cronSecretOk(req, res)) return;
-        try {
-            const result = await sendContextAlertDigests();
-            res.json(result);
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error("[adminmax/cron/context-alerts]", msg);
-            res.status(500).json({ detail: msg });
-        }
-    },
-);
-
-// ── authenticated routes ──────────────────────────────────────────────────
-
-adminMaxRouter.use(requireAdminMaxAuth);
 
 // ── paying-users counter ──────────────────────────────────────────────────
 //
@@ -467,7 +262,7 @@ async function getPaidUsersCount(): Promise<{
  * billing_revenue (the Basil API shape change silently disabled the
  * webhook's ledger insert for a while). Safe to re-run any time.
  */
-adminMaxRouter.post(
+adminDataRouter.post(
     "/billing/backfill-revenue",
     async (req: Request, res: Response) => {
         if (!isStripeConfigured()) {
@@ -500,7 +295,7 @@ adminMaxRouter.post(
  * GET /adminmax/new-users — count + a peek at the most recent signups
  * since the operator's last login (or "seen" dismissal, whichever is later).
  */
-adminMaxRouter.get("/new-users", async (_req: Request, res: Response) => {
+adminDataRouter.get("/new-users", async (_req: Request, res: Response) => {
     try {
         const since = await getNewUsersSince();
         const count = await query<{ count: string }>(
@@ -537,7 +332,7 @@ adminMaxRouter.get("/new-users", async (_req: Request, res: Response) => {
 /**
  * POST /adminmax/new-users/seen — reset the badge to "now".
  */
-adminMaxRouter.post(
+adminDataRouter.post(
     "/new-users/seen",
     async (_req: Request, res: Response) => {
         try {
@@ -556,7 +351,7 @@ adminMaxRouter.post(
  * POST /adminmax/weekly-summary/send — manual trigger of the same email
  * the cron sends; lets the operator test it from the dashboard.
  */
-adminMaxRouter.post(
+adminDataRouter.post(
     "/weekly-summary/send",
     async (req: Request, res: Response) => {
         try {
@@ -564,7 +359,7 @@ adminMaxRouter.post(
             void logAdminAudit({
                 action: "email.weekly_summary.send",
                 targetType: "email",
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
             res.json(result);
         } catch (err) {
@@ -579,7 +374,7 @@ adminMaxRouter.post(
  * POST /adminmax/context-alerts/send — manual trigger of the context-alert
  * digest sweep (same logic the cron runs).
  */
-adminMaxRouter.post(
+adminDataRouter.post(
     "/context-alerts/send",
     async (req: Request, res: Response) => {
         try {
@@ -587,7 +382,7 @@ adminMaxRouter.post(
             void logAdminAudit({
                 action: "email.context_alerts.send",
                 targetType: "email",
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
             res.json(result);
         } catch (err) {
@@ -602,7 +397,7 @@ adminMaxRouter.post(
  * POST /adminmax/expiry-reminders/send — manual trigger of the daily
  * expiry-reminder sweep (same logic the cron runs).
  */
-adminMaxRouter.post(
+adminDataRouter.post(
     "/expiry-reminders/send",
     async (req: Request, res: Response) => {
         try {
@@ -610,7 +405,7 @@ adminMaxRouter.post(
             void logAdminAudit({
                 action: "email.expiry_reminders.send",
                 targetType: "email",
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
             res.json(result);
         } catch (err) {
@@ -620,6 +415,21 @@ adminMaxRouter.post(
         }
     },
 );
+
+// A paid grant that still applies (same rule auth uses).
+const LIVE_GRANT_SQL = `s.active_tier_level_id IS NOT NULL
+    AND (s.active_tier_until IS NULL OR s.active_tier_until > now())`;
+
+// The newest tier_change_history row = the write behind the current grant
+// (lib/tierGrant.ts reads source + reason as who granted it). Needs
+// `s` = user_tier_state and `u` = users in scope.
+const LATEST_GRANT_JOIN_SQL = `LEFT JOIN LATERAL (
+                SELECT hh.source, hh.reason, hh.created_at
+                  FROM public.tier_change_history hh
+                 WHERE hh.user_id = u.id
+                 ORDER BY hh.created_at DESC
+                 LIMIT 1
+            ) h ON s.active_tier_level_id IS NOT NULL`;
 
 /**
  * GET /adminmax/users
@@ -637,6 +447,8 @@ adminMaxRouter.post(
  *   - dir             asc | desc                                     (default desc)
  *   - only_active     "true" → drop users with 0 llm_usage rows in window
  *                     (default false — show every user, even idle)
+ *   - grant           manual | external | stripe — live paid grants by who
+ *                     granted them; expired — grants past their end date
  *
  * Response shape:
  *   {
@@ -652,7 +464,7 @@ adminMaxRouter.post(
  * `totals` is computed across the FULL filter set (not just the page
  * slice) so the top SummaryCards keep showing range-wide aggregates.
  */
-adminMaxRouter.get("/users", async (req: Request, res: Response) => {
+adminDataRouter.get("/users", async (req: Request, res: Response) => {
     const { from, to } = parseDateRange(req);
     const { limit, offset } = parsePagination(req);
     const rawQ = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -661,12 +473,14 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
     const SORT_MAP: Record<string, string> = {
         cost: "cost_usd_total",
         requests: "request_count",
+        questions: "question_count",
         errors: "error_count",
         last_used: "last_used",
         email: "email",
         created: "created_at",
         last_login: "last_login_at",
         tier: "effective_tier_level_id",
+        documents: "documents_uploaded",
     };
     const sortKey =
         typeof req.query.sort === "string" && req.query.sort in SORT_MAP
@@ -691,6 +505,20 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
         Number.isInteger(tierFilterRaw) && tierFilterRaw > 0
             ? tierFilterRaw
             : null;
+    // ?grant= narrows to how the paid tier was granted (live grants), or
+    // to grants whose end date has passed. Fixed SQL per key — never
+    // interpolate the raw query value.
+    const GRANT_FILTERS: Record<string, string> = {
+        manual: `${LIVE_GRANT_SQL} AND h.source = 'admin' AND COALESCE(h.reason, '') NOT LIKE 'ext:%'`,
+        external: `${LIVE_GRANT_SQL} AND h.source = 'admin' AND h.reason LIKE 'ext:%'`,
+        stripe: `${LIVE_GRANT_SQL} AND h.source = 'stripe'`,
+        expired: `s.active_tier_level_id IS NOT NULL AND s.active_tier_until <= now()`,
+    };
+    const grantKey =
+        typeof req.query.grant === "string" && req.query.grant in GRANT_FILTERS
+            ? req.query.grant
+            : null;
+    const grantFilterSql = grantKey ? `AND (${GRANT_FILTERS[grantKey]})` : "";
     const createdAfterRaw =
         typeof req.query.created_after === "string"
             ? new Date(req.query.created_after)
@@ -714,8 +542,36 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
     // "Effective tier" folds the expiry in: an override past its
     // active_tier_until renders (and filters) as free, matching what the
     // auth middleware enforces on real requests.
+    //
+    // Uploads are counted from the audit trail (migration 208), not from
+    // public.documents: it keeps documents the user later deleted, includes
+    // connector imports, and leaves out files the assistant generated or
+    // copied. It starts on 2026-08-18. Pre-aggregated in its own CTE so the
+    // join does not multiply the llm_usage rows summed below.
+    //
+    // Questions are the user's own messages in regular and project chats —
+    // what an operator means by "how much does this person use Max". The
+    // llm_usage row count (request_count) also includes title generation,
+    // tabular cells and other background calls, so it stays as a cost metric.
     const perUserCte = `
-        WITH per_user AS (
+        WITH doc_uploads AS (
+            SELECT user_id, COUNT(*) AS documents_uploaded
+              FROM public.audit_events
+             WHERE event_type = 'document.uploaded'
+               AND created_at >= $1
+               AND created_at <  $2
+             GROUP BY user_id
+        ),
+        questions AS (
+            SELECT c.user_id::text AS user_id, COUNT(*) AS question_count
+              FROM public.chat_messages cm
+              JOIN public.chats c ON c.id = cm.chat_id
+             WHERE cm.role = 'user'
+               AND cm.created_at >= $1
+               AND cm.created_at <  $2
+             GROUP BY c.user_id
+        ),
+        per_user AS (
             SELECT
                 u.id, u.email, u.display_name, u.wp_user_id, u.created_at,
                 COALESCE(
@@ -727,6 +583,10 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                 s.active_tier_until,
                 tl.display_label                                 AS tier_label,
                 tl.tier_slug                                     AS tier_slug,
+                s.active_tier_level_id                           AS granted_tier_level_id,
+                tlg.display_label                                AS granted_tier_label,
+                h.source                                         AS grant_source,
+                h.reason                                         AS grant_reason,
                 ls.last_login_at,
                 ls.login_count,
                 COALESCE(SUM(lu.iterations), 0)                  AS iterations_total,
@@ -737,7 +597,9 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                 COALESCE(SUM(lu.cost_usd), 0)                    AS cost_usd_total,
                 COUNT(lu.id)                                     AS request_count,
                 COUNT(lu.id) FILTER (WHERE lu.status = 'error')  AS error_count,
-                MAX(lu.created_at)                               AS last_used
+                MAX(lu.created_at)                               AS last_used,
+                COALESCE(du.documents_uploaded, 0)               AS documents_uploaded,
+                COALESCE(qc.question_count, 0)                   AS question_count
             FROM public.users u
             LEFT JOIN public.user_tier_state s ON s.user_id = u.id
             LEFT JOIN public.tier_limits tl
@@ -746,7 +608,12 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                               AND (s.active_tier_until IS NULL OR s.active_tier_until > now())
                              THEN s.active_tier_level_id END,
                         $4::bigint)
+            LEFT JOIN public.tier_limits tlg
+                   ON tlg.tier_level_id = s.active_tier_level_id
+            ${LATEST_GRANT_JOIN_SQL}
             LEFT JOIN public.user_login_state ls ON ls.user_id = u.id
+            LEFT JOIN doc_uploads du ON du.user_id = u.id
+            LEFT JOIN questions qc ON qc.user_id = u.id::text
             LEFT JOIN public.llm_usage lu
                    ON lu.user_id = u.id
                   AND lu.created_at >= $1
@@ -761,10 +628,13 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                              THEN s.active_tier_level_id END,
                         $4::bigint) = $5::bigint)
               AND ($6::timestamptz IS NULL OR u.created_at >= $6::timestamptz)
+              ${grantFilterSql}
             GROUP BY u.id, u.email, u.display_name, u.wp_user_id, u.created_at,
                      s.active_tier_level_id, s.active_tier_until,
-                     tl.display_label, tl.tier_slug,
-                     ls.last_login_at, ls.login_count
+                     tl.display_label, tl.tier_slug, tlg.display_label,
+                     h.source, h.reason,
+                     ls.last_login_at, ls.login_count,
+                     du.documents_uploaded, qc.question_count
         )
     `;
     const activeFilter = onlyActive ? "WHERE request_count > 0" : "";
@@ -788,6 +658,8 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
             cache_read_input_tokens_total: string | null;
             request_count: string;
             error_count: string;
+            documents_uploaded: string | null;
+            question_count: string | null;
             new_users_count: string;
             total_users: string;
         }>(
@@ -801,6 +673,8 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                 COALESCE(SUM(cache_read_input_tokens_total), 0)     AS cache_read_input_tokens_total,
                 COALESCE(SUM(request_count), 0)                     AS request_count,
                 COALESCE(SUM(error_count), 0)                       AS error_count,
+                COALESCE(SUM(documents_uploaded), 0)                AS documents_uploaded,
+                COALESCE(SUM(question_count), 0)                    AS question_count,
                 (SELECT COUNT(*) FROM public.users
                    WHERE created_at > $7::timestamptz)::text        AS new_users_count,
                 (SELECT COUNT(*) FROM public.users)::text           AS total_users
@@ -828,6 +702,10 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
             active_tier_until: string | null;
             tier_label: string | null;
             tier_slug: string | null;
+            granted_tier_level_id: string | number | null;
+            granted_tier_label: string | null;
+            grant_source: string | null;
+            grant_reason: string | null;
             last_login_at: string | null;
             login_count: string | number | null;
             iterations_total: string | null;
@@ -839,6 +717,8 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
             request_count: string;
             error_count: string;
             last_used: string | null;
+            documents_uploaded: string | null;
+            question_count: string | null;
         }>(
             `${perUserCte}
             SELECT * FROM per_user
@@ -859,6 +739,9 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
 
         const t = totalsRes.rows[0];
         const paid = await getPaidUsersCount();
+        // "MCP" badge data for the page slice — Desk counters + portal
+        // connector join; both legs fail soft (see lib/mcp/adminUsage.ts).
+        const mcpByUser = await loadUserMcpSummaries(pageRes.rows.map((r) => r.id));
 
         res.json({
             range: { from: from.toISOString(), to: to.toISOString() },
@@ -874,6 +757,7 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                 only_active: onlyActive,
                 tier: tierFilter,
                 created_after: createdAfter,
+                grant: grantKey,
             },
             totals: {
                 cost_usd_total: Number(t?.cost_usd_total ?? 0),
@@ -887,6 +771,8 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                     t?.cache_creation_input_tokens_total ?? 0,
                 ),
                 error_count: Number(t?.error_count ?? 0),
+                documents_uploaded: Number(t?.documents_uploaded ?? 0),
+                question_count: Number(t?.question_count ?? 0),
                 new_users_count: Number(t?.new_users_count ?? 0),
                 new_users_since: newUsersSince.toISOString(),
                 total_users: Number(t?.total_users ?? 0),
@@ -894,7 +780,17 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                 paid_subs_count: paid?.subs ?? null,
                 paid_mrr_cents: paid?.mrrCents ?? null,
             },
-            users: pageRes.rows.map((r) => ({
+            users: pageRes.rows.map((r) => {
+                const grant = describeTierGrant({
+                    level:
+                        r.granted_tier_level_id == null
+                            ? null
+                            : Number(r.granted_tier_level_id),
+                    until: r.active_tier_until,
+                    source: r.grant_source,
+                    reason: r.grant_reason,
+                });
+                return {
                 id: r.id,
                 email: r.email,
                 display_name: r.display_name,
@@ -907,6 +803,10 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                 tier_label: r.tier_label,
                 tier_slug: r.tier_slug,
                 active_tier_until: r.active_tier_until,
+                grant_kind: grant.kind,
+                grant_expired: grant.expired,
+                grant_reason: grant.kind ? r.grant_reason : null,
+                granted_tier_label: grant.kind ? r.granted_tier_label : null,
                 last_login_at: r.last_login_at,
                 login_count:
                     r.login_count == null ? 0 : Number(r.login_count),
@@ -923,7 +823,11 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
                 request_count: Number(r.request_count ?? 0),
                 error_count: Number(r.error_count ?? 0),
                 last_used: r.last_used,
-            })),
+                documents_uploaded: Number(r.documents_uploaded ?? 0),
+                question_count: Number(r.question_count ?? 0),
+                mcp: mcpByUser.get(r.id) ?? null,
+                };
+            }),
         });
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -936,7 +840,7 @@ adminMaxRouter.get("/users", async (req: Request, res: Response) => {
  * GET /adminmax/users/:userId
  * Per-user totals + identity. 404 if user does not exist.
  */
-adminMaxRouter.get(
+adminDataRouter.get(
     "/users/:userId",
     async (req: Request, res: Response) => {
         const { userId } = req.params;
@@ -961,21 +865,31 @@ adminMaxRouter.get(
                 last_login_at: string | null;
                 login_count: string | number | null;
                 supabase_user_id: string | null;
+                grant_source: string | null;
+                grant_reason: string | null;
+                grant_at: string | null;
+                free_tier_label: string | null;
             }>(
                 `SELECT u.id, u.email, u.display_name, u.wp_user_id, u.created_at,
                         s.active_tier_level_id, s.active_tier_until, s.stripe_customer_id,
                         s.country,
                         tl.display_label AS tier_label, tl.tier_slug,
                         ls.last_login_at, ls.login_count,
-                        sb.supabase_user_id::text AS supabase_user_id
+                        sb.supabase_user_id::text AS supabase_user_id,
+                        h.source AS grant_source, h.reason AS grant_reason,
+                        h.created_at AS grant_at,
+                        tlf.display_label AS free_tier_label
                    FROM public.users u
                    LEFT JOIN public.user_tier_state s ON s.user_id = u.id
                    LEFT JOIN public.tier_limits tl
                           ON tl.tier_level_id = s.active_tier_level_id
+                   LEFT JOIN public.tier_limits tlf
+                          ON tlf.tier_level_id = $2
+                   ${LATEST_GRANT_JOIN_SQL}
                    LEFT JOIN public.user_login_state ls ON ls.user_id = u.id
                    LEFT JOIN public.user_supabase_identity sb ON sb.user_id = u.id
                   WHERE u.id = $1`,
-                [userId],
+                [userId, getFreeTierLevelId()],
             );
             if (userRow.rows.length === 0) {
                 res.status(404).json({ detail: "User not found" });
@@ -1027,7 +941,53 @@ adminMaxRouter.get(
                 [userId, from.toISOString(), to.toISOString()],
             );
             const t = totals.rows[0];
+            // Questions = the user's own chat messages (regular + project
+            // chats), same definition as the users list.
+            const qRes = await query<{ question_count: string }>(
+                `SELECT COUNT(*) AS question_count
+                   FROM public.chat_messages cm
+                   JOIN public.chats c ON c.id = cm.chat_id
+                  WHERE c.user_id::text = $1::text
+                    AND cm.role = 'user'
+                    AND cm.created_at >= $2
+                    AND cm.created_at <  $3`,
+                [userId, from.toISOString(), to.toISOString()],
+            );
+            const questionCount = Number(qRes.rows[0]?.question_count ?? 0);
+            // Uploads in the range come from the audit trail (since
+            // 2026-08-18, same source as the users list); "stored" is what
+            // the user keeps right now in public.documents, any origin.
+            const docs = await query<{
+                uploaded: string;
+                last_uploaded_at: string | null;
+                stored_count: string;
+                stored_bytes: string;
+            }>(
+                `
+                SELECT
+                    (SELECT COUNT(*) FROM public.audit_events
+                      WHERE user_id = $1 AND event_type = 'document.uploaded'
+                        AND created_at >= $2 AND created_at < $3)       AS uploaded,
+                    (SELECT MAX(created_at) FROM public.audit_events
+                      WHERE user_id = $1 AND event_type = 'document.uploaded') AS last_uploaded_at,
+                    (SELECT COUNT(*) FROM public.documents
+                      WHERE user_id = $1)                               AS stored_count,
+                    (SELECT COALESCE(SUM(size_bytes), 0) FROM public.documents
+                      WHERE user_id = $1)                               AS stored_bytes
+                `,
+                [userId, from.toISOString(), to.toISOString()],
+            );
+            const d = docs.rows[0];
+            const mcpSummary =
+                (await loadUserMcpSummaries([userId])).get(userId) ?? null;
             res.json({
+                mcp: mcpSummary,
+                documents: {
+                    uploaded: Number(d?.uploaded ?? 0),
+                    last_uploaded_at: d?.last_uploaded_at ?? null,
+                    stored_count: Number(d?.stored_count ?? 0),
+                    stored_bytes: Number(d?.stored_bytes ?? 0),
+                },
                 user: {
                     id: u.id,
                     email: u.email,
@@ -1036,13 +996,32 @@ adminMaxRouter.get(
                     wp_user_id: u.wp_user_id,
                     created_at: u.created_at,
                 },
-                tier: {
-                    active_tier_level_id: u.active_tier_level_id,
-                    active_tier_until: u.active_tier_until,
-                    tier_label: u.tier_label,
-                    tier_slug: u.tier_slug,
-                    stripe_customer_id: u.stripe_customer_id,
-                },
+                // active_tier_* is the stored grant; effective_* is what
+                // the user has now (an expired grant folds to free).
+                tier: (() => {
+                    const grant = describeTierGrant({
+                        level: u.active_tier_level_id,
+                        until: u.active_tier_until,
+                        source: u.grant_source,
+                        reason: u.grant_reason,
+                    });
+                    return {
+                        active_tier_level_id: u.active_tier_level_id,
+                        active_tier_until: u.active_tier_until,
+                        tier_label: u.tier_label,
+                        tier_slug: u.tier_slug,
+                        stripe_customer_id: u.stripe_customer_id,
+                        effective_tier_level_id: grant.effectiveLevelId,
+                        effective_tier_label:
+                            grant.effectiveLevelId == null
+                                ? u.free_tier_label
+                                : u.tier_label,
+                        expired: grant.expired,
+                        grant_kind: grant.kind,
+                        grant_reason: grant.kind ? u.grant_reason : null,
+                        grant_at: grant.kind ? u.grant_at : null,
+                    };
+                })(),
                 login: {
                     last_login_at: u.last_login_at,
                     login_count:
@@ -1056,6 +1035,7 @@ adminMaxRouter.get(
                 },
                 range: { from: from.toISOString(), to: to.toISOString() },
                 totals: {
+                    question_count: questionCount,
                     iterations_total: Number(t.iterations_total ?? 0),
                     input_tokens_total: Number(t.input_tokens_total ?? 0),
                     output_tokens_total: Number(t.output_tokens_total ?? 0),
@@ -1084,7 +1064,7 @@ adminMaxRouter.get(
  * GET /adminmax/users/:userId/tier-history — append-only audit of tier
  * transitions (Stripe webhook, UMP sync, admin manual). Newest first.
  */
-adminMaxRouter.get(
+adminDataRouter.get(
     "/users/:userId/tier-history",
     async (req: Request, res: Response) => {
         const { userId } = req.params;
@@ -1120,7 +1100,32 @@ adminMaxRouter.get(
                   LIMIT 100`,
                 [userId],
             );
-            res.json({ history: rows.rows });
+            // An expired grant writes nothing, so the "→ Free" step is
+            // added here, on read (lib/tierGrant.ts).
+            const state = await query<{
+                active_tier_level_id: number | null;
+                active_tier_until: string | null;
+                label: string | null;
+            }>(
+                `SELECT s.active_tier_level_id, s.active_tier_until,
+                        tl.display_label AS label
+                   FROM public.user_tier_state s
+                   LEFT JOIN public.tier_limits tl
+                          ON tl.tier_level_id = s.active_tier_level_id
+                  WHERE s.user_id = $1`,
+                [userId],
+            );
+            const st = state.rows[0];
+            const expiry = st
+                ? expiryHistoryEntry({
+                      level: st.active_tier_level_id,
+                      until: st.active_tier_until,
+                      label: st.label,
+                  })
+                : null;
+            res.json({
+                history: expiry ? [expiry, ...rows.rows] : rows.rows,
+            });
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.error("[adminmax/users/:id/tier-history]", msg);
@@ -1140,7 +1145,7 @@ adminMaxRouter.get(
  * wp_user_id and the partner push is configured, the change is mirrored
  * to UMP as well, same as the Stripe webhook does.
  */
-adminMaxRouter.patch(
+adminDataRouter.patch(
     "/users/:userId/tier",
     async (req: Request, res: Response) => {
         const { userId } = req.params;
@@ -1255,7 +1260,7 @@ adminMaxRouter.patch(
                     until: until?.toISOString() ?? null,
                     reason,
                 },
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
             res.json({
                 ok: true,
@@ -1281,7 +1286,7 @@ adminMaxRouter.patch(
  * user_tier_state and is upserted. Send `null`/"" to clear a field.
  * Omitting a field leaves it unchanged.
  */
-adminMaxRouter.patch(
+adminDataRouter.patch(
     "/users/:userId/profile",
     async (req: Request, res: Response) => {
         const { userId } = req.params;
@@ -1360,7 +1365,7 @@ adminMaxRouter.patch(
                         : {}),
                     ...(country !== undefined ? { country } : {}),
                 },
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
             res.json({
                 ok: true,
@@ -1383,7 +1388,7 @@ adminMaxRouter.patch(
  * ban ≈ permanent). Requires the user to have a Supabase identity and
  * SUPABASE_SECRET_KEY configured; legacy WP-only users get a 409.
  */
-adminMaxRouter.post(
+adminDataRouter.post(
     "/users/:userId/suspend",
     async (req: Request, res: Response) => {
         const { userId } = req.params;
@@ -1432,7 +1437,7 @@ adminMaxRouter.post(
                 targetType: "user",
                 targetId: userId,
                 payload: action === "ban" ? { hours } : null,
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
             res.json({ ok: true, action });
         } catch (err) {
@@ -1457,7 +1462,7 @@ adminMaxRouter.post(
  *               revenue_eur_cents }
  *   }
  */
-adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
+adminDataRouter.get("/analytics", async (req: Request, res: Response) => {
     const { from, to } = parseDateRange(req);
     const fromIso = from.toISOString();
     const toIso = to.toISOString();
@@ -1470,6 +1475,7 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
             activeTotal,
             revMetrics,
             surfaces,
+            questions,
         ] = await Promise.all([
                 query<{ day: string; signups: string }>(
                     `SELECT date_trunc('day', created_at)::date::text AS day,
@@ -1634,6 +1640,17 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
                    ORDER BY SUM(cost_usd) DESC NULLS LAST`,
                     [fromIso, toIso],
                 ),
+                // Questions = users' own chat messages (regular + project
+                // chats); llm_usage rows also count background calls.
+                query<{ day: string; questions: string }>(
+                    `SELECT date_trunc('day', created_at)::date::text AS day,
+                            COUNT(*)::text AS questions
+                       FROM public.chat_messages
+                      WHERE role = 'user'
+                        AND created_at >= $1 AND created_at < $2
+                   GROUP BY 1 ORDER BY 1`,
+                    [fromIso, toIso],
+                ),
             ]);
 
         // Merge the three day-keyed series into one dense array (fill
@@ -1645,6 +1662,7 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
                 signups: number;
                 active_users: number;
                 requests: number;
+                questions: number;
                 cost_usd: number;
                 tokens: number;
                 revenue_eur_cents: number;
@@ -1664,6 +1682,7 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
                 signups: 0,
                 active_users: 0,
                 requests: 0,
+                questions: 0,
                 cost_usd: 0,
                 tokens: 0,
                 revenue_eur_cents: 0,
@@ -1683,6 +1702,10 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
                 d.tokens = Number(r.tokens ?? 0);
             }
         }
+        for (const r of questions.rows) {
+            const d = byDay.get(r.day);
+            if (d) d.questions = Number(r.questions);
+        }
         for (const r of revenue.rows) {
             const d = byDay.get(r.day);
             if (d) d.revenue_eur_cents = Number(r.revenue_eur_cents ?? 0);
@@ -1701,6 +1724,7 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
                 new_users: daily.reduce((s, d) => s + d.signups, 0),
                 active_users: Number(activeTotal.rows[0]?.active_users ?? 0),
                 requests: daily.reduce((s, d) => s + d.requests, 0),
+                questions: daily.reduce((s, d) => s + d.questions, 0),
                 cost_usd: daily.reduce((s, d) => s + d.cost_usd, 0),
                 revenue_eur_cents: daily.reduce(
                     (s, d) => s + d.revenue_eur_cents,
@@ -1727,7 +1751,7 @@ adminMaxRouter.get("/analytics", async (req: Request, res: Response) => {
  * GET /adminmax/users/:userId/usage
  * Paginated llm_usage rows for the user, newest first.
  */
-adminMaxRouter.get(
+adminDataRouter.get(
     "/users/:userId/usage",
     async (req: Request, res: Response) => {
         const { userId } = req.params;
@@ -1794,7 +1818,7 @@ adminMaxRouter.get(
  * and project chats are included — project chats are still rooted in
  * `chats` with project_id set.
  */
-adminMaxRouter.get(
+adminDataRouter.get(
     "/users/:userId/messages",
     async (req: Request, res: Response) => {
         const { userId } = req.params;
@@ -1867,7 +1891,7 @@ adminMaxRouter.get(
  * cross-checks ownership so a typo in the URL doesn't leak someone
  * else's chat.
  */
-adminMaxRouter.get(
+adminDataRouter.get(
     "/chats/:chatId/full",
     async (req: Request, res: Response) => {
         const { chatId } = req.params;
@@ -2057,7 +2081,7 @@ adminMaxRouter.get(
  * GET /adminmax/users/:userId/usage.csv
  * Streams per-row usage as CSV. Honors the same ?from/?to filters.
  */
-adminMaxRouter.get(
+adminDataRouter.get(
     "/users/:userId/usage.csv",
     async (req: Request, res: Response) => {
         const { userId } = req.params;
@@ -2140,7 +2164,7 @@ adminMaxRouter.get(
                     to: to.toISOString(),
                     rows: result.rows.length,
                 },
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -2154,7 +2178,7 @@ adminMaxRouter.get(
  * GET /adminmax/usage.csv
  * Global CSV — every row across every user. Useful for offline reporting.
  */
-adminMaxRouter.get("/usage.csv", async (req: Request, res: Response) => {
+adminDataRouter.get("/usage.csv", async (req: Request, res: Response) => {
     const { from, to } = parseDateRange(req);
     try {
         const result = await query(
@@ -2235,7 +2259,7 @@ adminMaxRouter.get("/usage.csv", async (req: Request, res: Response) => {
                 to: to.toISOString(),
                 rows: result.rows.length,
             },
-            ip: req.ip ?? null,
+            ...auditMeta(req, res),
         });
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2260,7 +2284,7 @@ adminMaxRouter.get("/usage.csv", async (req: Request, res: Response) => {
  *                forensic search — content is matched as raw text).
  *   - limit/offset — standard pagination.
  */
-adminMaxRouter.get("/chats", async (req: Request, res: Response) => {
+adminDataRouter.get("/chats", async (req: Request, res: Response) => {
     const { from, to } = parseDateRange(req);
     const { limit, offset } = parsePagination(req);
     const rawQ = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -2273,6 +2297,7 @@ adminMaxRouter.get("/chats", async (req: Request, res: Response) => {
           LEFT JOIN public.users u ON u.id::text = c.user_id::text
           JOIN LATERAL (
               SELECT COUNT(*)            AS message_count,
+                     COUNT(*) FILTER (WHERE cm.role = 'user') AS question_count,
                      MAX(cm.created_at)  AS last_message_at
                 FROM public.chat_messages cm
                WHERE cm.chat_id = c.id
@@ -2294,7 +2319,7 @@ adminMaxRouter.get("/chats", async (req: Request, res: Response) => {
             `SELECT c.id, c.title, c.project_id, c.created_at,
                     c.user_id::text AS user_id,
                     u.email, u.display_name,
-                    m.message_count,
+                    m.message_count, m.question_count,
                     COALESCE(m.last_message_at, c.created_at) AS last_activity_at,
                     COALESCE(lu.cost_usd_total, 0) AS cost_usd_total,
                     COALESCE(lu.request_count, 0)  AS request_count,
@@ -2330,6 +2355,7 @@ adminMaxRouter.get("/chats", async (req: Request, res: Response) => {
                 email: r.email,
                 display_name: r.display_name,
                 message_count: Number(r.message_count ?? 0),
+                question_count: Number(r.question_count ?? 0),
                 last_activity_at: r.last_activity_at,
                 cost_usd_total: Number(r.cost_usd_total ?? 0),
                 request_count: Number(r.request_count ?? 0),
@@ -2362,7 +2388,7 @@ adminMaxRouter.get("/chats", async (req: Request, res: Response) => {
  * Without `aggregate` returns raw rows (newest first); with it, grouped counts.
  * Metadata is PII-lean by design (ids/enums only) so nothing is redacted here.
  */
-adminMaxRouter.get("/activity-events", async (req: Request, res: Response) => {
+adminDataRouter.get("/activity-events", async (req: Request, res: Response) => {
     const { from, to } = parseDateRange(req);
     const { limit, offset } = parsePagination(req);
     const userId = typeof req.query.user_id === "string" && isUuid(req.query.user_id) ? req.query.user_id : null;
@@ -2413,7 +2439,7 @@ adminMaxRouter.get("/activity-events", async (req: Request, res: Response) => {
  * per feature how many users ever used it and how many first used it in the
  * window; per event type and per surface counts in the window.
  */
-adminMaxRouter.get("/features", async (req: Request, res: Response) => {
+adminDataRouter.get("/features", async (req: Request, res: Response) => {
     const { from, to } = parseDateRange(req);
     const range = [from.toISOString(), to.toISOString()];
     try {
@@ -2452,7 +2478,7 @@ adminMaxRouter.get("/features", async (req: Request, res: Response) => {
  * first-use rows, event counts by type in the window, and the most recent
  * events (metadata is ids/enums only).
  */
-adminMaxRouter.get("/users/:userId/features", async (req: Request, res: Response) => {
+adminDataRouter.get("/users/:userId/features", async (req: Request, res: Response) => {
     const { userId } = req.params;
     if (!isUuid(userId)) {
         res.status(400).json({ detail: "Invalid user id" });
@@ -2482,7 +2508,7 @@ adminMaxRouter.get("/users/:userId/features", async (req: Request, res: Response
     }
 });
 
-adminMaxRouter.get("/audit", async (req: Request, res: Response) => {
+adminDataRouter.get("/audit", async (req: Request, res: Response) => {
     const { from, to } = parseDateRange(req);
     const { limit, offset } = parsePagination(req);
     const rawQ = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -2574,6 +2600,9 @@ async function listTierLimitsHandler(_req: Request, res: Response): Promise<void
                 .map((r) => ({
                     tier_level_id: r.tier_level_id,
                     tier_slug: r.tier_slug,
+                    // The catalog column whose defaults apply to this row
+                    // (from the level id, as the runtime resolves it).
+                    tier_key: tierKeyForLevelId(r.tier_level_id),
                     display_label: r.display_label,
                     daily_tokens: r.daily_tokens,
                     entitlements: r.entitlements,
@@ -2595,12 +2624,12 @@ async function listTierLimitsHandler(_req: Request, res: Response): Promise<void
 /**
  * GET /adminmax/tiers — list every configured tier ordered by id.
  */
-adminMaxRouter.get("/tiers", listTierLimitsHandler);
+adminDataRouter.get("/tiers", listTierLimitsHandler);
 
 /**
  * GET /adminmax/tier-limits — alias for `/tiers` (legacy curl / bookmarks).
  */
-adminMaxRouter.get("/tier-limits", listTierLimitsHandler);
+adminDataRouter.get("/tier-limits", listTierLimitsHandler);
 
 /**
  * GET /adminmax/entitlement-catalog — the code-defined catalog of every
@@ -2608,7 +2637,7 @@ adminMaxRouter.get("/tier-limits", listTierLimitsHandler);
  * AdminMax tiers editor renders its toggles from this so the form can
  * never drift from the backend's notion of valid keys.
  */
-adminMaxRouter.get("/entitlement-catalog", (_req: Request, res: Response) => {
+adminDataRouter.get("/entitlement-catalog", (_req: Request, res: Response) => {
     res.json({ catalog: entitlementCatalog() });
 });
 
@@ -2617,7 +2646,7 @@ const MAX_DAILY_TOKENS = 1_000_000_000; // 1B sanity cap
 /**
  * PATCH /adminmax/tiers/:tierLevelId — update label and/or quota.
  */
-adminMaxRouter.patch(
+adminDataRouter.patch(
     "/tiers/:tierLevelId",
     async (req: Request, res: Response) => {
         const tierLevelId = Number(req.params.tierLevelId);
@@ -2707,7 +2736,7 @@ adminMaxRouter.patch(
                         : {}),
                     ...(patch.marketing ? { marketing_updated: true } : {}),
                 },
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
             res.json({ tier });
         } catch (err) {
@@ -2723,7 +2752,7 @@ adminMaxRouter.patch(
  * the normal flow). Useful when admin wants to pre-configure an UMP
  * tier_level_id before any user with that tier logs in.
  */
-adminMaxRouter.post("/tiers", async (req: Request, res: Response) => {
+adminDataRouter.post("/tiers", async (req: Request, res: Response) => {
     const { tier_level_id, tier_slug, display_label, daily_tokens, entitlements } =
         req.body as {
             tier_level_id?: unknown;
@@ -2769,7 +2798,7 @@ adminMaxRouter.post("/tiers", async (req: Request, res: Response) => {
                 display_label: display_label.trim(),
                 daily_tokens: Math.floor(tokens),
             },
-            ip: req.ip ?? null,
+            ...auditMeta(req, res),
         });
         res.status(201).json({ ok: true });
     } catch (err) {
@@ -2796,7 +2825,7 @@ adminMaxRouter.post("/tiers", async (req: Request, res: Response) => {
  * GET /adminmax/users/:userId/credits — list grants and the live
  * balance. Includes voided rows (greyed in UI) for full audit.
  */
-adminMaxRouter.get(
+adminDataRouter.get(
     "/users/:userId/credits",
     async (req: Request, res: Response) => {
         const userId = req.params.userId;
@@ -2849,7 +2878,7 @@ const MAX_GRANT_TOKENS = 100_000_000; // 100M sanity cap per pack
  * Used for bank_transfer (post-statement) and admin_manual paths.
  * Stripe grants come through the webhook, NOT this endpoint.
  */
-adminMaxRouter.post(
+adminDataRouter.post(
     "/users/:userId/credits",
     async (req: Request, res: Response) => {
         const userId = req.params.userId;
@@ -2940,7 +2969,7 @@ adminMaxRouter.post(
                     amount_eur_cents: amountCents,
                     expires_at: expiresIso,
                 },
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
             res.status(201).json({ id: ins.rows[0].id, tokens_granted: tokens });
         } catch (err) {
@@ -2955,7 +2984,7 @@ adminMaxRouter.post(
  * POST /adminmax/credits/:creditId/void — soft-delete a grant. Adds a
  * voided_at + voided_reason; future balance queries skip the row.
  */
-adminMaxRouter.post(
+adminDataRouter.post(
     "/credits/:creditId/void",
     async (req: Request, res: Response) => {
         const creditId = req.params.creditId;
@@ -2987,7 +3016,7 @@ adminMaxRouter.post(
                     tokens_granted: Number(result.rows[0].tokens_granted),
                     reason,
                 },
-                ip: req.ip ?? null,
+                ...auditMeta(req, res),
             });
             res.json({ ok: true });
         } catch (err) {
@@ -2997,287 +3026,6 @@ adminMaxRouter.post(
         }
     },
 );
-
-// ── bugfix status (GitHub issue / PR / deploy tracking) ──────────────────
-//
-// GET /adminmax/bugfix/status — composes GitHub issues + PRs + the
-// stable...main compare into one payload for the AdminMax BugFix page.
-// The repo is private: without ADMINMAX_GITHUB_TOKEN (or GITHUB_TOKEN)
-// we return 200 { configured: false } so the page renders a friendly
-// "token not configured" state instead of a 500.
-
-type BugfixIssueStatus = "open" | "pr_open" | "merged" | "live" | "closed";
-
-interface BugfixLinkedPr {
-    number: number;
-    state: "open" | "closed";
-    mergedAt: string | null;
-    htmlUrl: string;
-}
-
-interface BugfixIssue {
-    number: number;
-    title: string;
-    state: "open" | "closed";
-    labels: string[];
-    createdAt: string;
-    closedAt: string | null;
-    htmlUrl: string;
-    linkedPr: BugfixLinkedPr | null;
-    status: BugfixIssueStatus;
-}
-
-interface BugfixStatusPayload {
-    configured: true;
-    repo: string;
-    deploy: { mainAheadOfStable: number | null };
-    issues: BugfixIssue[];
-    fetchedAt: string;
-}
-
-// 60-second in-memory cache of the composed payload. The page has a manual
-// refresh button and GitHub rate limits are per-token, so one composition
-// per minute per instance is plenty (same per-instance trade-off as the
-// login failure log above).
-const BUGFIX_CACHE_TTL_MS = 60 * 1000;
-let bugfixCache: { payload: BugfixStatusPayload; at: number } | null = null;
-
-/** Minimal slice of the GitHub issues-list item we consume. */
-interface GhIssueRaw {
-    number: number;
-    title: string;
-    state: string;
-    labels?: Array<{ name?: string } | string>;
-    created_at: string;
-    closed_at: string | null;
-    html_url: string;
-    /** Present on items that are actually pull requests — we skip those. */
-    pull_request?: unknown;
-}
-
-/** Minimal slice of the GitHub pulls-list item we consume. */
-interface GhPullRaw {
-    number: number;
-    title: string;
-    state: string;
-    merged_at: string | null;
-    merge_commit_sha?: string | null;
-    body: string | null;
-    html_url: string;
-    head?: { ref?: string };
-    base?: { ref?: string };
-}
-
-/**
- * Status precedence: merged PR > open PR > raw issue state.
- *
- * A merged PR counts as promoted (on LIVE) when its merge commit is NOT
- * among the commits main has ahead of stable — checked per PR so one
- * fresh merge on main no longer flips every other merged issue back to
- * "waiting for LIVE" (issue #130). When the ahead-list is unavailable
- * (compare failed or truncated past per_page) we fall back to the old
- * conservative repo-global gate: promoted only when main == stable.
- *
- * Promoted + issue closed → "closed"; promoted + issue still open →
- * "live" (fix deployed, issue awaiting closure).
- */
-export function bugfixIssueStatus(
-    issueState: "open" | "closed",
-    pr: {
-        mergedAt: string | null;
-        state: "open" | "closed";
-        mergeCommitSha: string | null;
-    } | null,
-    deploy: {
-        mainAheadOfStable: number | null;
-        unpromotedShas: Set<string> | null;
-    },
-): BugfixIssueStatus {
-    if (pr?.mergedAt) {
-        const promoted =
-            deploy.unpromotedShas !== null && pr.mergeCommitSha
-                ? !deploy.unpromotedShas.has(pr.mergeCommitSha)
-                : deploy.mainAheadOfStable === 0;
-        if (!promoted) return "merged";
-        return issueState === "closed" ? "closed" : "live";
-    }
-    if (pr?.state === "open") return "pr_open";
-    return issueState === "closed" ? "closed" : "open";
-}
-
-async function githubJson<T>(
-    repo: string,
-    token: string,
-    path: string,
-): Promise<T> {
-    const res = await fetch(`https://api.github.com/repos/${repo}${path}`, {
-        headers: {
-            Accept: "application/vnd.github+json",
-            Authorization: `Bearer ${token}`,
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "mike-adminmax",
-        },
-    });
-    if (!res.ok) {
-        throw new Error(`GitHub ${path} responded ${res.status}`);
-    }
-    return (await res.json()) as T;
-}
-
-async function composeBugfixStatus(
-    repo: string,
-    token: string,
-): Promise<BugfixStatusPayload> {
-    const [issuesRaw, pullsRaw] = await Promise.all([
-        githubJson<GhIssueRaw[]>(
-            repo,
-            token,
-            `/issues?state=all&per_page=100&sort=created&direction=desc`,
-        ),
-        githubJson<GhPullRaw[]>(
-            repo,
-            token,
-            `/pulls?state=all&per_page=100&sort=created&direction=desc`,
-        ),
-    ]);
-
-    // Deploy lag: commits on main not yet promoted to stable (LIVE).
-    // A missing branch (404 on a fresh fork without `stable`) → null.
-    // The same compare also lists those commits' SHAs, which lets the
-    // status below decide promotion PER PR instead of gating every
-    // merged issue on main==stable (issue #130). null = list unusable
-    // (truncated past per_page or compare failed) → conservative gate.
-    let mainAheadOfStable: number | null = null;
-    let unpromotedShas: Set<string> | null = null;
-    try {
-        const cmp = await githubJson<{
-            ahead_by?: number;
-            total_commits?: number;
-            commits?: Array<{ sha?: string }>;
-        }>(repo, token, `/compare/stable...main?per_page=250`);
-        mainAheadOfStable =
-            typeof cmp.ahead_by === "number" ? cmp.ahead_by : null;
-        const commits = cmp.commits ?? [];
-        if (
-            typeof cmp.total_commits === "number" &&
-            cmp.total_commits <= commits.length
-        ) {
-            unpromotedShas = new Set(
-                commits
-                    .map((c) => c.sha ?? "")
-                    .filter((sha): sha is string => sha.length > 0),
-            );
-        }
-    } catch {
-        mainAheadOfStable = null;
-    }
-
-    // Map issue number → best linked PR. A PR links to issue N when its
-    // head branch matches `fix/issue-N-*` or its title/body mentions `#N`.
-    // Merged beats open beats closed-unmerged; the newer PR wins ties.
-    const prRank = (pr: GhPullRaw): number =>
-        pr.merged_at ? 2 : pr.state === "open" ? 1 : 0;
-    const prByIssue = new Map<number, GhPullRaw>();
-    for (const pr of pullsRaw) {
-        const nums = new Set<number>();
-        const headMatch = /^fix\/issue-(\d+)(?:-|$)/.exec(pr.head?.ref ?? "");
-        if (headMatch) nums.add(Number(headMatch[1]));
-        const text = `${pr.title ?? ""}\n${pr.body ?? ""}`;
-        for (const m of text.matchAll(/#(\d+)\b/g)) {
-            nums.add(Number(m[1]));
-        }
-        for (const n of nums) {
-            const cur = prByIssue.get(n);
-            if (
-                !cur ||
-                prRank(pr) > prRank(cur) ||
-                (prRank(pr) === prRank(cur) && pr.number > cur.number)
-            ) {
-                prByIssue.set(n, pr);
-            }
-        }
-    }
-
-    const issues: BugfixIssue[] = issuesRaw
-        .filter((it) => !it.pull_request)
-        .map((it) => {
-            const pr = prByIssue.get(it.number);
-            const linkedPr: BugfixLinkedPr | null = pr
-                ? {
-                      number: pr.number,
-                      state: pr.state === "open" ? "open" : "closed",
-                      mergedAt: pr.merged_at,
-                      htmlUrl: pr.html_url,
-                  }
-                : null;
-            const status = bugfixIssueStatus(
-                it.state === "closed" ? "closed" : "open",
-                linkedPr
-                    ? {
-                          mergedAt: linkedPr.mergedAt,
-                          state: linkedPr.state,
-                          mergeCommitSha: pr?.merge_commit_sha ?? null,
-                      }
-                    : null,
-                { mainAheadOfStable, unpromotedShas },
-            );
-            const labels = (it.labels ?? [])
-                .map((l) => (typeof l === "string" ? l : (l?.name ?? "")))
-                .filter((name): name is string => Boolean(name));
-            return {
-                number: it.number,
-                title: it.title,
-                state: it.state === "closed" ? "closed" : "open",
-                labels,
-                createdAt: it.created_at,
-                closedAt: it.closed_at,
-                htmlUrl: it.html_url,
-                linkedPr,
-                status,
-            };
-        });
-
-    return {
-        configured: true,
-        repo,
-        deploy: { mainAheadOfStable },
-        issues,
-        fetchedAt: new Date().toISOString(),
-    };
-}
-
-/**
- * GET /adminmax/bugfix/status — live bug tracking for the BugFix page.
- *
- * Response: { configured: false, repo }  when no GitHub token is set, or
- *           { configured: true, repo, deploy: { mainAheadOfStable },
- *             issues: [...], fetchedAt }.
- */
-adminMaxRouter.get("/bugfix/status", async (_req: Request, res: Response) => {
-    const token =
-        process.env.ADMINMAX_GITHUB_TOKEN?.trim() ||
-        process.env.GITHUB_TOKEN?.trim() ||
-        "";
-    const repo = process.env.ADMINMAX_GITHUB_REPO?.trim() || "nforum/mike";
-    if (!token) {
-        res.json({ configured: false, repo });
-        return;
-    }
-    try {
-        const now = Date.now();
-        if (bugfixCache && now - bugfixCache.at < BUGFIX_CACHE_TTL_MS) {
-            res.json(bugfixCache.payload);
-            return;
-        }
-        const payload = await composeBugfixStatus(repo, token);
-        bugfixCache = { payload, at: now };
-        res.json(payload);
-    } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error("[adminmax/bugfix/status]", msg);
-        res.status(500).json({ detail: msg });
-    }
-});
 
 // ── promo codes (Stripe coupons + promotion codes) ────────────────────────
 //
@@ -3302,7 +3050,7 @@ type PromoRevenueStat = {
  * GET /adminmax/promos — Stripe promotion codes (newest first) enriched
  * with the plans they're restricted to and billing_revenue stats.
  */
-adminMaxRouter.get("/promos", async (_req: Request, res: Response) => {
+adminDataRouter.get("/promos", async (_req: Request, res: Response) => {
     if (!isStripeConfigured()) {
         res.json({ configured: false, promos: [] });
         return;
@@ -3389,7 +3137,7 @@ adminMaxRouter.get("/promos", async (_req: Request, res: Response) => {
  *   max_redemptions?:   number
  * }
  */
-adminMaxRouter.post("/promos", async (req: Request, res: Response) => {
+adminDataRouter.post("/promos", async (req: Request, res: Response) => {
     if (!isStripeConfigured()) {
         res.status(503).json({ detail: "Stripe nije konfiguriran" });
         return;
@@ -3545,7 +3293,7 @@ adminMaxRouter.post("/promos", async (req: Request, res: Response) => {
                 ...(expiresAtUnix ? { expires_at: expiresAtUnix } : {}),
                 ...(maxRedemptions ? { max_redemptions: maxRedemptions } : {}),
             },
-            ip: req.ip ?? null,
+            ...auditMeta(req, res),
         });
         res.status(201).json({ ok: true, id: promo.id, code: promo.code });
     } catch (err) {
@@ -3560,7 +3308,7 @@ adminMaxRouter.post("/promos", async (req: Request, res: Response) => {
  * (Stripe promotion codes can't be deleted, only deactivated; an
  * expired code can't be reactivated — Stripe rejects it.)
  */
-adminMaxRouter.patch("/promos/:id", async (req: Request, res: Response) => {
+adminDataRouter.patch("/promos/:id", async (req: Request, res: Response) => {
     if (!isStripeConfigured()) {
         res.status(503).json({ detail: "Stripe nije konfiguriran" });
         return;
@@ -3582,7 +3330,7 @@ adminMaxRouter.patch("/promos/:id", async (req: Request, res: Response) => {
             targetType: "promo",
             targetId: promo.code,
             payload: { promotion_code_id: id, active },
-            ip: req.ip ?? null,
+            ...auditMeta(req, res),
         });
         res.json({ ok: true, id: promo.id, active: promo.active });
     } catch (err) {
@@ -3592,29 +3340,39 @@ adminMaxRouter.patch("/promos/:id", async (req: Request, res: Response) => {
     }
 });
 
-// ── databases inventory (external ops service) ────────────────────────────
+// ── MCP usage (Desk chat counters + portal connector join) ────────────────
 //
-// GET /adminmax/databases — generic proxy to the ops-inventory service
-// (OPS_INVENTORY_URL). Max holds no knowledge of the data stores behind the
-// "Baze" tab: it forwards the request and returns the JSON as-is. Reads serve
-// that service's stored snapshot; `?refresh=1` asks it to scan now (minutes).
-// Unset URL → `{ available: false }` and the tab says so.
+// Two legs, read-only. Desk chat = mcp_tool_calls_daily (migration 213,
+// written by lib/mcp/builtin.ts for every built-in MCP tool call). Connector
+// = portal-service "manage" API joined through user_supabase_identity. The
+// per-user summary also rides along on /users and /users/:id (`mcp` field)
+// for the badge next to "Aktivnost".
 
-adminMaxRouter.get("/databases", async (req: Request, res: Response) => {
-    if (!opsInventoryConfigured()) {
-        res.json({ available: false, detail: "OPS_INVENTORY_URL not configured" });
-        return;
-    }
-    const refresh = req.query.refresh === "1" || req.query.refresh === "true";
+// GET /adminmax/mcp/desk?days=30
+adminDataRouter.get("/mcp/desk", async (req: Request, res: Response) => {
+    const days = clampInt(req.query.days, 30, 1, 365);
     try {
-        const data = await opsInventoryFetch<Record<string, unknown>>(
-            `/v1/databases${refresh ? "?refresh=1" : ""}`,
-            { timeoutMs: refresh ? 1_150_000 : 30_000 },
-        );
-        res.json({ available: true, ...data });
+        res.json(await loadDeskMcpOverview(days));
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error("[adminmax/databases]", msg);
-        res.status(err instanceof OpsInventoryError ? 502 : 500).json({ detail: msg });
+        console.error("[adminmax/mcp/desk]", msg);
+        res.status(500).json({ detail: msg });
+    }
+});
+
+// GET /adminmax/users/:userId/mcp?days=30
+adminDataRouter.get("/users/:userId/mcp", async (req: Request, res: Response) => {
+    const { userId } = req.params;
+    if (!isUuid(userId)) {
+        res.status(400).json({ detail: "Invalid user id" });
+        return;
+    }
+    const days = clampInt(req.query.days, 30, 1, 365);
+    try {
+        res.json(await loadUserMcpDetail(userId, days));
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[adminmax/users/:id/mcp]", msg);
+        res.status(500).json({ detail: msg });
     }
 });

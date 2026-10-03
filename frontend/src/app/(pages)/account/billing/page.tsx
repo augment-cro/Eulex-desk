@@ -9,9 +9,28 @@ import {
 } from "@/app/hooks/useRateLimitStatus";
 import { TopupModal } from "@/app/components/shared/TopupModal";
 import { PlanChangeSection } from "./PlanChangeSection";
+import { BillingDocumentsSection } from "@/app/components/billing/BillingDocumentsSection";
 
 function fmt(n: number): string {
     return new Intl.NumberFormat("hr-HR").format(n);
+}
+
+type UsageSnap = { usedTokens: number; limitTokens: number; bonusTokens: number };
+
+function usedPercent(snap: UsageSnap): number {
+    if (snap.limitTokens <= 0) return 0;
+    return Math.min(100, Math.round((snap.usedTokens / snap.limitTokens) * 100));
+}
+
+/** Extra usage left, as a share of one daily limit (e.g. "64 % dnevnog limita"). */
+function extraUsageLabel(
+    snap: UsageSnap,
+    tb: (key: string, values?: Record<string, string | number>) => string,
+): string {
+    if (snap.bonusTokens <= 0) return tb("bonusNone");
+    const daily = snap.limitTokens - snap.bonusTokens;
+    if (daily <= 0) return tb("bonusValue", { percent: 100 });
+    return tb("bonusValue", { percent: Math.max(1, Math.round((snap.bonusTokens / daily) * 100)) });
 }
 
 export default function AccountBillingPage() {
@@ -64,21 +83,24 @@ export default function AccountBillingPage() {
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Card label={tb("subscription")} value={snap?.tierLabel ?? "—"} />
+                {/* Usage is shown as a share of the limit, never as raw
+                    token counts (same model as the usage ring). */}
                 <Card
                     label={tb("used24h")}
-                    value={snap ? fmt(snap.usedTokens) : "—"}
+                    value={
+                        snap
+                            ? tb("usedPercent", { percent: usedPercent(snap) })
+                            : "—"
+                    }
                     subValue={
                         snap
-                            ? tb("usedOf", {
-                                  limit: fmt(snap.limitTokens),
-                                  remaining: fmt(snap.remainingTokens),
-                              })
+                            ? tb(snap.bonusTokens > 0 ? "usedOfWithExtra" : "usedOf")
                             : undefined
                     }
                 />
                 <Card
                     label={tb("bonusTokens")}
-                    value={snap ? fmt(snap.bonusTokens) : "—"}
+                    value={snap ? extraUsageLabel(snap, tb) : "—"}
                     subValue={tb("bonusHint")}
                 />
                 <Card
@@ -100,6 +122,8 @@ export default function AccountBillingPage() {
             <TopupModal open={topupOpen} onClose={() => setTopupOpen(false)} />
 
             <PlanChangeSection />
+
+            <BillingDocumentsSection />
         </div>
     );
 }

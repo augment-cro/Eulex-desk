@@ -22,6 +22,9 @@ export const REASONING_EFFORT_VALUES: readonly ReasoningEffort[] = [
     "high",
 ] as const;
 
+// Main chat runs Opus 5.5 at high (blind test 2026-09-24: high preferred
+// over medium 6:1 for +19 % cost). Keep in sync with the column default
+// (migration 113, 'high').
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
 
 export interface ModelOption {
@@ -56,18 +59,20 @@ export interface ModelOption {
 
 export const MODELS: ModelOption[] = [
     {
-        id: "claude-sonnet-5",
-        label: "Claude Sonnet 5",
+        id: "claude-opus-5-5",
+        label: "Claude Opus 5.5",
         group: "Anthropic",
-        tier: "standard",
+        tier: "pro",
         supportsReasoningEffort: true,
     },
 ];
 
 // Primary model for the web composer. Backend deploy ships with ANTHROPIC_API_KEY
 // wired from Secret Manager (see cloudbuild.yaml), so every signed-in user
-// gets Claude Sonnet 5 by default without pasting their own key.
-export const DEFAULT_MODEL_ID = "claude-sonnet-5";
+// gets Claude Opus 5.5 by default without pasting their own key. A stored
+// pick that is no longer listed (e.g. claude-sonnet-5, the default until
+// 2026-09-22) falls back to this in useSelectedModel.
+export const DEFAULT_MODEL_ID = "claude-opus-5-5";
 
 export const ALLOWED_MODEL_IDS = new Set(MODELS.map((m) => m.id));
 

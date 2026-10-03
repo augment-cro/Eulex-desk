@@ -229,6 +229,11 @@ export interface AnonymizeArgs {
     chatId?: string | null;
     sessionId?: string | null;
     documentVersionId?: string | null;
+    /** Cache key of the document analysis (`analysisKeyFor`): the shield
+     *  files the result under it instead of the bare version id, so an
+     *  in-place rewrite of the version's bytes is a miss. Older shields
+     *  ignore the field. */
+    analysisKey?: string | null;
     source?: "document" | "user_input" | "tool_result";
 }
 
@@ -252,6 +257,7 @@ export const piiClient = {
             chat_id: args.chatId ?? undefined,
             user_id: args.userId,
             document_version_id: args.documentVersionId ?? undefined,
+            analysis_key: args.analysisKey ?? undefined,
         });
     },
 
@@ -398,6 +404,9 @@ export const piiClient = {
             engine_version: string;
             engine_compat_class: "safe" | "breaking";
             recognizers: string[];
+            /** Behaviors the backend may rely on (see `capabilities.ts`);
+             *  absent on shields older than 2026-09-24. */
+            capabilities?: string[];
         }>
     > {
         return call("/version", null, { method: "GET", timeoutMs: 2000 });

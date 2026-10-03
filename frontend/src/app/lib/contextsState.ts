@@ -1,6 +1,7 @@
 import type { MikeContextListItem, MikeContextToggle } from "./mikeApi";
 
-/** Max simultaneously active contexts (mirrors the backend toggle cap). */
+/** Max simultaneously active personal contexts (mirrors the backend toggle
+ *  cap; EULEX system contexts are exempt). */
 export const MAX_ACTIVE = 5;
 
 export interface ContextsState {
@@ -60,4 +61,16 @@ export function contextsReducer(
 
 export function activeCount(state: ContextsState): number {
     return Object.values(state.enabled).filter(Boolean).length;
+}
+
+/** Active contexts that count toward MAX_ACTIVE — system contexts do not. */
+export function cappedActiveCount(state: ContextsState): number {
+    const system = new Set(
+        state.items
+            .filter((i) => i.context.level === "system")
+            .map((i) => i.context.id),
+    );
+    return Object.entries(state.enabled).filter(
+        ([id, on]) => on && !system.has(id),
+    ).length;
 }

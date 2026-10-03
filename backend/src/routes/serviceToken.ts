@@ -20,6 +20,7 @@ import {
     type SeamService,
 } from "../lib/seams/serviceIdentity";
 import { getTeamForUser } from "../lib/teams";
+import { tierGrants } from "../lib/entitlements";
 
 const SERVICES: ReadonlySet<string> = new Set(["contexts", "governance", "audit"]);
 
@@ -28,9 +29,16 @@ type TenantResolver = (userId: string) => Promise<string | null>;
 const defaultTenantResolver: TenantResolver = async (userId) =>
     (await getTeamForUser(userId))?.id ?? null;
 
+/** Whether a tier grants EULEX system contexts (the contexts token claim). */
+type SystemContextsResolver = (tierLevelId: unknown) => Promise<boolean>;
+
+const defaultSystemContexts: SystemContextsResolver = (tierLevelId) =>
+    tierGrants(tierLevelId, "systemContexts");
+
 export function createServiceTokenRouter(
     auth: RequestHandler = requireAuth,
     tenantFor: TenantResolver = defaultTenantResolver,
+    systemContextsFor: SystemContextsResolver = defaultSystemContexts,
 ): Router {
     const router = Router();
 
@@ -52,11 +60,17 @@ export function createServiceTokenRouter(
             console.error("[serviceToken] tenant lookup failed", err);
         }
 
+        // The contexts service shows EULEX system contexts only to tokens
+        // whose tier grants them (fails closed on a lookup error).
+        const systemContexts =
+            service === "contexts" &&
+            (await systemContextsFor(res.locals.tierLevelId));
         const token = mintServiceToken(
             service as SeamService,
             userId,
             tenant,
             userEmail,
+            { systemContexts },
         );
         if (!token) {
             res.status(404).json({ error: "service not configured" });

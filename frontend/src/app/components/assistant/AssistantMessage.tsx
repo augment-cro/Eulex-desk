@@ -1,10 +1,23 @@
 "use client";
 
 import { useId, useRef, useEffect, useState } from "react";
+import { ContextsAppliedFooter } from "./ContextsAppliedFooter";
+import { PlanCard } from "./PlanCard";
+import { AssessmentCard, type ContinueAssessment } from "./AssessmentCard";
+import { latestAssessment } from "./assessmentEvents";
+import { latestPlanSteps } from "./planSteps";
+import { EuAiIcon } from "../shared/EuAiIcon";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
+import { StatusDot } from "../shared/StatusDot";
+import { rehypeStatusDots, statusDotOf } from "../shared/rehypeStatusDots";
 import "katex/dist/katex.min.css";
 import {
     Copy,
@@ -20,8 +33,11 @@ import {
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { setMessageFlag } from "@/app/lib/mikeApi";
 import { API_BASE } from "@/app/lib/apiBase";
-import { mcpToolLabelKey } from "@/app/lib/mcpToolLabels";
-import { displayCitationQuote, formatCitationPage } from "../shared/types";
+import { builtinToolLabelKey, mcpToolLabelKey } from "@/app/lib/mcpToolLabels";
+import { escapeLineStartDates } from "../shared/markdownDates";
+import { displayCitationQuote, formatCitationLocation } from "../shared/types";
+import { docDownloadCards } from "./docDownloadCards";
+import { MarkdownTable } from "./MarkdownTable";
 import {
     articleBaseOf,
     articleNumberOf,
@@ -31,6 +47,14 @@ import {
     parsePinpoint,
     upgradeSourceArticleSuffix,
 } from "../shared/legalSourceUtils";
+import {
+    ARTICLE_REF_RE,
+    applyLegalRefExtras,
+    applyLegalRefs,
+    autoLinkLegalRefs,
+    createLegalRefCursor,
+    markLegalRefExtras,
+} from "../shared/legalRefLinking";
 import type {
     AssistantEvent,
     LegalSource,
@@ -45,6 +69,7 @@ import { PreResponseWrapper } from "../shared/PreResponseWrapper";
 import { RateLimitChatNotice } from "../shared/RateLimitChatNotice";
 import { supabase } from "@/lib/supabase";
 import { useTranslations } from "next-intl";
+import { cn } from "@/lib/utils";
 import {
     usePiiRenderedText,
     containsPiiPlaceholder,
@@ -445,6 +470,7 @@ function ReasoningBlock({
                 <div className="mt-2 ml-[14px] text-sm font-serif text-muted-foreground/70 prose prose-sm max-w-none [&>*]:text-muted-foreground/70 [&>*]:text-sm">
                     <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[rehypeStatusDots]}
                         components={{
                             code: ({ node, ...props }) => (
                                 <code
@@ -452,6 +478,17 @@ function ReasoningBlock({
                                     {...props}
                                 />
                             ),
+                            span: ({ node, ...props }) => {
+                                const status = statusDotOf(node);
+                                return status ? (
+                                    <StatusDot
+                                        status={status}
+                                        token={String(props.children ?? "")}
+                                    />
+                                ) : (
+                                    <span {...props} />
+                                );
+                            },
                         }}
                     >
                         {text}
@@ -933,6 +970,8 @@ function DocDownloadBlock({
     const isSafeHref = download_url.startsWith("/");
     const href = isSafeHref ? `${API_BASE}${download_url}` : null;
     const [busy, setBusy] = useState(false);
+    const [failed, setFailed] = useState(false);
+    const tDownload = useTranslations("assistant.docDownload");
 
     const handleDownload = async (e?: {
         stopPropagation?: () => void;
@@ -942,6 +981,7 @@ function DocDownloadBlock({
         e?.preventDefault?.();
         if (busy || isReloading || !href) return;
         setBusy(true);
+        setFailed(false);
         try {
             const {
                 data: { session },
@@ -949,6 +989,9 @@ function DocDownloadBlock({
             const token = session?.access_token;
             const resp = await fetch(href, {
                 headers: token ? { Authorization: `Bearer ${token}` } : {},
+                // A hung request used to spin until Cloud Run's 20-minute
+                // timeout; give up well before that and say so.
+                signal: AbortSignal.timeout(90_000),
             });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const blob = await resp.blob();
@@ -960,6 +1003,10 @@ function DocDownloadBlock({
             a.click();
             a.remove();
             setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        } catch (err) {
+            // Used to fail silently after the spinner.
+            console.error("[doc-download] failed:", err);
+            setFailed(true);
         } finally {
             setBusy(false);
         }
@@ -980,7 +1027,13 @@ function DocDownloadBlock({
                         </span>
                     )}
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">{ext}</p>
+                {failed ? (
+                    <p role="alert" className="text-xs text-destructive mt-0.5">
+                        {tDownload("failed")}
+                    </p>
+                ) : (
+                    <p className="text-xs text-muted-foreground mt-0.5">{ext}</p>
+                )}
             </div>
         </div>
     );
@@ -1252,102 +1305,6 @@ function preprocessCitations(
     });
 }
 
-// Article-reference auto-linking. Matches "Članak 5", "čl. 153", "članka 17",
-// "čl. 17.a" (suffixed articles), "Article 6", "Art. 5" (HR + EN),
-// Unicode-boundary aware. The suffix letter must be adjacent to the digits or
-// the dot (NO whitespace) — free prose like "članak 17. i 18." must never
-// capture "17i".
-// Stem-based so ALL Croatian declensions link: člank\w* (članka, članku,
-// člankom, članke), članc\w* (članci, člancima), članak\w* (članak,
-// članaka). Enumerating forms missed the instrumental — "uređeno je člankom
-// 153." rendered unlinked. Safe to be loose here: autoLinkLegalRefs only
-// links numbers that map to exactly one harvested source.
-// Cross-language coverage: HR stems + EN article/art. + FR article (same
-// stem) + IT articol\w* (articolo/articoli) + DE artikel\w* + German-style
-// section signs § / §§ ("§ 153", "§§ 12-14").
-const ARTICLE_REF_RE =
-    /(?<![\p{L}\p{N}])(?:članc\w*|člank\w*|članak\w*|articol\w*|artikel\w*|articles?|art\.?|čl\.?|§{1,2})\s*(\d+(?:\.?[a-z](?![a-z]))?)/giu;
-
-/**
- * Second citation pass: turn bare article references in the prose into
- * clickable pills mapped to harvested legal sources, even when the model
- * omitted the [N] marker. Conservative — only links a reference whose article
- * number maps to EXACTLY ONE harvested source (no guessing in a high-stakes
- * legal domain), and never doubles up where a model pill already follows.
- * Reuses the §idx§ pill token + renderer.
- */
-function autoLinkLegalRefs(
-    text: string,
-    legalSources: LegalSource[],
-    citationsList: MikeAnnotation[],
-): string {
-    if (legalSources.length === 0) return text;
-    // article number → source; null marks an ambiguous number (skip those).
-    const byNumber = new Map<string, LegalSource | null>();
-    for (const s of legalSources) {
-        // Labels are clean strings ("Članak 17.a", "Članak 17. a") — an
-        // optional space before the suffix letter is safe here, unlike in
-        // free prose (ARTICLE_REF_RE).
-        const raw = s.articleLabel?.match(/\d+(?:\.?\s?[a-z](?![a-z]))?/i)?.[0];
-        if (!raw) continue;
-        const num = normalizeArticleNumber(raw);
-        byNumber.set(num, byNumber.has(num) ? null : s);
-    }
-    if (byNumber.size === 0) return text;
-
-    return text.replace(
-        ARTICLE_REF_RE,
-        (full: string, num: string, offset: number) => {
-            const norm = normalizeArticleNumber(num);
-            let src = byNumber.get(norm);
-            // Issue #43 — suffixed prose ref ("čl. 17.a") with no exact
-            // source: the MCP sometimes returns the BASE number ("17") for a
-            // suffixed article. Fall back to the base-number source when it
-            // is unambiguous AND no sibling source claims another suffixed
-            // variant of the same base (17.b would make "17" a real
-            // ambiguity), and upgrade its labels so the suffix survives into
-            // the tab/header/scroll.
-            if (src === undefined && hasArticleSuffix(norm)) {
-                const base = articleBaseOf(norm);
-                const candidate = byNumber.get(base);
-                const siblingSuffixed = [...byNumber.keys()].some(
-                    (k) =>
-                        k !== norm &&
-                        hasArticleSuffix(k) &&
-                        articleBaseOf(k) === base,
-                );
-                if (candidate && !siblingSuffixed) {
-                    src = upgradeSourceArticleSuffix(candidate, num);
-                }
-            }
-            if (!src) return full; // unknown or ambiguous number
-            // Skip if a citation pill token already follows (model cited it).
-            const after = text.slice(
-                offset + full.length,
-                offset + full.length + 6,
-            );
-            if (after.includes("§")) return full;
-            const idx = citationsList.length;
-            citationsList.push({
-                type: "legal_source_data",
-                ref: 0,
-                source: src,
-                quote: "",
-                // Stavak/točka right after the reference ("članka 38. stavka
-                // 3. točke l)") → magenta pinpoint in the source panel.
-                pinpoint: parsePinpoint(
-                    text.slice(offset + full.length, offset + full.length + 140),
-                ),
-            });
-            // Underline the reference text itself (WP-style) instead of
-            // appending a numbered pill: wrap the matched prose in a link
-            // whose href carries the citation index; the `a` renderer turns
-            // it into a clickable underlined inline reference.
-            return `[${full}](#legal-cite-${idx})`;
-        },
-    );
-}
-
 // Croatian court-decision references in prose: an optional court-register
 // abbreviation (longest-first so "Revr" wins over "Rev"), an optional
 // space/dash separator, then "number/year" with an optional "-N" suffix
@@ -1458,6 +1415,7 @@ function PiiRenderedMarkdown({
     onLegalSourceClick,
     divRef,
     piiSessionId,
+    tableExport,
 }: {
     text: string;
     citationsList: MikeAnnotation[];
@@ -1468,6 +1426,7 @@ function PiiRenderedMarkdown({
     ) => void;
     divRef?: React.RefObject<HTMLDivElement | null>;
     piiSessionId?: string | null;
+    tableExport?: boolean;
 }) {
     const hasPlaceholder = containsPiiPlaceholder(text);
     const tPiiBadge = useTranslations("assistant.piiBadge");
@@ -1513,6 +1472,7 @@ function PiiRenderedMarkdown({
                 onCitationClick={onCitationClick}
                 onLegalSourceClick={onLegalSourceClick}
                 divRef={divRef}
+                tableExport={tableExport}
             />
         </>
     );
@@ -1528,6 +1488,7 @@ function MarkdownContent({
     onCitationClick,
     onLegalSourceClick,
     divRef,
+    tableExport = false,
 }: {
     text: string;
     citationsList: MikeAnnotation[];
@@ -1537,7 +1498,11 @@ function MarkdownContent({
         citedArticleNumbers?: string[],
     ) => void;
     divRef?: React.RefObject<HTMLDivElement | null>;
+    /** Offer "Download as Excel" under tables (answer finished streaming). */
+    tableExport?: boolean;
 }) {
+    const tLegalSource = useTranslations("legalSource");
+    const tCommon = useTranslations("common");
     // Streaming re-parses the markdown on every chunk, so the cite buttons
     // remount and their CSS underline reveal would restart each time
     // (visible flicker). Anchor each citation's animation to the moment it
@@ -1562,15 +1527,27 @@ function MarkdownContent({
                     [remarkMath, { singleDollarTextMath: false }],
                     remarkGfm,
                 ]}
-                rehypePlugins={[rehypeKatex]}
+                rehypePlugins={[rehypeKatex, rehypeStatusDots]}
                 components={{
-                    table: ({ node, ...props }) => (
-                        <div className="overflow-x-auto my-4">
-                            <table
-                                className="min-w-full divide-y divide-border border border-border rounded-lg overflow-hidden"
-                                {...props}
+                    // Status tokens (🔴 🟡 🔵 ⚪ 🟢) as soft dots; every other
+                    // span (KaTeX output) renders as is.
+                    span: ({ node, ...props }) => {
+                        const status = statusDotOf(node);
+                        return status ? (
+                            <StatusDot
+                                status={status}
+                                token={String(props.children ?? "")}
                             />
-                        </div>
+                        ) : (
+                            <span {...props} />
+                        );
+                    },
+                    table: ({ node, ...props }) => (
+                        <MarkdownTable
+                            node={node}
+                            exportable={tableExport}
+                            {...props}
+                        />
                     ),
                     thead: ({ node, ...props }) => (
                         <thead className="bg-muted" {...props} />
@@ -1680,17 +1657,36 @@ function MarkdownContent({
                                         </button>
                                     );
                                 }
-                                // Document citation → gray pill (unchanged).
-                                const tooltipText = `${formatCitationPage(annotation)}: "${displayCitationQuote(annotation)}"`;
+                                // Document citation → magenta pill: the
+                                // highlighter motif of the passage it opens.
+                                // A document of an active EULEX context
+                                // (AZOP guidance, forms) gets a cyan pill.
+                                const fromContext = annotation.context === true;
+                                const location = formatCitationLocation(
+                                    annotation,
+                                    (page) => tCommon("pageShort", { page }),
+                                );
+                                const tooltipText = `${fromContext ? `${tLegalSource("contextDocument")} · ${annotation.filename} · ` : ""}${location ? `${location}: ` : ""}"${displayCitationQuote(annotation)}"`;
                                 return (
                                     <button
                                         onClick={() => {
                                             onCitationClick?.(annotation);
                                         }}
-                                        className="mx-0.5 inline-flex items-center justify-center rounded-full w-4 h-4 text-[10px] font-medium transition-colors align-super bg-secondary text-foreground hover:bg-accent"
+                                        className={cn(
+                                            "mx-0.5 inline-flex items-center justify-center rounded-full w-4 h-4 text-[10px] font-medium transition-colors align-super",
+                                            fromContext
+                                                ? "bg-context-cite text-context-cite-foreground hover:bg-context-cite/70"
+                                                : "bg-magenta text-magenta-foreground hover:bg-magenta/70",
+                                        )}
                                         title={tooltipText}
                                     >
-                                        {idx + 1}
+                                        {/* The model's own [N] — the list index also
+                                            counts legal-source links, which
+                                            shifted document pills ("[1]" → "3"). */}
+                                        {annotation.type === "citation_data" &&
+                                        annotation.ref > 0
+                                            ? annotation.ref
+                                            : idx + 1}
                                     </button>
                                 );
                             }
@@ -1714,6 +1710,18 @@ function MarkdownContent({
                         // Inline legal-source reference: the reference text in
                         // the prose is underlined (brand-blue, animated) and
                         // opens the right-side source panel — no numbered pill.
+                        // Reference the corpus could not confirm (legal_refs
+                        // "unverified"): marked, never linked to another act.
+                        if (href === "#legal-unverified") {
+                            return (
+                                <span
+                                    className="legal-cite-unverified"
+                                    title={tLegalSource("unverifiedRef")}
+                                >
+                                    {children}
+                                </span>
+                            );
+                        }
                         const legalCiteMatch =
                             href?.match(/^#legal-cite-(\d+)$/);
                         if (legalCiteMatch) {
@@ -1773,7 +1781,7 @@ function MarkdownContent({
                     ),
                 }}
             >
-                {text}
+                {escapeLineStartDates(text)}
             </ReactMarkdown>
         </div>
     );
@@ -1905,6 +1913,12 @@ interface Props {
      * answer stays scoped to this turn's own sources.
      */
     conversationLegalSources?: LegalSource[];
+    /**
+     * "Nastavi procjenu" on the REZULTAT card: select the task again in the
+     * composer with the assessment id filled in. Absent → no button (shared
+     * chats).
+     */
+    onContinueAssessment?: (args: ContinueAssessment) => void;
 }
 
 export function AssistantMessage({
@@ -1935,6 +1949,7 @@ export function AssistantMessage({
     onFlagChange,
     piiSessionId,
     conversationLegalSources,
+    onContinueAssessment,
 }: Props) {
     const messageKey = useId();
     const t = useTranslations("streaming");
@@ -1942,6 +1957,7 @@ export function AssistantMessage({
     const tCommon = useTranslations("common");
     const tActions = useTranslations("messageActions");
     const tErrors = useTranslations("assistant.errors");
+    const tEuAi = useTranslations("euAiIcon");
     const contentDivRef = useRef<HTMLDivElement | null>(null);
     const [isCopied, setIsCopied] = useState(false);
     const [isFlagged, setIsFlagged] = useState<boolean>(flagged);
@@ -1980,6 +1996,11 @@ export function AssistantMessage({
         }
         onEditResolved?.(args);
     };
+
+    const downloadCards =
+        events && !isStreaming ? docDownloadCards(events) : null;
+    const plan = latestPlanSteps(events);
+    const assessment = latestAssessment(events);
 
     const status: StatusState = isError
         ? "error"
@@ -2031,26 +2052,56 @@ export function AssistantMessage({
     // does the same for Croatian case-law references ("Revr 123/2019", ECLI).
     const citationsList: MikeAnnotation[] = [];
     const processedTexts: string[] = [];
+    // Server-resolved references (backend lib/legalRefs, tracker #45) win
+    // over the local number-plus-act rule when the turn carries them; the
+    // local linker remains the streaming-time and legacy-message path.
+    const legalRefsEvent = events?.find((e) => e.type === "legal_refs");
+    const legalRefCursor = createLegalRefCursor();
+    // Model-found references the regex misses (act-only mentions, missed
+    // numbers) are anchored in the raw text, so they are marked before
+    // preprocessing and linked after the regex pass.
+    const legalRefExtras = legalRefsEvent?.extra ?? [];
     if (events) {
-        for (const event of events) {
-            processedTexts.push(
-                event.type === "content"
-                    ? autoLinkCaseLawRefs(
-                          autoLinkLegalRefs(
-                              preprocessCitations(
-                                  event.text,
-                                  annotations,
-                                  citationsList,
-                              ),
-                              legalSourcesForLinking,
-                              citationsList,
-                          ),
-                          legalSourcesForLinking,
-                          citationsList,
-                      )
-                    : "",
+        const rawTexts = markLegalRefExtras(
+            events.map((e) => (e.type === "content" ? e.text : null)),
+            legalRefExtras,
+        );
+        events.forEach((event, i) => {
+            if (event.type !== "content") {
+                processedTexts.push("");
+                return;
+            }
+            const preprocessed = preprocessCitations(
+                rawTexts[i] ?? event.text,
+                annotations,
+                citationsList,
             );
-        }
+            const articleLinked = legalRefsEvent
+                ? applyLegalRefs(
+                      preprocessed,
+                      legalRefsEvent.refs,
+                      legalSourcesForLinking,
+                      citationsList,
+                      legalRefCursor,
+                  )
+                : autoLinkLegalRefs(
+                      preprocessed,
+                      legalSourcesForLinking,
+                      citationsList,
+                  );
+            processedTexts.push(
+                autoLinkCaseLawRefs(
+                    applyLegalRefExtras(
+                        articleLinked,
+                        legalRefExtras,
+                        legalSourcesForLinking,
+                        citationsList,
+                    ),
+                    legalSourcesForLinking,
+                    citationsList,
+                ),
+            );
+        });
     }
 
     const handleCopy = async () => {
@@ -2111,6 +2162,11 @@ export function AssistantMessage({
     --print-muted: #6F6249;     /* --muted-foreground literal-ok */
     --print-border: #DDD6C6;    /* --border literal-ok */
     --print-surface: #F7F3E9;   /* --card / --muted literal-ok */
+    --print-destructive: #D34300; /* --destructive literal-ok */
+    --print-warning: #B45309;   /* --warning literal-ok */
+    --print-action: #65ECFF;    /* --action literal-ok */
+    --print-success: #4D7C0F;   /* --success literal-ok */
+    --print-input: #978D7D;     /* --input literal-ok */
   }
   /* Print layout: reserve room at the top + bottom of every A4 page
      for our repeating margin-boxes. Chromium/WebKit honour @page margin
@@ -2232,6 +2288,32 @@ export function AssistantMessage({
   /* Strip any rendered inline UI controls Eulex Desk embeds in the live answer
      (citation pills, etc.) — they shouldn't reach the printout. */
   button { display: none !important; }
+
+  /* Status tokens (🔴 🟡 🔵 ⚪ 🟢) as the soft dots of the paper theme
+     (globals.css --status-*); the emoji inside stays visually hidden. */
+  [data-slot="status-dot"] {
+    position: relative;
+    display: inline-block;
+    width: 0.55em;
+    height: 0.55em;
+    border: 1px solid;
+    border-radius: 9999px;
+    vertical-align: middle;
+  }
+  [data-status="problem"] { background: color-mix(in oklab, var(--print-destructive) 62%, var(--print-bg)); border-color: color-mix(in oklab, var(--print-destructive) 87%, var(--print-bg)); }
+  [data-status="gap"] { background: color-mix(in oklab, var(--print-warning) 36%, var(--print-bg)); border-color: color-mix(in oklab, var(--print-warning) 61%, var(--print-bg)); }
+  [data-status="assessment"] { background: color-mix(in oklab, var(--print-action) 58%, var(--print-bg)); border-color: color-mix(in oklab, var(--print-action) 83%, var(--print-bg)); }
+  [data-status="insufficient"] { background: transparent; border-color: var(--print-input); }
+  [data-status="clear"] { background: color-mix(in oklab, var(--print-success) 48%, var(--print-bg)); border-color: color-mix(in oklab, var(--print-success) 73%, var(--print-bg)); }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
 
   /* Closing card with the disclaimer. Tries to stay on the same page as
      the last paragraph, but allows a break before if there isn't room. */
@@ -2427,6 +2509,17 @@ export function AssistantMessage({
     if (events) {
         let current: Extract<EventGroup, { kind: "pre" }> | null = null;
         events.forEach((e, i) => {
+            // Source registries render nothing (they feed "Izvori" and the
+            // linker) — counted as steps they made an empty "Završeno u 1
+            // koraku" box after the answer when `legal_refs` arrived.
+            if (
+                e.type === "legal_sources" ||
+                e.type === "legal_refs" ||
+                e.type === "contexts_applied" ||
+                e.type === "plan_updated" ||
+                e.type === "assessment_recorded"
+            )
+                return;
             if (e.type === "content") {
                 if (current) {
                     groups.push(current);
@@ -2473,6 +2566,7 @@ export function AssistantMessage({
                         onLegalSourceClick={onLegalSourceClick}
                         divRef={isLastContent ? contentDivRef : undefined}
                         piiSessionId={piiSessionId}
+                        tableExport={!isStreaming}
                     />
                 </div>
             );
@@ -2489,6 +2583,10 @@ export function AssistantMessage({
             );
         }
         if (event.type === "tool_call_start") {
+            const builtinKey =
+                !event.display_name && event.name
+                    ? builtinToolLabelKey(event.name)
+                    : null;
             return (
                 <div
                     key={globalIdx}
@@ -2498,14 +2596,22 @@ export function AssistantMessage({
                         <div className="absolute bottom-0 w-[1px] bg-border top-[13px] left-[2.5px] h-[calc(100%+11px)]" />
                     )}
                     <div className="w-1.5 h-1.5 rounded-full border border-muted-foreground/70 border-t-transparent animate-spin shrink-0" />
-                    <span className="font-medium ml-2">{t("running")}</span>
-                    <span className="ml-1">
-                        {event.display_name
-                            ? `${event.display_name}...`
-                            : event.name
-                              ? `${event.name}...`
-                              : `${t("tool")}...`}
-                    </span>
+                    {builtinKey ? (
+                        <span className="font-medium ml-2">
+                            {`${t(builtinKey)}...`}
+                        </span>
+                    ) : (
+                        <>
+                            <span className="font-medium ml-2">{t("running")}</span>
+                            <span className="ml-1">
+                                {event.display_name
+                                    ? `${event.display_name}...`
+                                    : event.name
+                                      ? `${event.name}...`
+                                      : `${t("tool")}...`}
+                            </span>
+                        </>
+                    )}
                 </div>
             );
         }
@@ -2678,6 +2784,19 @@ export function AssistantMessage({
             <div className="w-full font-sans relative mt-2">
                 {events && events.length > 0 ? (
                     <div className="flex flex-col gap-4">
+                        {/* The plan of the task / workflow being applied
+                            (latest update_plan), above the answer. */}
+                        {plan && <PlanCard steps={plan} />}
+                        {/* The assessment record (latest version), under the
+                            plan, above the answer. */}
+                        {assessment && (
+                            <AssessmentCard
+                                assessment={assessment}
+                                onContinue={
+                                    !isStreaming ? onContinueAssessment : undefined
+                                }
+                            />
+                        )}
                         {groups.map((g, gIdx) => {
                             if (g.kind === "content") {
                                 const isLastContent =
@@ -2697,6 +2816,7 @@ export function AssistantMessage({
                                                     : undefined
                                             }
                                             piiSessionId={piiSessionId}
+                                            tableExport={!isStreaming}
                                         />
                                     </div>
                                 );
@@ -2732,6 +2852,15 @@ export function AssistantMessage({
                             onLegalSourceClick && (
                                 <SourcesList
                                     sources={legalSourcesForList}
+                                    citedIds={
+                                        new Set(
+                                            citationsList.flatMap((a) =>
+                                                a.type === "legal_source_data"
+                                                    ? [a.source.id]
+                                                    : [],
+                                            ),
+                                        )
+                                    }
                                     onSourceClick={(s) =>
                                         onLegalSourceClick(
                                             {
@@ -2756,6 +2885,18 @@ export function AssistantMessage({
                                     }
                                 />
                             )}
+                        {/* Contexts that took part in this answer (+ the
+                            EULEX disclaimer for a system context). */}
+                        {!isStreaming &&
+                            (() => {
+                                const applied = events?.find(
+                                    (e) => e.type === "contexts_applied",
+                                );
+                                return applied &&
+                                    applied.type === "contexts_applied" ? (
+                                    <ContextsAppliedFooter event={applied} />
+                                ) : null;
+                            })()}
                         {/* Bulk accept/reject + per-edit cards — below the
                             response content, only after streaming stops,
                             rendered above the download card. */}
@@ -2863,86 +3004,55 @@ export function AssistantMessage({
 
                 {/* Download card for each edited doc — only after streaming
                     stops, and deduped per document (keep the latest edit). */}
-                {events &&
-                    !isStreaming &&
-                    (() => {
-                        const edited = events.filter(
-                            (
-                                e,
-                            ): e is Extract<
-                                AssistantEvent,
-                                { type: "doc_edited" }
-                            > =>
-                                e.type === "doc_edited" &&
-                                !e.isStreaming &&
-                                !!e.download_url,
-                        );
-                        const latestByDoc = new Map<
-                            string,
-                            (typeof edited)[number]
-                        >();
-                        for (const e of edited)
-                            latestByDoc.set(e.document_id, e);
-                        return Array.from(latestByDoc.values()).map((e) => (
-                            <div
-                                key={`edited-download-${e.document_id}`}
-                                className="flex flex-col gap-2 mt-2 mb-3"
-                            >
-                                <DocDownloadBlock
-                                    filename={e.filename}
-                                    download_url={
-                                        resolvedOverrides[e.document_id] ??
-                                        e.download_url
-                                    }
-                                    versionNumber={e.version_number ?? null}
-                                    onOpen={
-                                        onOpenDocument
-                                            ? () =>
-                                                  onOpenDocument({
-                                                      documentId: e.document_id,
-                                                      filename: e.filename,
-                                                      versionId:
-                                                          e.version_id ?? null,
-                                                      versionNumber:
-                                                          e.version_number ??
-                                                          null,
-                                                  })
-                                            : onEditViewClick &&
-                                                e.annotations[0]
-                                              ? () =>
-                                                    onEditViewClick(
-                                                        e.annotations[0],
-                                                        e.filename,
-                                                    )
-                                              : undefined
-                                    }
-                                    isReloading={
-                                        isDocReloading?.(e.document_id) ?? false
-                                    }
-                                />
-                            </div>
-                        ));
-                    })()}
+                {downloadCards &&
+                    downloadCards.edited.map((e) => (
+                        <div
+                            key={`edited-download-${e.document_id}`}
+                            className="flex flex-col gap-2 mt-2 mb-3"
+                        >
+                            <DocDownloadBlock
+                                filename={e.filename}
+                                download_url={
+                                    resolvedOverrides[e.document_id] ??
+                                    e.download_url
+                                }
+                                versionNumber={e.version_number ?? null}
+                                onOpen={
+                                    onOpenDocument
+                                        ? () =>
+                                              onOpenDocument({
+                                                  documentId: e.document_id,
+                                                  filename: e.filename,
+                                                  versionId:
+                                                      e.version_id ?? null,
+                                                  versionNumber:
+                                                      e.version_number ??
+                                                      null,
+                                              })
+                                        : onEditViewClick &&
+                                            e.annotations[0]
+                                          ? () =>
+                                                onEditViewClick(
+                                                    e.annotations[0],
+                                                    e.filename,
+                                                )
+                                          : undefined
+                                }
+                                isReloading={
+                                    isDocReloading?.(e.document_id) ?? false
+                                }
+                            />
+                        </div>
+                    ))}
 
                 {/* Download cards for created docs — generated docs now
                     persist as first-class documents, so clicking opens
-                    them in the DocPanel (like edited docs). */}
-                {events &&
-                    !isStreaming &&
-                    events.some(
-                        (e) => e.type === "doc_created" && e.download_url,
-                    ) && (
+                    them in the DocPanel (like edited docs). A doc edited
+                    later in the same answer shows only its edited card. */}
+                {downloadCards &&
+                    downloadCards.created.length > 0 && (
                         <div className="flex flex-col gap-2 mt-2 mb-3">
-                            {(
-                                events.filter(
-                                    (e) =>
-                                        e.type === "doc_created" &&
-                                        e.download_url,
-                                ) as Extract<
-                                    AssistantEvent,
-                                    { type: "doc_created" }
-                                >[]
-                            ).map((e, i) => {
+                            {downloadCards.created.map((e, i) => {
                                 const documentId = e.document_id;
                                 const versionId = e.version_id ?? null;
                                 const versionNumber = e.version_number ?? null;
@@ -3057,6 +3167,21 @@ export function AssistantMessage({
                         >
                             <Share2 className="h-3.5 w-3.5" />
                         </button>
+                    )}
+                    {/* EU icon for AI-generated content — a label, not an
+                        action: right-aligned, on a finished answer only
+                        (not on a bare error notice). */}
+                    {!isStreaming && !(isError && (!events || events.length === 0)) && (
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <span className="ml-auto inline-flex p-1.5 text-muted-foreground">
+                                    <EuAiIcon label={tEuAi("generated")} />
+                                </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">
+                                {tEuAi("generated")}
+                            </TooltipContent>
+                        </Tooltip>
                     )}
                 </div>
                 )}

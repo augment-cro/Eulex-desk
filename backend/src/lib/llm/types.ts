@@ -44,10 +44,15 @@ export type UserApiKeys = {
 };
 
 /**
- * User-facing reasoning intensity. Maps 1:1 to provider-native values:
+ * Reasoning intensity. "low" | "medium" | "high" is what a client may ask
+ * for; it maps 1:1 to provider-native values:
  *   - Anthropic Claude 4.x: `output_config.effort` ("low" | "medium" | "high")
  *   - OpenAI GPT-5: `reasoning_effort` ("low" | "medium" | "high")
  *   - Google Gemini 3.x: `thinkingConfig.thinkingLevel` ("low" | "medium" | "high")
+ *
+ * "xhigh" and "max" are set only by an EULEX system context (never by a
+ * client) and exist on Claude (`output_config.effort`); the other adapters
+ * send them as "high" (standardEffort in models.ts).
  *
  * Mistral Small/Medium expose only a binary `reasoning_effort: "none" | "high"`
  * (no low/medium/high dial): the adapter maps our "high" → "high" and anything
@@ -55,7 +60,9 @@ export type UserApiKeys = {
  * value entirely. `enableThinking` still controls whether thoughts are
  * surfaced (Gemini) / requested (Claude).
  */
-export type ReasoningEffort = "low" | "medium" | "high";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+/** The three levels every provider with an effort dial understands. */
+export type StandardEffort = "low" | "medium" | "high";
 
 export type StreamChatParams = {
     model: string;

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { CircleDot, Layers } from "lucide-react";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 import {
     DropdownMenu,
@@ -21,6 +21,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useContexts } from "@/app/contexts/ContextsContext";
 import { contextsServiceEnabled } from "@/app/lib/mikeApi";
+import { SystemContextBadge } from "../contexts/SystemContextBadge";
+import {
+    isSystemContext,
+    localizedContextName,
+} from "../contexts/contextLabels";
 
 /**
  * Composer "Contexts" toggle — sits next to `McpToggleButton` with the
@@ -30,6 +35,7 @@ import { contextsServiceEnabled } from "@/app/lib/mikeApi";
  */
 export function ContextsToggleButton() {
     const t = useTranslations("contextsPage");
+    const locale = useLocale();
     const tNew = useTranslations("newContext");
     const router = useRouter();
     const { items, enabled, activeItems, loading, toggle } = useContexts();
@@ -101,8 +107,13 @@ export function ContextsToggleButton() {
                             key={context.id}
                             className="flex w-full items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
                         >
-                            <span className="min-w-0 truncate text-foreground">
-                                {context.name}
+                            <span className="flex min-w-0 items-center gap-1.5 text-foreground">
+                                {isSystemContext(context) && (
+                                    <SystemContextBadge />
+                                )}
+                                <span className="truncate">
+                                    {localizedContextName(context, locale)}
+                                </span>
                             </span>
                             <Switch
                                 size="sm"
@@ -127,12 +138,16 @@ export function ContextsToggleButton() {
                     <DropdownMenuTrigger asChild>
                         <button
                             type="button"
-                            title={context.name}
+                            title={localizedContextName(context, locale)}
                             className="inline-flex min-w-0 items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-foreground hover:bg-accent transition-colors"
                         >
-                            <CircleDot className="h-3 w-3 shrink-0" />
+                            {isSystemContext(context) ? (
+                                <SystemContextBadge className="border-0 bg-transparent p-0" />
+                            ) : (
+                                <CircleDot className="h-3 w-3 shrink-0" />
+                            )}
                             <span className="max-w-32 truncate">
-                                {context.name}
+                                {localizedContextName(context, locale)}
                             </span>
                         </button>
                     </DropdownMenuTrigger>

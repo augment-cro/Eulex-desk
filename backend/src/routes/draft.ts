@@ -34,6 +34,11 @@ import { filterAccessibleDocumentIds } from "../lib/access";
 
 export const draftRouter = Router();
 
+// Selection edits ran on "claude-3-5-haiku-20241022" — a retired model;
+// Sonnet 5.5 since 2026-09-29, at effort "medium" (interactive, but an edit
+// of legal text).
+const SELECTION_EDIT_MODEL = "claude-sonnet-5-5";
+
 // ---------------------------------------------------------------------------
 // POST /draft/selection-edit
 // ---------------------------------------------------------------------------
@@ -196,11 +201,13 @@ Return JSON only:`;
         const startedAt = Date.now();
         try {
             const { text, usage } = await completeText({
-                model: "claude-3-5-haiku-20241022",
+                model: SELECTION_EDIT_MODEL,
                 systemPrompt,
                 user: userPrompt,
-                maxTokens: 512,
+                // 512 was the answer alone; thinking counts against it too.
+                maxTokens: 4096,
                 apiKeys: api_keys,
+                effort: "medium",
             });
             llmText = text.trim();
 
@@ -208,8 +215,8 @@ Return JSON only:`;
                 void recordLlmUsage({
                     userId,
                     client: "draft",
-                    provider: providerForModel("claude-3-5-haiku-20241022"),
-                    model: "claude-3-5-haiku-20241022",
+                    provider: providerForModel(SELECTION_EDIT_MODEL),
+                    model: SELECTION_EDIT_MODEL,
                     usage,
                     durationMs: Date.now() - startedAt,
                     status: "ok",

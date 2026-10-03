@@ -7,6 +7,7 @@ import {
     retryEuGeographyRejection,
 } from "./openaiResponses";
 import { emptyUsage, sumUsage, attachUsage } from "./usage";
+import { standardEffort } from "./models";
 import type {
     LlmUsage,
     StreamChatParams,
@@ -186,7 +187,7 @@ async function streamOpenAIResponses(
                                           : {}),
                                   }
                                 : {}),
-                            reasoning: { effort: reasoningEffort ?? "high" },
+                            reasoning: { effort: standardEffort(reasoningEffort) ?? "high" },
                             service_tier: "default",
                             store: false,
                         },
@@ -289,7 +290,7 @@ export async function streamOpenAI(
     const client = getClient(model, apiKeys?.openai);
     const openaiTools = toOpenAITools(tools);
     const effortParam = supportsReasoningEffort(model)
-        ? { reasoning_effort: reasoningEffort ?? "high" }
+        ? { reasoning_effort: standardEffort(reasoningEffort) ?? "high" }
         : {};
 
     if (isLocalModel(model)) {

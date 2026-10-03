@@ -25,7 +25,15 @@ import {
 } from "../lib/mcp/servers";
 import { loadBuiltinMcpServers } from "../lib/mcp/builtin";
 import { localeContextForLlm, parseUiLocale, referenceTimeContext } from "../lib/uiLocale";
-import { loadContextsForTurn } from "../lib/seams/contextsRuntime";
+import {
+    contextsUnavailableNote,
+    loadContextsForTurn,
+    type UnavailableContextItem,
+} from "../lib/seams/contextsRuntime";
+import { tierGrants } from "../lib/entitlements";
+import { addContextDocuments } from "../lib/seams/contextDocuments";
+import { registerContextTasks } from "../lib/seams/contextTasks";
+import { registerTurn } from "../lib/turnStop";
 import {
     detectPromptInjection,
     logInjectionFinding,
@@ -86,10 +94,11 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
             .json({ detail: "messages array is required" });
     }
 
-    const reasoningEffort: "low" | "medium" | "high" | undefined =
+    // Same main-chat default as routes/chat.ts ("high").
+    const reasoningEffort: "low" | "medium" | "high" =
         effort === "low" || effort === "medium" || effort === "high"
             ? effort
-            : undefined;
+            : "high";
 
     const db = createServerSupabase();
 
@@ -184,15 +193,41 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
         return;
     }
 
+    // Contexts active for this project chat: globally-toggled ∪ contexts
+    // attached to this project, resolved by the configured context
+    // provider. The provider re-checks access per requester, so a private
+    // context attached to a shared project never leaks to other members;
+    // each part fails soft on its own — see loadContextsForTurn. Never
+    // breaks chat, and does nothing at all when no provider is configured.
+    // What fails to load is collected, told to the model and shown under
+    // the answer — see chat.ts.
+    const contextsUnavailable: UnavailableContextItem[] = [];
+    const activeContexts = await loadContextsForTurn({
+        userId,
+        email: userEmail ?? null,
+        query: lastUserContent,
+        systemContexts: await tierGrants(res.locals.tierLevelId, "systemContexts"),
+        projectId,
+        unavailable: contextsUnavailable,
+    });
+
     const { docIndex, docStore, folderPaths } = await buildProjectDocContext(
         projectId,
         userId,
         db,
     );
+    await addContextDocuments({
+        docIndex,
+        docStore,
+        active: activeContexts,
+        db,
+        unavailable: contextsUnavailable,
+    });
     const docAvailability = Object.entries(docIndex).map(([doc_id, info]) => ({
         doc_id,
         filename: info.filename,
         folder_path: folderPaths.get(doc_id),
+        ...(info.read_only ? { context: true } : {}),
     }));
 
     const enrichedMessages = await enrichWithPriorEvents(
@@ -241,10 +276,18 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
         // conversation-history cache — stays byte-stable across turns too.
         `${systemPromptExtra}\n\n${localeContextForLlm(uiLocale, { omitReferenceTime: true })}`,
         docIndex,
-        referenceTimeContext(uiLocale),
+        // The note on context sources that did not load rides the same
+        // uncached dynamic suffix — never the cached static prefix.
+        [referenceTimeContext(uiLocale), contextsUnavailableNote(contextsUnavailable)]
+            .filter((part) => part !== "")
+            .join("\n\n"),
+        uiLocale,
     );
 
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
+    // Tasks of the active EULEX contexts are workflows too (ctx-<context
+    // id>-<task id>): read_workflow and a selected task's marker find them.
+    registerContextTasks(workflowStore, activeContexts);
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -297,22 +340,14 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
     ]);
     const mcpServers = [...userMcpServers, ...builtinMcpServers];
 
-    // Contexts active for this project chat: globally-toggled ∪ contexts
-    // attached to this project, resolved by the configured context
-    // provider. The provider re-checks access per requester, so a private
-    // context attached to a shared project never leaks to other members;
-    // each part fails soft on its own — see loadContextsForTurn. Never
-    // breaks chat, and does nothing at all when no provider is configured.
-    const activeContexts = await loadContextsForTurn({
-        userId,
-        email: userEmail ?? null,
-        query: lastUserContent,
-        projectId,
-    });
 
     const turnStartedAt = Date.now();
     let usageRecorded = false;
     let completedUsage: UsageContext | undefined;
+    // Explicit Stop (#96) — see routes/chat.ts.
+    const unregisterTurn = chatId
+        ? registerTurn(chatId, userId, turnAbort)
+        : () => {};
 
     try {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
@@ -385,9 +420,15 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
             canExportDocx,
             webSearchEnabled: web_search,
             activeContexts,
+            contextsUnavailable,
+            // update_plan is offered while a workflow is in play.
+            workflowSelected: messages.some((m) => m.role === "user" && !!m.workflow),
             abortSignal: turnAbort.signal,
             // Stall watchdog (#25) — same controller; see chat.ts.
             turnAbort,
+            // Reasoning in the other language is translated (lib/reasoningLanguage).
+            uiLocale,
+            chatId,
         });
         if (usage) completedUsage = { usage, model: selectedModel, extraCostUsd: webSearchCostUsd };
 
@@ -487,6 +528,7 @@ projectChatRouter.post("/", requireAuth, enforceRateLimit(), async (req, res) =>
             /* ignore */
         }
     } finally {
+        unregisterTurn();
         clearInterval(heartbeat);
         await closeMcpServers(mcpServers);
         res.end();

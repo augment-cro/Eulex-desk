@@ -11,12 +11,13 @@
  */
 import jwt from "jsonwebtoken";
 
-export type SeamService = "contexts" | "governance" | "audit";
+export type SeamService = "contexts" | "governance" | "audit" | "billing";
 
 const SECRET_ENV: Record<SeamService, string> = {
     contexts: "CONTEXTS_SERVICE_SECRET",
     governance: "GOVERNANCE_SERVICE_SECRET",
     audit: "AUDIT_SINK_SECRET",
+    billing: "BILLING_SERVICE_SECRET",
 };
 
 const CORE_ISSUER = "eulex-desk";
@@ -39,18 +40,24 @@ function seamSecret(service: SeamService): string | null {
  * `email` is an OPTIONAL claim: services that support email-based sharing
  * consume it to resolve shares; without it the caller simply sees no
  * shared items.
+ *
+ * `systemContexts` adds the `system_contexts: true` claim — the caller's
+ * tier grants EULEX system contexts; the contexts service shows and
+ * resolves them only for tokens that carry it.
  */
 export function mintServiceToken(
     service: SeamService,
     userId: string,
     tenant: string | null = null,
     email: string | null = null,
+    opts: { systemContexts?: boolean } = {},
 ): string | null {
     const secret = seamSecret(service);
     if (!secret) return null;
 
     const now = Math.floor(Date.now() / 1000);
-    const key = `${service}:${userId}:${email ?? ""}`;
+    const system = opts.systemContexts === true;
+    const key = `${service}:${userId}:${email ?? ""}:${system ? "sys" : ""}`;
     const cached = tokenCache.get(key);
     if (cached && cached.expiresAt - now > REFRESH_MARGIN_SECONDS) {
         return cached.token;
@@ -63,6 +70,7 @@ export function mintServiceToken(
             tenant,
             scope: `seam:${service}`,
             ...(email ? { email } : {}),
+            ...(system ? { system_contexts: true } : {}),
             iss: CORE_ISSUER,
             aud: service,
             iat: now,
@@ -73,6 +81,30 @@ export function mintServiceToken(
     );
     tokenCache.set(key, { token, expiresAt: exp });
     return token;
+}
+
+/**
+ * Mint an operator-level token for a service's admin API (AdminMax
+ * proxies): sub "adminmax", scope `seam:<service>-admin`, 5-minute TTL,
+ * never cached and never handed to a browser. Null when the service's
+ * secret is not configured.
+ */
+export function mintAdminServiceToken(service: SeamService): string | null {
+    const secret = seamSecret(service);
+    if (!secret) return null;
+    const now = Math.floor(Date.now() / 1000);
+    return jwt.sign(
+        {
+            sub: "adminmax",
+            scope: `seam:${service}-admin`,
+            iss: CORE_ISSUER,
+            aud: service,
+            iat: now,
+            exp: now + 300,
+        },
+        secret,
+        { algorithm: "HS256" },
+    );
 }
 
 export interface InboundServiceIdentity {

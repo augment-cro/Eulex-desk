@@ -4,6 +4,7 @@ import { query } from "../lib/db";
 import { contextsClient } from "../lib/seams/contextsClient";
 import { safeErrorMessage } from "../lib/safeError";
 import { checkProjectAccess } from "../lib/access";
+import { tierGrants } from "../lib/entitlements";
 
 /**
  * Generic contexts runtime routes — the core-owned state for the optional
@@ -17,6 +18,7 @@ import { checkProjectAccess } from "../lib/access";
  */
 
 /** Max simultaneously active contexts (mirrored client-side). */
+/** Cap on simultaneously active PERSONAL contexts (system contexts are exempt). */
 export const MAX_ACTIVE_CONTEXTS = 5;
 
 /** Core-owned runtime state, keyed by opaque context ids. */
@@ -154,6 +156,12 @@ function wrapAsync(fn: (req: Request, res: Response) => Promise<unknown>): Reque
     };
 }
 
+/** Whether the caller's tier grants EULEX system contexts (injectable for tests). */
+export type SystemContextsGate = (res: Response) => Promise<boolean>;
+
+const tierSystemContexts: SystemContextsGate = (res) =>
+    tierGrants(res.locals.tierLevelId, "systemContexts");
+
 /**
  * Router factory. `auth` is injectable so route tests can stub the
  * authenticated user; production uses the default `requireAuth`.
@@ -163,6 +171,7 @@ export function makeContextsRouter(
     auth: RequestHandler = requireAuth,
     client: ProviderClient = contextsClient,
     targetAccess: TargetAccessChecker = pgTargetAccessChecker,
+    systemContextsFor: SystemContextsGate = tierSystemContexts,
 ): Router {
     const r = Router();
 
@@ -173,14 +182,28 @@ export function makeContextsRouter(
      * Unconfigured provider → empty set (feature dormant).
      */
     async function visibleIds(res: Response): Promise<Set<string> | null> {
-        if (!client.isConfigured()) return new Set();
+        return (await visibleListing(res))?.ids ?? null;
+    }
+
+    /** Visible ids plus which of them are EULEX system contexts. */
+    async function visibleListing(
+        res: Response,
+    ): Promise<{ ids: Set<string>; system: Set<string> } | null> {
+        if (!client.isConfigured()) return { ids: new Set(), system: new Set() };
+        // EULEX system contexts are listed only when the tier grants them.
         const listed = await client.list(
             res.locals.userId,
             null,
             res.locals.userEmail ?? null,
+            { systemContexts: await systemContextsFor(res) },
         );
         if (!listed.ok) return null;
-        return new Set(listed.data.map((c) => c.id));
+        return {
+            ids: new Set(listed.data.map((c) => c.id)),
+            system: new Set(
+                listed.data.filter((c) => c.level === "system").map((c) => c.id),
+            ),
+        };
     }
 
     r.get("/toggles", auth, wrapAsync(async (_req, res) => {
@@ -205,20 +228,24 @@ export function makeContextsRouter(
     r.put("/toggles/:id", auth, wrapAsync(async (req, res) => {
         const contextId = req.params.id;
         const enabled = !!req.body?.enabled;
-        const visible = await visibleIds(res);
+        const listing = await visibleListing(res);
+        const visible = listing?.ids;
         // Only contexts the provider lists for this caller can be toggled;
         // with the provider unreachable, writes fail closed.
-        if (!visible?.has(contextId)) {
+        if (!listing || !visible?.has(contextId)) {
             return void res.status(404).json({ detail: "Context not found" });
         }
-        if (enabled) {
+        // EULEX system contexts never count toward the cap.
+        if (enabled && !listing.system.has(contextId)) {
             const prefs = await store.getPrefs(res.locals.userId);
             // Re-enabling an already-enabled context is an idempotent no-op —
             // it must never trip the cap. The cap counts only enabled prefs
             // for contexts the user can still see, so stale prefs (deleted /
             // unshared contexts) don't occupy slots.
             const alreadyOn = prefs.get(contextId) === true;
-            const active = [...prefs.entries()].filter(([id, on]) => on && visible.has(id)).length;
+            const active = [...prefs.entries()].filter(
+                ([id, on]) => on && visible.has(id) && !listing.system.has(id),
+            ).length;
             if (!alreadyOn && active >= MAX_ACTIVE_CONTEXTS) {
                 return void res.status(400).json({
                     errors: [`At most ${MAX_ACTIVE_CONTEXTS} contexts may be active at once`],

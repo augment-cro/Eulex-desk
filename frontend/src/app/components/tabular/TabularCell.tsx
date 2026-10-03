@@ -2,18 +2,21 @@
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { escapeLineStartDates } from "../shared/markdownDates";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Expand } from "lucide-react";
 import type { ColumnConfig, TabularCell as TCell } from "../shared/types";
+import { isSpreadsheetCitation } from "../shared/types";
+import { formatSheetCell } from "@/app/lib/spreadsheetAddress";
 import { prepareTabularMarkdown, parseInlineCodeToken, type ParsedCitation } from "./citation-utils";
-import { getPillClass } from "./pillUtils";
+import { getPillClass, localizeNotFound, pillDisplayLabel } from "./pillUtils";
 import { useTranslations } from "next-intl";
 
 interface Props {
     cell: TCell;
     column?: ColumnConfig;
     onExpand: () => void;
-    onCitationClick?: (page: number, quote: string) => void;
+    onCitationClick?: (citation: ParsedCitation) => void;
 }
 
 const FLAG_STYLES = {
@@ -47,7 +50,7 @@ function CellMarkdown({
     citations: ParsedCitation[];
     pills: string[];
     column?: ColumnConfig;
-    onCitationClick?: (page: number, quote: string) => void;
+    onCitationClick?: (citation: ParsedCitation) => void;
     onExpand: () => void;
     inline?: boolean;
     /** Badge ordinals whose quote wasn't found in the document (#22). */
@@ -98,10 +101,18 @@ function CellMarkdown({
                             // same badge, warning tint + tooltip note.
                             const isUnverified =
                                 unverifiedCitations?.has(idx) ?? false;
-                            const tooltip = tTabular("citationTooltip", {
-                                page: citation.page,
-                                quote: citation.quote,
-                            });
+                            const tooltip = isSpreadsheetCitation(citation)
+                                ? tTabular("citationTooltipCell", {
+                                      location: formatSheetCell(
+                                          citation.sheet,
+                                          citation.cell,
+                                      ),
+                                      quote: citation.quote,
+                                  })
+                                : tTabular("citationTooltip", {
+                                      page: citation.page ?? "",
+                                      quote: citation.quote,
+                                  });
                             return (
                                 <span
                                     title={
@@ -112,10 +123,7 @@ function CellMarkdown({
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         if (onCitationClick) {
-                                            onCitationClick(
-                                                citation.page,
-                                                citation.quote,
-                                            );
+                                            onCitationClick(citation);
                                         } else {
                                             onExpand();
                                         }
@@ -139,7 +147,11 @@ function CellMarkdown({
                                 <span
                                     className={`inline-block rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none ${getPillClass(content, column)}`}
                                 >
-                                    {content}
+                                    {pillDisplayLabel(content, {
+                                        notFound: tTabular("valueNotFound"),
+                                        yes: tTabular("valueYes"),
+                                        no: tTabular("valueNo"),
+                                    })}
                                 </span>
                             );
                         }
@@ -155,7 +167,7 @@ function CellMarkdown({
                 },
             }}
         >
-            {text}
+            {escapeLineStartDates(text)}
         </ReactMarkdown>
     );
 }
@@ -206,7 +218,11 @@ export function TabularCell({
     }
 
     const { processed, citations, pills } = preprocessCellMarkdown(
-        cell.content.summary,
+        localizeNotFound(cell.content.summary, {
+            notFound: t("valueNotFound"),
+            yes: t("valueYes"),
+            no: t("valueNo"),
+        }),
     );
 
     // #22 — citation verification. Ordinals arrive per field from the
@@ -220,9 +236,9 @@ export function TabularCell({
     const firstLine = processed.split("\n").find((l) => l.trim()) ?? processed;
     const collapsedDisplay = firstLine.replace(/^[-*•]\s+/, "");
 
-    function handleCitationClickInOverlay(page: number, quote: string) {
+    function handleCitationClickInOverlay(citation: ParsedCitation) {
         setInlineExpanded(false);
-        onCitationClick?.(page, quote);
+        onCitationClick?.(citation);
     }
 
     function handleSeeDetails() {

@@ -2,7 +2,10 @@
  * Locate cited quotes inside a plain-text document (`TextDocView`).
  *
  * Matching is whitespace-tolerant (any run of spaces / line breaks in the
- * quote matches any run in the text) and case-insensitive. A quote with
+ * quote matches any run in the text) and case-insensitive. Table pipes count
+ * as whitespace: a spreadsheet attached to an e-mail is rendered as a
+ * markdown table, and a cell/row citation quotes its values without the
+ * `|` separators. A quote with
  * ellipses or a `[[PAGE_BREAK]]` sentinel is matched segment by segment,
  * like the PDF highlighter. A long segment with no exact match falls back to
  * its first words, so a small difference late in the quote still lands on
@@ -24,7 +27,7 @@ function findWords(
     words: readonly string[],
     from: number,
 ): TextRange | null {
-    const re = new RegExp(words.map(escapeRegExp).join("\\s+"), "giu");
+    const re = new RegExp(words.map(escapeRegExp).join("[\\s|]+"), "giu");
     re.lastIndex = from;
     const match = re.exec(text);
     return match ? [match.index, match.index + match[0].length] : null;

@@ -108,3 +108,63 @@ test("missing usage preserves known spend but never claims a complete zero cost"
     );
     assert.equal(priceUsage("search", emptyUsage(), 0.01).costUsd, 0.01);
 });
+
+test("Opus 5.5 aggregate is priced at its list rate, cache reads at 0.05x input", () => {
+    const usage = {
+        ...emptyUsage(),
+        iterations: 3,
+        inputTokens: 10_000,
+        outputTokens: 2_000,
+        cacheCreationInputTokens: 4_000,
+        cacheReadInputTokens: 50_000,
+    };
+    // (10000*4 + 2000*20 + 4000*5 + 50000*0.2) / 1e6
+    assert.equal(priceUsage("claude-opus-5-5", usage).costUsd, 0.11);
+    // Same tokens on Sonnet 5: (10000*2 + 2000*10 + 4000*2.5 + 50000*0.2) / 1e6
+    assert.equal(priceUsage("claude-sonnet-5", usage).costUsd, 0.06);
+});
+
+// Claude per-request receipts carry the serving endpoint (claude.ts).
+const opusReceipt = (endpoint: string) => ({
+    ...emptyUsage(),
+    iterations: 1,
+    inputTokens: 1000,
+    outputTokens: 2000,
+    cacheCreationInputTokens: 10_000,
+    cacheReadInputTokens: 100_000,
+    calls: [
+        {
+            provider: "claude" as const,
+            model: "claude-opus-5-5",
+            phase: "single" as const,
+            endpoint,
+            status: "reported" as const,
+            inputTokens: 1000,
+            outputTokens: 2000,
+            cacheCreationInputTokens: 10_000,
+            cacheReadInputTokens: 100_000,
+        },
+    ],
+});
+
+test("Claude on Vertex EU multi-region is 10 % over list for every token type", () => {
+    // list: 1000*4 + 2000*20 + 10000*5 + 100000*0.2 = 114000 µ$ = $0.114
+    const eu = priceUsage("claude-opus-5-5", opusReceipt("vertex:eu"));
+    assert.equal(eu.costUsd, 0.1254);
+    assert.equal(eu.complete, true);
+    assert.equal(eu.basis, "provider_usage_list_price");
+    assert.equal(eu.calls[0].vertexMultiplier, 1.1);
+});
+
+test("Claude on Vertex global and on the direct Anthropic API is list price", () => {
+    assert.equal(
+        priceUsage("claude-opus-5-5", opusReceipt("vertex:global")).costUsd,
+        0.114,
+    );
+    const direct = priceUsage(
+        "claude-opus-5-5",
+        opusReceipt("https://api.anthropic.com/"),
+    );
+    assert.equal(direct.costUsd, 0.114);
+    assert.equal(direct.calls[0].vertexMultiplier, 1);
+});

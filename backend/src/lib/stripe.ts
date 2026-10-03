@@ -219,15 +219,18 @@ export function getTokenPacks(): TokenPack[] {
         process.env.STRIPE_PACK_1M_PRICE_ID?.trim() ||
         process.env.STRIPE_PACK_1M_PRODUCT_ID?.trim();
     if (p1m) {
+        // Ids and env names keep their original "1m"/"3m" slugs (they're
+        // wired into secrets and webhook metadata); the amounts are what
+        // counts and flow to the webhook via session metadata.
         packs.push({
             id: "tokens_1m",
-            tokens: 1_000_000,
-            label: "1.000.000 tokena",
+            tokens: 5_000_000,
+            label: "Radni paket",
             description:
-                "Dodatak na vaš Plus plan — vrijedi neograničeno, troši se nakon dnevnog limita.",
+                "Dodatna potrošnja za razdoblja s više posla.",
             priceId: p1m,
             amountEurDisplay: Number(
-                process.env.STRIPE_PACK_1M_AMOUNT_EUR ?? 9,
+                process.env.STRIPE_PACK_1M_AMOUNT_EUR ?? 39,
             ),
         });
     }
@@ -237,13 +240,13 @@ export function getTokenPacks(): TokenPack[] {
     if (p3m) {
         packs.push({
             id: "tokens_3m",
-            tokens: 3_000_000,
-            label: "3.000.000 tokena",
+            tokens: 10_000_000,
+            label: "Intenzivni paket",
             description:
-                "Veliki paket za intenzivne mjesece — najbolja cijena po tokenu.",
+                "Dvostruko više dodatne potrošnje — za velike predmete i intenzivne mjesece.",
             priceId: p3m,
             amountEurDisplay: Number(
-                process.env.STRIPE_PACK_3M_AMOUNT_EUR ?? 24,
+                process.env.STRIPE_PACK_3M_AMOUNT_EUR ?? 79,
             ),
         });
     }
@@ -252,6 +255,40 @@ export function getTokenPacks(): TokenPack[] {
 
 export function findPack(packId: string): TokenPack | undefined {
     return getTokenPacks().find((p) => p.id === packId);
+}
+
+export type PackPriceInfo = {
+    /** Stripe unit amount in EUR (net when taxExclusive). */
+    amountEur: number;
+    /** VAT is added on top at checkout (price tax_behavior "exclusive"). */
+    taxExclusive: boolean;
+};
+
+const _packPriceInfoCache = new Map<string, { info: PackPriceInfo; fetchedAt: number }>();
+
+/**
+ * What a pack actually costs, read from its Stripe price (cached 5 min)
+ * so the modal never shows a stale env figure. Throws on Stripe errors;
+ * callers fall back to the env display amount.
+ */
+export async function getPackPriceInfo(pack: TokenPack): Promise<PackPriceInfo> {
+    const cached = _packPriceInfoCache.get(pack.priceId);
+    if (cached && Date.now() - cached.fetchedAt < PRICE_TTL_MS) return cached.info;
+    const priceId = await resolvePackPriceId(pack);
+    const price = (await getStripe().prices.retrieve(priceId)) as unknown as {
+        unit_amount: number | null;
+        currency: string;
+        tax_behavior?: string | null;
+    };
+    if (typeof price.unit_amount !== "number" || price.currency?.toLowerCase() !== "eur") {
+        throw new Error(`Pack price ${priceId} is not a EUR unit price`);
+    }
+    const info = {
+        amountEur: price.unit_amount / 100,
+        taxExclusive: price.tax_behavior === "exclusive",
+    };
+    _packPriceInfoCache.set(pack.priceId, { info, fetchedAt: Date.now() });
+    return info;
 }
 
 // ---------------------------------------------------------------------------

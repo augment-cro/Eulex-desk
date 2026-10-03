@@ -10,6 +10,7 @@ import {
     ocrCachePath,
     pdfPageMarkersToHeadings,
     splitTextIntoParts,
+    spreadsheetViewCachePath,
     textCachePathsFor,
 } from "./documentText.js";
 
@@ -104,7 +105,7 @@ describe("extractDocumentText — formats", () => {
     it("throws for bytes it cannot recognise under an unknown type", async () => {
         await assert.rejects(
             extractDocumentText({
-                fileType: "xlsx",
+                fileType: "pptx",
                 bytes: Buffer.from("not a document"),
                 flavor: "plain",
             }),
@@ -194,9 +195,16 @@ describe("extractDocumentText — PDF OCR and its persisted cache", () => {
         assert.equal(calls.writes.length, 0);
     });
 
-    it("derives the cache object from the version's storage path", () => {
+    it("derives the cache objects from the version's storage path", () => {
         assert.equal(ocrCachePath(storagePath), `${storagePath}.ocr-v1.txt`);
-        assert.deepEqual(textCachePathsFor(storagePath), [`${storagePath}.ocr-v1.txt`]);
+        assert.equal(spreadsheetViewCachePath(storagePath), `${storagePath}.view.xlsx`);
+        // Deleting a version must delete all of them: the OCR transcription,
+        // a spreadsheet's converted viewer copy and an e-mail's text.
+        assert.deepEqual(textCachePathsFor(storagePath), [
+            `${storagePath}.ocr-v1.txt`,
+            `${storagePath}.view.xlsx`,
+            `${storagePath}.email-v1.txt`,
+        ]);
     });
 });
 

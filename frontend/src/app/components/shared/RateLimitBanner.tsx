@@ -29,10 +29,6 @@ import { TopupModal } from "./TopupModal";
  */
 let hardBlockTracked = false;
 
-function formatNumber(n: number): string {
-    return new Intl.NumberFormat("hr-HR").format(n);
-}
-
 function formatRelief(iso: string | null, soonLabel: string): string {
     if (!iso) return "—";
     const target = new Date(iso);
@@ -99,8 +95,6 @@ export function RateLimitBanner() {
                                       ),
                                   })
                                 : `${t("softBody", {
-                                      used: formatNumber(snap.usedTokens),
-                                      limit: formatNumber(snap.limitTokens),
                                       percent: String(percent),
                                   })} ${t(
                                       snap.topupAvailable
@@ -109,7 +103,6 @@ export function RateLimitBanner() {
                                   )}`}
                             {snap.bonusTokens > 0 && (
                                 <span className="ml-2 inline-flex items-center gap-1 rounded bg-background/60 px-1.5 py-0.5 text-[10px] font-medium">
-                                    +{formatNumber(snap.bonusTokens)}{" "}
                                     {t("bonusBadge")}
                                 </span>
                             )}

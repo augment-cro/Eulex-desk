@@ -20,6 +20,7 @@ import {
     getTabularChatMessages,
     deleteTabularChat,
     mapTRMessages,
+    stopChatTurn,
     type TRChat,
     type TRCitationAnnotation,
 } from "@/app/lib/mikeApi";
@@ -405,7 +406,7 @@ function TRAssistantMessage({
                                             )
                                         }
                                         title={`${cit.col_name} · ${cit.doc_name.replace(/\.[^.]+$/, "")}`}
-                                        className="mx-0.5 inline-flex items-center justify-center rounded-full w-4 h-4 text-[10px] font-medium bg-secondary text-foreground hover:bg-accent transition-colors align-super font-serif"
+                                        className="mx-0.5 inline-flex items-center justify-center rounded-full w-4 h-4 text-[10px] font-medium bg-magenta text-magenta-foreground hover:bg-magenta/70 transition-colors align-super font-serif"
                                     >
                                         {idx + 1}
                                     </button>
@@ -684,7 +685,7 @@ export function TRChatPanel({
         mistralApiKey: profile?.mistralApiKey ?? null,
         serverKeys: profile?.serverKeys,
     };
-    const currentModel = profile?.tabularModel ?? "claude-sonnet-5";
+    const currentModel = profile?.tabularModel ?? "claude-sonnet-5-5";
     // Reuse the same per-user reasoning_effort as the main composer
     // (DB-backed since migration 113). The TR /chat endpoint doesn't
     // yet forward effort to the provider, but storing here keeps the
@@ -1035,6 +1036,9 @@ export function TRChatPanel({
     }
 
     function handleCancel() {
+        // Aborting the fetch does not reach the backend behind Cloud Run —
+        // ask it to stop the turn explicitly (#96).
+        if (currentChatId) stopChatTurn(currentChatId);
         abortRef.current?.abort();
     }
 

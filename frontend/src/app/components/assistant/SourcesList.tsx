@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { BookmarkPlus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
@@ -10,21 +11,37 @@ import type { LegalSource } from "../shared/types";
  * Compact "Izvori" / "Sources" list rendered under an assistant answer.
  * One chip per legal source consulted this turn (deduped by id); clicking a
  * chip opens the same right-side document panel as the inline citation pills.
+ * When `citedIds` is given, the sources the answer actually links come first
+ * and the rest of what the research consulted (search hits such as unrelated
+ * acts) folds behind a "N more consulted" toggle.
  * When `onSaveAsContext` is provided, a "save as context" affordance sits
  * next to the heading — it seeds a new context with these sources.
  */
 export function SourcesList({
     sources,
+    citedIds,
     onSourceClick,
     onSaveAsContext,
 }: {
     sources: LegalSource[];
+    /** Ids of the sources linked in the answer text. */
+    citedIds?: ReadonlySet<string>;
     onSourceClick: (source: LegalSource) => void;
     onSaveAsContext?: () => void;
 }) {
     const t = useTranslations("legalSource");
     const tSave = useTranslations("saveAsContext");
+    const [showConsulted, setShowConsulted] = useState(false);
     if (sources.length === 0) return null;
+
+    // Nothing linked (or nothing to fold) → the full list, as before.
+    const cited = citedIds?.size
+        ? sources.filter((s) => citedIds.has(s.id))
+        : sources;
+    const primary = cited.length > 0 ? cited : sources;
+    const consulted =
+        primary === sources ? [] : sources.filter((s) => !citedIds?.has(s.id));
+    const shown = showConsulted ? [...primary, ...consulted] : primary;
 
     return (
         <div className="mt-4 border-t border-border pt-3">
@@ -44,7 +61,7 @@ export function SourcesList({
                 )}
             </div>
             <div className="flex flex-wrap gap-2">
-                {sources.map((s) => (
+                {shown.map((s) => (
                     <button
                         key={s.id}
                         type="button"
@@ -87,6 +104,18 @@ export function SourcesList({
                     </button>
                 ))}
             </div>
+            {consulted.length > 0 && (
+                <button
+                    type="button"
+                    onClick={() => setShowConsulted((v) => !v)}
+                    aria-expanded={showConsulted}
+                    className="mt-2 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                >
+                    {showConsulted
+                        ? t("hideConsultedSources")
+                        : t("showConsultedSources", { count: consulted.length })}
+                </button>
+            )}
         </div>
     );
 }
